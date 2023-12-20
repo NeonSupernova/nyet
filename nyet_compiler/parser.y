@@ -64,10 +64,13 @@ stmt : var_decl | func_decl | if_stmt | expr { $$ = new NExpressionStatement(*$1
 block : TLPAREN stmts TRPAREN { $$ = $2; }
       | TLPAREN TRPAREN { $$ = new NBlock(); }
       ;
-
+ident : TID { $$ = new NIdentifier(*$1); delete $1; }
+/*
 var_decl : TLPAREN TLET ident func_decl_args expr TRPAREN { $$ = new NVariableDeclaration(*$2); }
-         | TLPAREN TLET ident TCOLON type func_decl_args expr TRPAREN { $$ = new NVariableDeclaration(*$2, *$4, *$5); }
+         | TLPAREN TLET ident TCOLON type func_decl_args expr TRPAREN { $$ = new NVariableDeclaration(*$2, *$4, *$6); }
          ;
+*/
+var_decl : TLPAREN TLET ident TCOLON type func_decl_args expr TRPAREN { $$ = new NVariableDeclaration(*$3, *$5, *$6); }
 
 type : TINTEGER | TDOUBLE | TSTRING
      ;
@@ -83,7 +86,7 @@ func_decl_args : /*blank*/  { $$ = new VariableList(); }
 
 if_stmt : TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$5, nullptr); }
         ;
-
+/*
 expr : var_decl { $$ = new NAssignment(*$<ident>1, *$3); }
      | TLPAREN ident call_args TRPAREN { $$ = new NMethodCall(*$1, *$3); delete $3; }
      | ident { $<ident>$ = $1; }
@@ -91,6 +94,11 @@ expr : var_decl { $$ = new NAssignment(*$<ident>1, *$3); }
      | TLPAREN comparison expr expr TRPAREN { $$ = new NBinaryOperator(*$1, $2, *$3); }
      | TLPAREN expr TRPAREN { $$ = $2; }
      | if_stmt
+     ;
+*/
+expr : var_decl { $$ = new NAssignment(*$1, *$3); }
+     | TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$5, nullptr); }
+     | | if_stmt
      ;
 
 call_args : /*blank*/  { $$ = new ExpressionList(); }
