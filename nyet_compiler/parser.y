@@ -44,8 +44,10 @@
 %type <token> comparison
 
 /* Operator precedence for mathematical operators */
+%left TLPAREN TFN TLET TCOLON
 %left TPLUS TMINUS
 %left TMUL TDIV
+%right TCOMMA
 
 %start program
 
@@ -71,21 +73,21 @@ var_decl : TLPAREN TLET ident func_decl_args expr TRPAREN { $$ = new NVariableDe
          ;
 */
 
-var_decl : TLPAREN TLET ident TCOLON type func_decl_args expr TRPAREN { $$ = new NVariableDeclaration(*$3, *$5, *$6); }
+var_decl : TLPAREN TLET ident TCOLON type func_decl_args_inner { $$ = new NVariableDeclaration(*$3, *$5, *$7); }
 
 type : TINTEGER | TDOUBLE | TSTRING
      ;
 
-func_decl : TLPAREN TFN ident TLPAREN func_decl_args TRPAREN type block { $$ = new NFunctionDeclaration(*$3, *$6, *$8, *$9); delete $6; }
-          ;
+func_decl : TLPAREN TFN ident TLPAREN func_decl_args_inner TRPAREN type block { $$ = new NFunctionDeclaration(*$3, *$6, *$8, *$10); delete $6; }
+
+func_decl_args_inner : TCOMMA expr { $$ = new NFunctionArguments(*$2); }
 
 func_decl_args : /*blank*/  { $$ = new VariableList(); }
                | var_decl { $$ = new VariableList(); $$->push_back($<var_decl>1); }
                | func_decl_args TCOMMA var_decl { $1->push_back($<var_decl>3); }
                ;
 
-if_stmt : TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$5, nullptr); }
-        ;
+if_stmt : TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$5, *$7); }
 /*
 expr : var_decl { $$ = new NAssignment(*$<ident>1, *$3); }
      | TLPAREN ident call_args TRPAREN { $$ = new NMethodCall(*$1, *$3); delete $3; }
