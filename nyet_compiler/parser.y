@@ -98,7 +98,7 @@ expr : var_decl { $$ = new NAssignment(*$<ident>1, *$3); }
 */
 expr : var_decl { $$ = new NAssignment(*$1, *$3); }
      | if_stmt { $$ = new NIfStatement(*$3, *$5, nullptr); }
-     | expr { $$ = $2 }
+     | expr { $$ = $2; }
      ;
 
 call_args : /*blank*/  { $$ = new ExpressionList(); }
