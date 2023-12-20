@@ -70,14 +70,14 @@ var_decl : TLPAREN TLET ident func_decl_args expr TRPAREN { $$ = new NVariableDe
          | TLPAREN TLET ident TCOLON type func_decl_args expr TRPAREN { $$ = new NVariableDeclaration(*$2, *$4, *$6); }
          ;
 */
+
 var_decl : TLPAREN TLET ident TCOLON type func_decl_args expr TRPAREN { $$ = new NVariableDeclaration(*$3, *$5, *$6); }
 
 type : TINTEGER | TDOUBLE | TSTRING
      ;
 
-func_decl : TLPAREN TFN ident TLPAREN func_decl_args TRPAREN type block
-           { $$ = new NFunctionDeclaration(*$3, *$6, *$8, *$10); delete $6; }
-         ;
+func_decl : TLPAREN TFN ident TLPAREN func_decl_args TRPAREN type block { $$ = new NFunctionDeclaration(*$3, *$6, *$8, *$9); delete $6; }
+          ;
 
 func_decl_args : /*blank*/  { $$ = new VariableList(); }
                | var_decl { $$ = new VariableList(); $$->push_back($<var_decl>1); }
@@ -97,8 +97,8 @@ expr : var_decl { $$ = new NAssignment(*$<ident>1, *$3); }
      ;
 */
 expr : var_decl { $$ = new NAssignment(*$1, *$3); }
-     | TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$5, nullptr); }
-     | | if_stmt
+     | if_stmt { $$ = new NIfStatement(*$3, *$5, nullptr); }
+     | expr { $$ = $2 }
      ;
 
 call_args : /*blank*/  { $$ = new ExpressionList(); }
