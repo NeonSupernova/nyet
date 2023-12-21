@@ -78,22 +78,17 @@ var_decl : TLPAREN TLET ident TCOLON type func_decl_args_inner { $$ = new NVaria
 type : TINTEGER | TDOUBLE | TSTRING
      ;
 
-func_decl : TLPAREN TFN ident TLPAREN func_decl_args_inner TRPAREN type block { $$ = new NFunctionDeclaration(*$3, *$6, *$8, *$10); delete $6; }
+func_decl : TLPAREN TFN ident TCOLON type TLPAREN func_decl_args_inner TRPAREN block TRPAREN { $$ = new NFunctionDeclaration(*$5, *$3, *$7, *$9); }
 
 func_decl_args_inner : /*blank*/  { $$ = new VariableList(); }
                    | var_decl { $$ = new VariableList(); $$->push_back($<var_decl>1); }
                    | func_decl_args_inner TCOMMA var_decl { $1->push_back($<var_decl>3); }
                    ;
 
-if_stmt : TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$5, *$7); }
+if_stmt : TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$4, *$5); }
 
 expr : var_decl { $$ = new NAssignment(*$1, *$3); }
      | if_stmt { $$ = new NIfStatement(*$3, *$5, nullptr); }
-     | expr TCOMMA expr { $$ = new NBinaryOperator(*$1, TCOMMA, *$3); }
-     | expr TPLUS expr { $$ = new NBinaryOperator(*$1, TPLUS, *$3); }
-     | expr TMINUS expr { $$ = new NBinaryOperator(*$1, TMINUS, *$3); }
-     | expr TMUL expr { $$ = new NBinaryOperator(*$1, TMUL, *$3); }
-     | expr TDIV expr { $$ = new NBinaryOperator(*$1, TDIV, *$3); }
      | TLPAREN expr TRPAREN { $$ = $2; }
      | ident { $$ = *$1; }
      | numeric
