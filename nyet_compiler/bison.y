@@ -87,8 +87,8 @@ func_decl_args_inner : /*blank*/  { $$ = new VariableList(); }
 
 if_stmt : TLPAREN TIF expr expr expr TRPAREN { $$ = new NIfStatement(*$3, *$4, *$5); }
 
-expr : var_decl { $$ = new NAssignment(*$1, *$3); }
-     | if_stmt { $$ = new NIfStatement(*$3, *$5, nullptr); }
+expr : var_decl
+     | if_stmt
      | TLPAREN expr TRPAREN { $$ = $2; }
      | ident { $$ = *$1; }
      | numeric
