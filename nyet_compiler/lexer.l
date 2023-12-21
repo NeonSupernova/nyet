@@ -29,7 +29,7 @@ extern "C" int yywrap() { }
 "in\b"                  return TOKEN(TIN);
 "true\b"                return TOKEN(TTRUE);
 "false\b"               return TOKEN(TFALSE);
-"pass"                  return TOKEN(TPASS);
+"pass\b"                  return TOKEN(TPASS);
 
 
 
