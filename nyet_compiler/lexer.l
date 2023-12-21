@@ -11,7 +11,7 @@ extern "C" int yywrap() { }
 
 %%
 
-/* types */
+
 [a-zA-Z_][a-zA-Z0-9_]*  SAVE_TOKEN; return TID;
 [0-9]+.[0-9]*           SAVE_TOKEN; return TDOUBLE;
 [0-9]+                  SAVE_TOKEN; return TINTEGER;
@@ -20,7 +20,7 @@ extern "C" int yywrap() { }
 "string"                return TSTRING;
 "double"                return TDOUBLE;
 
-/* keywords */
+
 "let\b"                 return TOKEN(TLET);
 "if\b"                  return TOKEN(TIF);
 "fn\b"                  return TOKEN(TFN);
@@ -33,7 +33,7 @@ extern "C" int yywrap() { }
 
 
 
-/* operators and comparison */
+
 "=="                    return TOKEN(TCEQ);
 "!="                    return TOKEN(TCNE);
 "<"                     return TOKEN(TCLT);
@@ -41,7 +41,7 @@ extern "C" int yywrap() { }
 ">"                     return TOKEN(TCGT);
 ">="                    return TOKEN(TCGE);
 
-/* Syntax */
+
 "("                     return TOKEN(TLPAREN);
 ")"                     return TOKEN(TRPAREN);
 "{"                     return TOKEN(TLBRACE);
@@ -50,7 +50,7 @@ extern "C" int yywrap() { }
 "."                     return TOKEN(TDOT);
 ":"                     return TOKEN(TCOLON);
 
-/* builtins */
+
 "+"                     return TOKEN(TPLUS);
 "-"                     return TOKEN(TMINUS);
 "*"                     return TOKEN(TMUL);
@@ -58,7 +58,7 @@ extern "C" int yywrap() { }
 
 .                       printf("Unknown token!n"); yyterminate();
 
-/* comments */
+
 ;.*               { /* ignore comments */ }
 #\|[\s\S]*?\|#    { /* ignore block comments */ }
 
