@@ -1,3 +1,5 @@
 *.no
 
 !/tests/*.no
+*.pyc
+__pycache__
