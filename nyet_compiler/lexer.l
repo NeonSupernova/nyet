@@ -16,9 +16,9 @@ extern "C" int yywrap() { }
 [0-9]+.[0-9]*           SAVE_TOKEN; return TDOUBLE;
 [0-9]+                  SAVE_TOKEN; return TINTEGER;
 "([^\"]*)"              SAVE_TOKEN; { yylval.value = strdup(yytext + 1); yylval.value[strlen(yylval.value) - 1] = '\0'; return TSTRING; }
-"int"                   return TINTEGER;
-"string"                return TSTRING;
-"double"                return TDOUBLE;
+"int\b"                 return TINTEGER;
+"string\b"              return TSTRING;
+"double\b"              return TDOUBLE;
 
 
 "let\b"                 return TOKEN(TLET);
