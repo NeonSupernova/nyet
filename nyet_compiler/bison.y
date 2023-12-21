@@ -19,6 +19,7 @@
     std::vector<NExpression*> *exprvec;
     std::string *string;
     int token;
+    std::string *type
 }
 
 /* Define our terminal symbols (tokens). This should
@@ -43,6 +44,8 @@
 %type <block> program stmts block
 %type <stmt> stmt var_decl func_decl if_stmt
 %type <token> comparison
+%type <type> type
+
 
 /* Operator precedence for mathematical operators */
 %left TLPAREN TFN TLET TCOLON
