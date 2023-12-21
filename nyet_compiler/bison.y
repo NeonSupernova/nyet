@@ -70,7 +70,7 @@ block : TLPAREN stmts TRPAREN { $$ = $2; }
       | TLPAREN TRPAREN { $$ = new NBlock(); }
       ;
 ident : TID { $$ = new NIdentifier(*$1); delete $1; }
-var_decl : TLPAREN TLET ident TCOLON type func_decl_args_inner { $$ = new NVariableDeclaration(*$3, *$5, *$7); }
+var_decl : TLPAREN TLET ident TCOLON type func_decl_args_inner { $$ = new NVariableDeclaration(*$4, *$2, *$5); }
 
 type : TINTEGER | TDOUBLE | TSTRING
      ;
