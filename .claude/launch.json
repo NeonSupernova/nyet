@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nyet-compiler",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["app.py"],
+      "port": 0
+    },
+    {
+      "name": "nyet-build-full",
+      "runtimeExecutable": "make",
+      "runtimeArgs": ["all"],
+      "port": 0
+    }
+  ]
+}
