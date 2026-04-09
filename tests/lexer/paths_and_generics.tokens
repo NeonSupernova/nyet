@@ -1,0 +1,71 @@
+LPAREN           1:1     
+USE              1:2     
+IDENT            1:6      value='std/io'
+RPAREN           1:12    
+LPAREN           2:1     
+USE              2:2     
+IDENT            2:6      value='std/collections'
+LPAREN           2:22    
+IDENT            2:23     value='Array'
+IDENT            2:29     value='Map'
+IDENT            2:33     value='Set'
+RPAREN           2:36    
+RPAREN           2:37    
+LPAREN           3:1     
+IDENT            3:2      value='std/math/sqrt'
+FLOAT_LIT        3:16     value=2.0
+RPAREN           3:19    
+LPAREN           4:1     
+LET              4:2     
+IDENT            4:6      value='r'
+COLON            4:7     
+IDENT            4:8      value='Result'
+LBRACKET         4:14    
+I32              4:15    
+STRING_T         4:19    
+RBRACKET         4:25    
+LPAREN           4:27    
+IDENT            4:28     value='Ok'
+INT_LIT          4:31     value=1
+RPAREN           4:32    
+RPAREN           4:33    
+LPAREN           5:1     
+LET              5:2     
+IDENT            5:6      value='t'
+COLON            5:7     
+IDENT            5:8      value='Tree'
+LBRACKET         5:12    
+IDENT            5:13     value='Tree'
+LBRACKET         5:17    
+I32              5:18    
+RBRACKET         5:21    
+RBRACKET         5:22    
+LPAREN           5:24    
+IDENT            5:25     value='Leaf'
+INT_LIT          5:30     value=0
+RPAREN           5:31    
+RPAREN           5:32    
+LPAREN           6:1     
+FN               6:2     
+IDENT            6:5      value='swap'
+LBRACKET         6:9     
+IDENT            6:10     value='A'
+IDENT            6:12     value='B'
+RBRACKET         6:13    
+LPAREN           6:15    
+IDENT            6:16     value='p'
+COLON            6:17    
+HASH_LPAREN      6:18    
+IDENT            6:20     value='A'
+IDENT            6:22     value='B'
+RPAREN           6:23    
+RPAREN           6:24    
+ARROW            6:26    
+HASH_LPAREN      6:29    
+IDENT            6:31     value='B'
+IDENT            6:33     value='A'
+RPAREN           6:34    
+DOT_DOT          6:36    
+DOT              6:38    
+RPAREN           6:39    
+EOF              7:1     

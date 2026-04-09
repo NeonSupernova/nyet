@@ -1,0 +1,6 @@
+(let a "hello")
+(let b "with \"quotes\" inside")
+(let c "tab\there")
+(let d "newline\nhere")
+(let e "backslash\\")
+(let f "hex\x41")

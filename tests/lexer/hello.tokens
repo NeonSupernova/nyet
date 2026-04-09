@@ -1,0 +1,13 @@
+LPAREN           1:1     
+FN               1:2     
+IDENT            1:5      value='main'
+LPAREN           1:10    
+RPAREN           1:11    
+ARROW            1:13    
+UNIT_T           1:16    
+LPAREN           1:21    
+OUT              1:22    
+STRING_LIT       1:26     value='hello, world'
+RPAREN           1:40    
+RPAREN           1:41    
+EOF              2:1     

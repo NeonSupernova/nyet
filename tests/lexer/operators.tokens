@@ -1,0 +1,108 @@
+LPAREN           1:1     
+PLUS             1:2     
+INT_LIT          1:4      value=1
+INT_LIT          1:6      value=2
+RPAREN           1:7     
+LPAREN           2:1     
+MINUS            2:2     
+INT_LIT          2:4      value=1
+INT_LIT          2:6      value=2
+RPAREN           2:7     
+LPAREN           3:1     
+STAR             3:2     
+INT_LIT          3:4      value=1
+INT_LIT          3:6      value=2
+RPAREN           3:7     
+LPAREN           4:1     
+SLASH            4:2     
+INT_LIT          4:4      value=1
+INT_LIT          4:6      value=2
+RPAREN           4:7     
+LPAREN           5:1     
+PERCENT          5:2     
+INT_LIT          5:4      value=1
+INT_LIT          5:6      value=2
+RPAREN           5:7     
+LPAREN           6:1     
+EQ_EQ            6:2     
+INT_LIT          6:5      value=1
+INT_LIT          6:7      value=2
+RPAREN           6:8     
+LPAREN           7:1     
+BANG_EQ          7:2     
+INT_LIT          7:5      value=1
+INT_LIT          7:7      value=2
+RPAREN           7:8     
+LPAREN           8:1     
+LT               8:2     
+INT_LIT          8:4      value=1
+INT_LIT          8:6      value=2
+RPAREN           8:7     
+LPAREN           9:1     
+LT_EQ            9:2     
+INT_LIT          9:5      value=1
+INT_LIT          9:7      value=2
+RPAREN           9:8     
+LPAREN           10:1    
+GT               10:2    
+INT_LIT          10:4     value=1
+INT_LIT          10:6     value=2
+RPAREN           10:7    
+LPAREN           11:1    
+GT_EQ            11:2    
+INT_LIT          11:5     value=1
+INT_LIT          11:7     value=2
+RPAREN           11:8    
+LPAREN           12:1    
+AND_AND          12:2    
+BOOL_LIT         12:5     value=True
+BOOL_LIT         12:10    value=False
+RPAREN           12:15   
+LPAREN           13:1    
+OR_OR            13:2    
+BOOL_LIT         13:5     value=True
+BOOL_LIT         13:10    value=False
+RPAREN           13:15   
+LPAREN           14:1    
+BANG             14:2    
+BOOL_LIT         14:4     value=True
+RPAREN           14:8    
+LPAREN           15:1    
+AMP              15:2    
+INT_LIT          15:4     value=3
+INT_LIT          15:9     value=2
+RPAREN           15:13   
+LPAREN           16:1    
+BAR              16:2    
+INT_LIT          16:4     value=3
+INT_LIT          16:9     value=2
+RPAREN           16:13   
+LPAREN           17:1    
+CARET            17:2    
+INT_LIT          17:4     value=3
+INT_LIT          17:9     value=2
+RPAREN           17:13   
+LPAREN           18:1    
+TILDE            18:2    
+INT_LIT          18:4     value=2
+RPAREN           18:8    
+LPAREN           19:1    
+LT_LT            19:2    
+INT_LIT          19:5     value=1
+INT_LIT          19:7     value=3
+RPAREN           19:8    
+LPAREN           20:1    
+GT_GT            20:2    
+INT_LIT          20:5     value=8
+INT_LIT          20:7     value=3
+RPAREN           20:8    
+LPAREN           21:1    
+PIPE_ARROW       21:2    
+IDENT            21:5     value='x'
+IDENT            21:7     value='f'
+RPAREN           21:8    
+LPAREN           22:1    
+QUESTION         22:2    
+IDENT            22:4     value='r'
+RPAREN           22:5    
+EOF              23:1    

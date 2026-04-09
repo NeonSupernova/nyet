@@ -1,0 +1,6 @@
+LPAREN           5:1     
+LET              5:2     
+IDENT            5:6      value='x'
+INT_LIT          5:8      value=1
+RPAREN           5:9     
+EOF              6:1     

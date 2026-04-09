@@ -1,9 +1,8 @@
-from .parser import Parser
-from .lexer import Lexer
-from .codegen import CodeGen
+"""Nyet compiler package.
 
-__all__ = [
-    "Parser",
-    "Lexer",
-    "CodeGen",
-]
+The public API is deliberately small while the new pipeline is under
+construction. Import specific modules directly:
+
+    from pynyet.source import SourceFile
+    from pynyet.lexer.scanner import lex
+"""

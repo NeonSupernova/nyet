@@ -1,0 +1,87 @@
+LPAREN           1:1     
+FN               1:2     
+IDENT            1:5      value='peek'
+LPAREN           1:10    
+IDENT            1:11     value='x'
+COLON            1:12    
+AMP              1:13    
+I32              1:14    
+RPAREN           1:17    
+ARROW            1:19    
+I32              1:22    
+IDENT            1:26     value='x'
+RPAREN           1:27    
+LPAREN           2:1     
+FN               2:2     
+IDENT            2:5      value='mutate'
+LPAREN           2:12    
+IDENT            2:13     value='x'
+COLON            2:14    
+AMP_BANG         2:15    
+I32              2:17    
+RPAREN           2:20    
+ARROW            2:22    
+UNIT_T           2:25    
+LPAREN           2:30    
+EQ               2:31    
+IDENT            2:33     value='x'
+LPAREN           2:35    
+PLUS             2:36    
+IDENT            2:38     value='x'
+INT_LIT          2:40     value=1
+RPAREN           2:41    
+RPAREN           2:42    
+RPAREN           2:43    
+LPAREN           3:1     
+LET              3:2     
+IDENT            3:6      value='inc'
+LPAREN           3:10    
+FN_BANG          3:11    
+LPAREN           3:15    
+RPAREN           3:16    
+ARROW            3:18    
+UNIT_T           3:21    
+LPAREN           3:26    
+EQ               3:27    
+IDENT            3:29     value='counter'
+LPAREN           3:37    
+PLUS             3:38    
+IDENT            3:40     value='counter'
+INT_LIT          3:48     value=1
+RPAREN           3:49    
+RPAREN           3:50    
+RPAREN           3:51    
+RPAREN           3:52    
+LPAREN           4:1     
+LET              4:2     
+IDENT            4:6      value='take'
+LPAREN           4:11    
+MOVE             4:12    
+FN               4:17    
+LPAREN           4:20    
+RPAREN           4:21    
+ARROW            4:23    
+I32              4:26    
+IDENT            4:30     value='counter'
+RPAREN           4:37    
+RPAREN           4:38    
+LPAREN           5:1     
+FN               5:2     
+IDENT            5:5      value='run'
+LPAREN           5:9     
+IDENT            5:10     value='f'
+COLON            5:11    
+IDENT            5:12     value='Fn'
+LBRACKET         5:14    
+LPAREN           5:15    
+RPAREN           5:16    
+UNIT_T           5:18    
+RBRACKET         5:22    
+RPAREN           5:23    
+ARROW            5:25    
+UNIT_T           5:28    
+LPAREN           5:33    
+IDENT            5:34     value='f'
+RPAREN           5:35    
+RPAREN           5:36    
+EOF              6:1     

@@ -1,0 +1,31 @@
+LPAREN           1:1     
+LET              1:2     
+IDENT            1:6      value='a'
+STRING_LIT       1:8      value='hello'
+RPAREN           1:15    
+LPAREN           2:1     
+LET              2:2     
+IDENT            2:6      value='b'
+STRING_LIT       2:8      value='with "quotes" inside'
+RPAREN           2:32    
+LPAREN           3:1     
+LET              3:2     
+IDENT            3:6      value='c'
+STRING_LIT       3:8      value='tab\there'
+RPAREN           3:19    
+LPAREN           4:1     
+LET              4:2     
+IDENT            4:6      value='d'
+STRING_LIT       4:8      value='newline\nhere'
+RPAREN           4:23    
+LPAREN           5:1     
+LET              5:2     
+IDENT            5:6      value='e'
+STRING_LIT       5:8      value='backslash\\'
+RPAREN           5:21    
+LPAREN           6:1     
+LET              6:2     
+IDENT            6:6      value='f'
+STRING_LIT       6:8      value='hexA'
+RPAREN           6:17    
+EOF              7:1     

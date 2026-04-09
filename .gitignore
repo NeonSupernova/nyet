@@ -1,5 +1,7 @@
 *.no
 
-!/tests/*.no
+!/main.no
+!/tests/**/*.no
+!examples/*.no
 *.pyc
 __pycache__

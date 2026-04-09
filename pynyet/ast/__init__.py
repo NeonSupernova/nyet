@@ -1,8 +1,7 @@
-from .ast import Number, Sum, Sub, Print
+"""Nyet AST — node classes, visitor, and pretty printer.
 
-__all__ = [
-    "Number",
-    "Sum",
-    "Sub",
-    "Print"
-]
+Use:
+    from pynyet.ast.nodes import IntLit, FnDecl, ...
+    from pynyet.ast.visitor import Visitor
+    from pynyet.ast.pretty import pretty
+"""

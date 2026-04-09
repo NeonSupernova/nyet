@@ -1,0 +1,3 @@
+;; Canonical Nyet hello world.
+(fn main () -> unit
+  (out "hello, world"))

@@ -1,0 +1,5 @@
+; inline
+;; block
+;;; section
+;;;; file
+(let x 1) ; trailing inline

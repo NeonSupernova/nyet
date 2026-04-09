@@ -27,22 +27,71 @@
 ;;; Primitives
 ;; ============================================================
 
-;;; The eight primitive types. All are value types.
+;;; Primitive types. All are value types — they live on the stack
+;;; and are copied on assignment unless explicitly borrowed or moved.
 
 (let a:i32    42)            ; 32-bit signed integer
 (let b:i64    1000000000)    ; 64-bit signed integer
-(let c:f32    3.14)          ; 32-bit float
-(let d:f64    2.718281828)   ; 64-bit float
-(let e:bool   true)          ; true or false
-(let f:string "hello")       ; owned UTF-8 string
-(let g:unit   ())            ; the absence of a value
+(let c:u32    100)           ; 32-bit unsigned integer
+(let d:u64    100000)        ; 64-bit unsigned integer
+(let e:f32    3.14)          ; 32-bit float
+(let f:f64    2.718281828)   ; 64-bit float
+(let g:bool   true)          ; true or false
+(let h:string "hello")       ; owned UTF-8 string
+(let i:unit   ())            ; the absence of a value
+(let s:usize  0)             ; platform-width unsigned — the indexing type
+
+;;; Numeric literal suffixes pin the type at the call site.
+;;; Without a suffix, integers default to i32 and floats to f64.
+
+(let j  42i64)      ; explicit i64
+(let k  255u8)      ; explicit u8
+(let l  3.14f32)    ; explicit f32
+(let m  0xFF)       ; hex literal — i32
+(let n  0b1010)     ; binary literal — i32
 
 ;;; Type annotations can be omitted when the compiler can infer them.
 ;;; Be explicit at function boundaries. Be implicit inside expressions.
 
-(let x 42)          ; inferred i32
-(let y 3.14)        ; inferred f64
-(let z "hello")     ; inferred string
+(let x 42)       ; inferred i32
+(let y 3.14)     ; inferred f64
+(let z "hello")  ; inferred string
+
+;;; String formatting — fmt constructs a string from a template.
+;;; {} is a positional placeholder. Values are formatted with their Display impl.
+
+(let msg (fmt "hello {}, you are {} years old" name age))
+(let path_str (fmt "{}/{}" dir file))
+
+;;; Escape sequences in strings: \n \t \r \\ \"
+
+(let newline "line one\nline two")
+
+;;; Keyword literals — :name is an interned symbol value.
+;;; Keywords are their own type (Keyword), compared by identity, allocation-free.
+;;; Use them for tags, flags, enum-like options, and config keys.
+
+(let mode    :read)
+(let level   :digital)
+(let verb    :GET)
+(let status  :ok)
+
+
+;; ============================================================
+;;; Constants
+;; ============================================================
+
+;;; const declares a compile-time constant.
+;;; Must be a primitive type or a constant expression.
+;;; Constants are inlined at every use site — no runtime allocation.
+
+(const PI:f64          3.14159265358979)
+(const MAX_CONN:i32    1024)
+(const APP_NAME:string "nyet")
+
+;;; const is distinct from let:
+;;;   let   — runtime immutable binding, exists in memory
+;;;   const — compile-time value, no memory address
 
 
 ;; ============================================================
@@ -58,10 +107,11 @@
 
 ;;; = assigns to any valid l-value. The binding must be var.
 
-(= count 1)                 ; ok
-; (= name "Bob")            ; compile error — name is let
+(= count 1)           ; ok
+; (= name "Bob")      ; compile error — name is let
 
 ;;; = works uniformly on variables, indexed positions, and nested fields.
+;;; This is the only assignment operator — no special syntax for any l-value.
 
 (var scores:Array[i32] [10 20 30])
 (= (scores 0) 99)                       ; indexed assignment
@@ -76,19 +126,24 @@
 ;; ============================================================
 
 ;;; Every value has exactly one owner.
-;;; When the owner goes out of scope the value is dropped.
+;;; When the owner goes out of scope the value is dropped — no GC, no manual free.
 ;;; Values can be borrowed without transferring ownership.
 ;;;
 ;;; In type position:
-;;;   T    — owned, value is moved into the function
-;;;   &T   — immutable borrow, caller retains ownership
+;;;   T    — owned, value is moved into the function (caller loses it)
+;;;   &T   — immutable borrow, caller retains ownership, no mutation
 ;;;   &!T  — mutable borrow, caller retains ownership, function may mutate
+;;;
+;;; The compiler tracks these at compile time. No runtime cost.
 
-(fn read_val  (x:&i32)  -> i32  x)          ; borrows x, does not consume it
-(fn consume   (x:i32)   -> i32  x)          ; takes ownership of x
+(fn peek   (x:&i32)   -> i32  x)    ; borrows, does not consume
+(fn mutate (x:&!i32)  -> unit  (= x (+ x 1)))  ; mutably borrows
+(fn consume (x:i32)   -> i32  x)    ; takes ownership — x is gone in caller
 
-;;; After consume(v), v is no longer valid in the caller.
-;;; The compiler enforces this at compile time — no runtime cost.
+;;; Ownership prevents:
+;;;   - use after free  (you moved it, you can't use it)
+;;;   - data races      (only one mutable borrow at a time)
+;;;   - dangling refs   (borrows cannot outlive the owner)
 
 
 ;; ============================================================
@@ -97,35 +152,29 @@
 
 ;;; fn declares a named function.
 ;;; Parameters are listed with name:type. Return type follows ->.
-;;; The function body is a single expression whose value is returned.
+;;; The body is a single expression whose value is returned.
 
 (fn add (x:i32 y:i32) -> i32
   (+ x y))
 
-(fn square (x:f64) -> f64
-  (* x x))
-
 ;;; For multiple expressions in a body, use do.
-;;; do evaluates each expression in order and returns the last.
+;;; do evaluates each in order and returns the last.
 
 (fn greet (name:string) -> string
   (do
-    (let msg:string (+ "hello, " name))
+    (let msg (fmt "hello, {}" name))
     msg))
 
 ;;; Anonymous functions — fn with no name is a value.
-;;; Bind it, pass it, return it.
+;;; The type of a function value is written (fn ArgTypes -> Ret).
 
-(let double (fn (x:i32) -> i32 (* x 2)))
+(let double  (fn (x:i32) -> i32 (* x 2)))
+(let is_even (fn (x:i32) -> bool (== (% x 2) 0)))
 
-;;; Functions are first-class. The type of a function is written (fn Args -> Ret).
+;;; Functions are first-class — pass, return, store.
 
-(fn apply (f:(fn i32 -> i32) x:i32) -> i32
-  (f x))
-
+(fn apply (f:(fn i32 -> i32) x:i32) -> i32  (f x))
 (apply double 5)     ; 10
-
-;;; Return a function from a function.
 
 (fn make_adder (n:i32) -> (fn i32 -> i32)
   (fn (x:i32) -> i32 (+ x n)))
@@ -133,10 +182,33 @@
 (let add5 (make_adder 5))
 (add5 3)    ; 8
 
-;;; Recursive functions are declared the same way — fn is in scope in its own body.
+;;; Recursive functions — fn is in scope in its own body.
 
 (fn factorial (n:i32) -> i32
   (if (<= n 1) 1 (* n (factorial (- n 1)))))
+
+;; Closures
+;;; A closure is an anonymous function that captures variables from its environment.
+;;; The default capture mode is immutable borrow — the closure reads but does not own.
+;;;
+;;;   (fn ...)       — captures by immutable borrow (&T)
+;;;   (fn! ...)      — captures by mutable borrow (&!T), can mutate captured vars
+;;;   (move fn ...)  — captures by move, takes ownership of captured values
+;;;
+;;; These map to the Fn / FnMut / FnOnce traits respectively.
+;;; The compiler infers which you need based on how captures are used.
+
+(var counter:i32 0)
+
+(let read_count  (fn () -> i32 counter))              ; borrows counter
+(let inc_count   (fn! () -> unit (= counter (+ counter 1))))  ; mutably borrows
+(let take_count  (move fn () -> i32 counter))         ; moves counter in, counter gone after
+
+;;; Closures in function signatures use the trait names as types.
+;;; Fn, FnMut, FnOnce are generic over argument and return types.
+
+(fn run_twice    (f:Fn[() unit])    -> unit  (do (f) (f)))
+(fn run_once     (f:FnOnce[() i32]) -> i32   (f))
 
 
 ;; ============================================================
@@ -144,24 +216,24 @@
 ;; ============================================================
 
 ;;; Every operator is a function dispatched on its argument types.
-;;; (+ a b) calls the + function. On i32 it adds integers.
-;;; On string it concatenates. On a user type it calls your implementation.
-;;; Operators live in the same namespace as functions. There is no special case.
+;;; There is no special operator syntax — operators are in the same
+;;; namespace as functions and follow identical dispatch rules.
+;;; You can implement any operator for any type.
 
-;; Arithmetic — defined on i32 i64 f32 f64
-(+ 1 2)        ; 3
-(- 10 3)       ; 7
-(* 4 5)        ; 20
-(/ 10 2)       ; 5  — numeric division on numbers
+;; Arithmetic — defined on i32 i64 u32 u64 f32 f64
+(+ 1 2)       ; 3
+(- 10 3)      ; 7
+(* 4 5)       ; 20
+(/ 10 2)      ; 5
+(% 10 3)      ; 1  — modulo
 
-;; String concatenation — + on strings
+;; String — + concatenates, fmt interpolates
 (+ "hello" ", " "world")    ; "hello, world"
 
-;; Path construction — / on strings builds a filesystem or IO path
-(/ "usr" "local" "bin")          ; /usr/local/bin
-(/ "home" "ada" ".config")       ; /home/ada/.config
+;; Path — / on strings builds a filesystem or IO path
+(/ "usr" "local" "bin")     ; /usr/local/bin
 
-;; Comparison — return bool
+;; Comparison — return bool, defined on all primitives and any type implementing Ord
 (== 1 1)    ; true
 (!= 1 2)    ; true
 (<  1 2)    ; true
@@ -174,73 +246,115 @@
 (|| true false)    ; true
 (!  true)          ; false
 
-;; Field access — . is variadic, walks a path through nested fields
-(. person name)                  ; person.name
-(. person address city)          ; person.address.city
-(. company ceo address zip)      ; deep path, no nesting required
+;; Field access — . is variadic, walks a path of named fields
+(. person name)              ; one level
+(. person address city)      ; deep path — no nesting, no chaining
+(. company ceo address zip)
 
-;; Pipe — |> threads a value through a chain of functions
-;; (|> v f g h) is equivalent to (h (g (f v)))
+;; Pipe — threads a value through a chain of single-argument calls
+;; (|> v f g h) == (h (g (f v)))
 (|> [1 2 3 4 5]
   (map    (fn (x:i32) -> i32  (* x 2)))
   (filter (fn (x:i32) -> bool (> x 4)))
-  (fold   + 0))                  ; 24
+  (fold   + 0))              ; 24
 
-;; Error propagation — ? unwraps Ok or returns Err immediately
-;; The enclosing function must return a compatible Result type
+;; Error propagation — ? unwraps Ok or immediately returns the Err
 (let val:f64 (? (divide 10.0 2.0)))
+
+;; Bit operations — defined on integer types
+(& 0b1100 0b1010)    ; 0b1000 — bitwise AND
+(| 0b1100 0b1010)    ; 0b1110 — bitwise OR
+(^ 0b1100 0b1010)    ; 0b0110 — bitwise XOR
+(~ 0b1010)           ; bitwise NOT
+(<< 1 3)             ; 8  — left shift
+(>> 8 3)             ; 1  — right shift
 
 
 ;; ============================================================
 ;;; Control Flow
 ;; ============================================================
 
-;;; All control flow is an expression — it returns a value.
-;;; Both branches of if must return the same type.
+;;; All control flow is an expression — it has a type and returns a value.
 
+;; if — both branches must return the same type
 (if (== x 0) "zero" "nonzero")
-
-;;; Bind the result of if.
 
 (let label:string
   (if (> score 90) "pass" "fail"))
 
-;;; pass is the unit no-op — use it when a branch has no meaningful value.
-
+;; pass — the unit no-op, for branches with no meaningful value
 (if loud (out "loud!") pass)
 
-;;; match — pattern matches on sum type variants, literals, and wildcards.
-;;; All arms must return the same type.
-
+;; match — exhaustive pattern matching, returns the matched arm's value
 (match shape
-  ((Circle r)   (* 3.14159 r r))
-  ((Rect w h)   (* w h))
-  (Point        0.0))
+  ((Circle r)  (* 3.14159 r r))
+  ((Rect w h)  (* w h))
+  (Point       0.0))
 
-;;; Wildcard arm with _
-
+;; Wildcard
 (match x
   (0  "zero")
   (1  "one")
   (_  "other"))
 
-;;; match on Result is the primary error-handling pattern.
+;; Nested patterns — destructure as deep as needed in a single arm
+(match result
+  ((Ok (Some v))  (fmt "got {}" v))
+  ((Ok None)      "empty")
+  ((Err e)        (fmt "error: {}" e)))
 
-(match (divide 10.0 0.0)
-  ((Ok  v) (out v))
-  ((Err e) (err "division failed")))
+(match tree
+  ((Node (Leaf a) (Leaf b))  (+ a b))   ; only matches two-leaf nodes
+  ((Leaf v)                  v)
+  (_                         0))
 
-;;; Loops — use recursion or collection functions for iteration.
-;;; loop runs a body until an explicit break. break is an expression
-;;; that carries a return value out of the loop.
+;; Guard clauses — when adds a boolean condition to an arm
+;; The arm only matches if the pattern matches AND the guard is true
+(match n
+  ((Some v) when (> v 0)   "positive")
+  ((Some v) when (< v 0)   "negative")
+  ((Some _)                 "zero")
+  (None                     "absent"))
 
-(var i:i32 0)
-(loop
-  (if (>= i 5)
-    (break i)
-    (do
-      (out i)
-      (= i (+ i 1)))))
+;; loop — runs until break. break carries the return value.
+(let result:i32
+  (loop
+    (let input (in))
+    (match (parse input)
+      ((Ok n)  (break n))
+      ((Err _) (do (out "try again") pass)))))
+
+;; do — sequences expressions, returns the last
+(do
+  (var count:i32 0)
+  (= count (+ count 1))
+  count)
+
+
+;; ============================================================
+;;; Visibility
+;; ============================================================
+
+;;; Declarations are private to their module by default.
+;;; pub makes a declaration visible to importing modules.
+;;; This applies to functions, structs, types, traits, and constants.
+
+(pub struct Config
+  host:string
+  port:i32)
+
+(pub fn connect (cfg:&Config) -> Result[() IOError]
+  ...)
+
+(pub const DEFAULT_PORT:i32 8080)
+
+;;; Struct fields are private by default even if the struct is pub.
+;;; pub on a field makes it accessible outside the module.
+
+(pub struct Server
+  (pub host:string)     ; readable outside the module
+  (pub port:i32)        ; readable outside the module
+  conn_count:i32)       ; private — internal state
 
 
 ;; ============================================================
@@ -263,51 +377,53 @@
   age:i32
   address:Address)
 
-;;; Construct with named arguments.
+;;; Construct with named arguments — order does not matter.
 
-(let origin:Point2  (Point2 x:0.0 y:0.0))
-(let home:Address   (Address street:"1 Loop Rd" city:"London" zip:"EC1"))
-(let me:Person      (Person name:"Ada" age:36 address:home))
+(let origin (Point2 x:0.0 y:0.0))
+(let home   (Address street:"1 Loop Rd" city:"London" zip:"EC1"))
+(let me     (Person name:"Ada" age:36 address:home))
 
 ;;; Field access with .
 
-(. me name)               ; "Ada"
-(. me address city)       ; "London"
+(. me name)           ; "Ada"
+(. me address city)   ; "London"
+
+;;; Struct update — construct from an existing value with some fields changed.
+;;; .. spreads the remaining fields from the source.
+
+(let older (Person ..me age:37))
 
 
 ;; ============================================================
-;;; Sum Types
+;;; Tuples
 ;; ============================================================
 
-;;; type declares a tagged union. Each variant may carry fields.
-;;; Unit variants carry no data.
+;;; Tuples are anonymous, fixed-size, heterogeneous product types.
+;;; Useful for returning multiple values without naming a struct.
+;;; Written with #() for both the type and the value.
 
-(type Direction (North) (South) (East) (West))
+(let pair:#(i32 string)  #(42 "hello"))
+(let triple:#(f64 f64 f64)  #(1.0 2.0 3.0))
 
-(type Shape
-  (Circle  r:f64)
-  (Rect    w:f64 h:f64)
-  (Point))
+;;; Tuples are callable — (tup index) returns the element.
+;;; Same call semantics as arrays and any other callable value.
 
-(type Tree[T]
-  (Leaf  value:T)
-  (Node  left:Tree[T] right:Tree[T]))
+(pair 0)     ; 42
+(pair 1)     ; "hello"
+(triple 2)   ; 3.0
 
-;;; Construct a variant by name.
+;;; Destructure a tuple in let.
 
-(let s:Shape   (Circle r:5.0))
-(let d:Direction North)
-(let t:Tree[i32] (Node
-                   left:(Leaf value:1)
-                   right:(Leaf value:2)))
+(let #(x y) (Point2 x:1.0 y:2.0))    ; x = 1.0, y = 2.0
+(let #(a b c) triple)
 
-;;; Destructure variants in match.
+;;; Functions that return multiple values use tuples.
 
-(fn area (s:Shape) -> f64
-  (match s
-    ((Circle r)   (* 3.14159 r r))
-    ((Rect w h)   (* w h))
-    (Point        0.0)))
+(fn min_max (arr:&Array[i32]) -> #(i32 i32)
+  #((fold min (arr 0) arr)
+    (fold max (arr 0) arr)))
+
+(let #(lo hi) (min_max nums))
 
 
 ;; ============================================================
@@ -315,7 +431,7 @@
 ;; ============================================================
 
 ;;; Generic types use square brackets for type parameters.
-;;; Type parameters are uppercase by convention.
+;;; Type parameters are uppercase single letters or PascalCase by convention.
 
 (type Option[T]
   (Some value:T)
@@ -325,18 +441,124 @@
   (Ok  value:T)
   (Err error:E))
 
-(type Pair[A B]
-  (first:A second:B))
+(type Tree[T]
+  (Leaf value:T)
+  (Node left:Tree[T] right:Tree[T]))
 
-;;; Generic functions declare type parameters in brackets after fn name.
+;;; Generic functions declare type parameters after the function name.
 
-(fn identity[T] (x:T) -> T  x)
-(fn first[A B]  (p:Pair[A B]) -> A  (. p first))
+(fn identity[T]  (x:T) -> T   x)
+(fn swap[A B]    (p:#(A B)) -> #(B A)   #((p 1) (p 0)))
+
+;;; Generic constraints — T: TraitName restricts which types are accepted.
+;;; Without a constraint, T accepts any type but you can do nothing with it.
+;;; With a constraint, you can call the trait's functions on values of type T.
+
+(fn sum[T: Add Zero] (arr:Array[T]) -> T
+  (fold + (T/zero) arr))
+
+(fn largest[T: Ord] (arr:&Array[T]) -> &T
+  (fold (fn (a:&T b:&T) -> &T (if (> a b) a b)) (arr 0) arr))
+
+;;; Multiple constraints — space-separated inside the brackets.
+
+(fn show_sum[T: Add Zero Display] (arr:Array[T]) -> string
+  (fmt "sum = {}" (sum arr)))
 
 ;;; Built-in generic containers.
-;;;   Array[T]    — ordered, indexable, growable
-;;;   Map[K V]    — key-value store
-;;;   Set[T]      — unique unordered values
+;;;   Array[T]    — ordered, growable, indexable
+;;;   Map[K V]    — hash map, K must implement Hash and Eq
+;;;   Set[T]      — unique values, T must implement Hash and Eq
+
+
+;; ============================================================
+;;; Traits
+;; ============================================================
+
+;;; A trait declares a named set of functions that a type can implement.
+;;; Traits are the basis of generic constraints and operator dispatch.
+;;; Every operator (+, -, ==, etc.) is backed by a trait in the standard library.
+;;;
+;;; Inside a trait body, Self refers to the implementing type — whatever type
+;;; this trait is eventually implemented for. Self is resolved at impl time,
+;;; not at trait definition time. Use &Self for a borrow of the implementer.
+
+(trait Display
+  ;; Convert self to a human-readable string.
+  (fn display (self:&Self) -> string))
+
+(trait Add
+  ;; Add two values of the same type.
+  (fn + (self:Self other:Self) -> Self))
+
+(trait Eq
+  ;; Structural equality.
+  (fn == (self:&Self other:&Self) -> bool)
+  (fn != (self:&Self other:&Self) -> bool))
+
+(trait Ord: Eq
+  ;; Total ordering. Ord requires Eq.
+  (fn <  (self:&Self other:&Self) -> bool)
+  (fn <= (self:&Self other:&Self) -> bool)
+  (fn >  (self:&Self other:&Self) -> bool)
+  (fn >= (self:&Self other:&Self) -> bool))
+
+(trait Zero
+  ;; The additive identity for a type.
+  (fn zero () -> Self))
+
+(trait Index[I O]
+  ;; Makes a type callable with an index: (myval i)
+  (fn () (self:&Self idx:I) -> &O))
+
+(trait IndexMut[I O]: Index[I O]
+  ;; Mutable indexing for (= (myval i) v)
+  (fn () (self:&!Self idx:I) -> &!O))
+
+;;; Array[T] implements Index[i32 T] and IndexMut[i32 T].
+;;; This is why (arr 0) and (= (arr 0) v) both work.
+;;; Any type that implements Index becomes callable with an index.
+
+;;; Implementing a trait for a type — (impl TraitName TypeName ...)
+
+(impl Display Point2
+  (fn display (self:&Point2) -> string
+    (fmt "({}, {})" (. self x) (. self y))))
+
+(impl Add Point2
+  (fn + (self:Point2 other:Point2) -> Point2
+    (Point2 x:(+ (. self x) (. other x))
+            y:(+ (. self y) (. other y)))))
+
+(impl Eq Point2
+  (fn == (self:&Point2 other:&Point2) -> bool
+    (&& (== (. self x) (. other x))
+        (== (. self y) (. other y))))
+  (fn != (self:&Point2 other:&Point2) -> bool
+    (! (== self other))))
+
+;;; Default method implementations — a trait can provide a default body.
+;;; Types that implement the trait can override it or use the default.
+
+(trait Greet
+  (fn greeting (self:&Self) -> string)   ; required — no default
+  (fn greet (self:&Self) -> unit         ; default implementation
+    (out (greeting self))))
+
+;;; Traits as bounds in function signatures.
+
+(fn print_all[T: Display] (items:&Array[T]) -> unit
+  (map (fn (item:&T) -> unit (out (display item))) items))
+
+;;; Trait objects — when you need a value whose concrete type is unknown at compile time.
+;;; dyn TraitName is a fat pointer (data + vtable).
+
+(fn log_value (val:&dyn Display) -> unit
+  (out (display val)))
+
+(log_value &42)
+(log_value &"hello")
+(log_value &origin)
 
 
 ;; ============================================================
@@ -344,8 +566,7 @@
 ;; ============================================================
 
 ;;; Fallible functions return Result[T E].
-;;; This is the required convention for any function that can fail.
-;;; Callers must handle both arms — the compiler will not let an Err go unmatched.
+;;; Callers must handle both arms. The compiler will not let an Err be silently discarded.
 
 (type MathError
   (DivisionByZero)
@@ -356,32 +577,41 @@
     (Err DivisionByZero)
     (Ok (/ a b))))
 
-;;; ? propagates Err upward. If the value is Err, the enclosing function
-;;; immediately returns that Err. The enclosing function must return
-;;; a compatible Result type. If the value is Ok, ? unwraps it.
+;;; ? propagates Err upward. Equivalent to:
+;;;   (match expr ((Ok v) v) ((Err e) (return (Err e))))
+;;; The enclosing function must return a compatible Result.
 
 (fn calc (x:f64) -> Result[f64 MathError]
-  (let half:f64 (? (divide x 2.0)))
+  (let half (? (divide x 2.0)))
   (Ok (* half half)))
 
-;;; Functions with no meaningful success value return Result[() E].
-;;; (Ok ()) is the unit success.
+;;; (Ok ()) for functions with no meaningful success value.
 
-(type IOError
-  (NotFound)
-  (PermissionDenied)
-  (Disconnected))
+(type IOError (NotFound) (PermissionDenied) (Disconnected))
 
 (fn log (msg:string) -> Result[() IOError]
   (out msg)
   (Ok ()))
 
-;;; Chain fallible calls with ? and |>.
+;;; match is the primary way to handle errors explicitly.
 
-(fn pipeline (x:f64) -> Result[f64 MathError]
-  (|> (Ok x)
-    (? (divide 100.0))
-    (? (divide 2.0))))
+(match (divide 10.0 0.0)
+  ((Ok  v) (out (fmt "result: {}" v)))
+  ((Err DivisionByZero) (err "divided by zero"))
+  ((Err Overflow)       (err "overflow")))
+
+;;; Error types can be composed. Define a module-level error that wraps others.
+
+(type AppError
+  (Math  inner:MathError)
+  (IO    inner:IOError))
+
+;;; Convert between error types with map_err.
+
+(fn run () -> Result[() AppError]
+  (let v (? (map_err (divide 10.0 2.0) (fn (e) (Math inner:e)))))
+  (? (map_err (log (fmt "result: {}" v)) (fn (e) (IO inner:e))))
+  (Ok ()))
 
 
 ;; ============================================================
@@ -394,90 +624,165 @@
 (let words:Array[string]    ["one" "two" "three"])
 (let grid:Array[Array[i32]] [[1 2 3] [4 5 6]])
 
-;;; Arrays are callable — (arr index) returns the element at that index.
-;;; This is not a special case. Arrays implement call semantics like any value.
+;;; Arrays are callable — (arr index) returns the element.
+;;; This is the Index trait — not special syntax.
 
-(nums 0)       ; 1
-(nums 4)       ; 5
-(grid 1)       ; [4 5 6]
-((grid 1) 2)   ; 6 — nested index
+(nums 0)        ; 1
+(nums 4)        ; 5
+(grid 1)        ; [4 5 6]
+((grid 1) 2)    ; 6
 
-;;; Mutable indexed assignment.
+;;; Mutable indexed assignment via the IndexMut trait.
 
 (var scores:Array[i32] [10 20 30])
-(= (scores 1) 99)     ; scores is now [10 99 30]
+(= (scores 1) 99)
 
-;;; Higher-order functions on collections.
+;;; Map — key-value store. K must implement Hash and Eq.
 
-(map    (fn (x:i32) -> i32  (* x 2))            nums)   ; [2 4 6 8 10]
-(filter (fn (x:i32) -> bool (> x 3))            nums)   ; [4 5]
-(fold   (fn (acc:i32 x:i32) -> i32 (+ acc x)) 0 nums)   ; 15
-(any    (fn (x:i32) -> bool (== x 3))           nums)   ; true
-(all    (fn (x:i32) -> bool (> x 0))            nums)   ; true
+(let env:Map[string string]
+  {"HOME" "/home/ada" "PATH" "/usr/bin"})
+
+(env "HOME")                   ; "/home/ada" — Map is callable too
+(= (env "TERM") "xterm-256")  ; insert or update
+
+;;; Higher-order functions.
+
+(map    (fn (x:i32)  -> i32  (* x 2))              nums)   ; [2 4 6 8 10]
+(filter (fn (x:i32)  -> bool (> x 3))              nums)   ; [4 5]
+(fold   (fn (a:i32 x:i32) -> i32 (+ a x))        0 nums)   ; 15
+(any    (fn (x:i32)  -> bool (== x 3))             nums)   ; true
+(all    (fn (x:i32)  -> bool (> x 0))              nums)   ; true
+(zip    nums words)                                         ; [#(1 "one") #(2 "two") ...]
+(flat_map (fn (x:i32) -> Array[i32] [x (* x x)]) nums)     ; [1 1 2 4 3 9 ...]
 
 ;;; Chained with pipe.
 
 (|> nums
   (filter (fn (x) (> x 2)))
   (map    (fn (x) (* x x)))
-  (fold   + 0))              ; 50
+  (fold   + 0))               ; 50
 
 
 ;; ============================================================
-;;; Operator Overloading
+;;; Operator Overloading via impl
 ;; ============================================================
 
-;;; impl binds function implementations to a type.
-;;; Define any function name — including operator symbols — inside impl.
-;;; When that operator is called with your type as an argument, your
-;;; implementation is dispatched. This is how + works on strings.
-;;; It is how you make your types feel native to the language.
+;;; impl with just a type name adds inherent methods — functions specific to that type.
+;;; impl with a trait name binds that trait's contract to the type.
+;;; Operators are trait functions. Implementing Add gives you +.
 
-(struct Vec2
-  x:f64
-  y:f64)
+(struct Vec2  x:f64  y:f64)
 
 (impl Vec2
-  ;; addition
+  ;; Inherent methods — not part of any trait
+  (fn len (self:&Vec2) -> f64
+    (sqrt (+ (* (. self x) (. self x))
+             (* (. self y) (. self y)))))
+
+  (fn normalize (self:Vec2) -> Vec2
+    (let l (len &self))
+    (Vec2 x:(/ (. self x) l)
+          y:(/ (. self y) l))))
+
+(impl Add Vec2
   (fn + (self:Vec2 other:Vec2) -> Vec2
     (Vec2 x:(+ (. self x) (. other x))
-          y:(+ (. self y) (. other y))))
+          y:(+ (. self y) (. other y)))))
 
-  ;; scalar multiplication
-  (fn * (self:Vec2 scalar:f64) -> Vec2
-    (Vec2 x:(* (. self x) scalar)
-          y:(* (. self y) scalar)))
-
-  ;; equality
-  (fn == (self:Vec2 other:Vec2) -> bool
+(impl Eq Vec2
+  (fn == (self:&Vec2 other:&Vec2) -> bool
     (&& (== (. self x) (. other x))
         (== (. self y) (. other y))))
+  (fn != (self:&Vec2 other:&Vec2) -> bool
+    (! (== self other))))
 
-  ;; length as a method — not an operator, just a function on Vec2
-  (fn len (self:&Vec2) -> f64
-    (let sum (+ (* (. self x) (. self x))
-                (* (. self y) (. self y))))
-    (sqrt sum)))
+(impl Display Vec2
+  (fn display (self:&Vec2) -> string
+    (fmt "({}, {})" (. self x) (. self y))))
 
-(let a:Vec2 (Vec2 x:1.0 y:2.0))
-(let b:Vec2 (Vec2 x:3.0 y:4.0))
+(let a (Vec2 x:1.0 y:2.0))
+(let b (Vec2 x:3.0 y:4.0))
+(+ a b)           ; Vec2 x:4.0 y:6.0
+(len &a)          ; 2.236...
+(display &a)      ; "(1, 2)"
 
-(+ a b)       ; Vec2 x:4.0 y:6.0
-(* a 2.0)     ; Vec2 x:2.0 y:4.0
-(== a b)      ; false
-(len a)       ; 2.236...
+;;; Implement / for path-join semantics on any type.
 
-;;; Implement / on a type to give it path/join semantics.
-
-(struct URL base:string)
+(pub struct URL  base:string)
 
 (impl URL
   (fn / (self:URL segment:string) -> URL
     (URL base:(+ (. self base) "/" segment))))
 
-(let api:URL (URL base:"https://api.example.com"))
-(/ api "users")         ; URL base:"https://api.example.com/users"
+(let api (URL base:"https://api.example.com"))
 (/ api "users" "42")    ; URL base:"https://api.example.com/users/42"
+
+
+;; ============================================================
+;;; Type Aliases and Newtypes
+;; ============================================================
+
+;;; alias creates a new name for an existing type.
+;;; The alias and the original are completely interchangeable.
+;;; Use for readability — name intent, not structure.
+
+(alias Seconds  f64)
+(alias Meters   f64)
+(alias Callback (fn i32 -> bool))
+
+(fn wait (duration:Seconds) -> unit ...)
+(wait 3.0)     ; 3.0 is a valid Seconds — they are the same type
+
+;;; newtype wraps a type in a distinct named type.
+;;; The wrapper and the inner are NOT interchangeable — the compiler treats them as different.
+;;; Use for type safety — prevent Seconds from being passed where Meters is expected.
+
+(newtype UserId    i32)
+(newtype SessionId string)
+(newtype Meters    f64)
+(newtype Seconds   f64)
+
+(fn move_to (dist:Meters) -> unit ...)
+; (move_to 3.0)          ; compile error — 3.0 is f64, not Meters
+(move_to (Meters 3.0))   ; ok — explicit wrap
+
+;;; Unwrap a newtype with index 0 — newtypes implement Index[i32 InnerType].
+
+(let m (Meters 3.0))
+(m 0)    ; 3.0 — the inner f64
+
+
+;; ============================================================
+;;; Modules and Imports
+;; ============================================================
+
+;;; module declares the name of the current file's module.
+;;; By convention this matches the file path.
+
+(module nyet/geometry)
+
+;;; use imports a module. The path uses / as the separator.
+;;; use makes the module's pub declarations available in scope.
+
+(use std/io)
+(use std/math)
+(use nyet/geometry)
+
+;;; Selective import — only bring specific names into scope.
+
+(use std/collections (Array Map Set))
+(use nyet/errors     (AppError IOError))
+
+;;; Qualified access — use a declaration without importing its name.
+;;; This avoids name collisions and makes the origin explicit.
+
+(std/math/sqrt 2.0)
+(nyet/geometry/area my_shape)
+
+;;; Re-export — make an imported name part of this module's public API.
+
+(pub use nyet/geometry/Shape)
+(pub use nyet/geometry/area)
 
 
 ;; ============================================================
@@ -489,47 +794,93 @@
 ;;; Channels are opened, passed to functions, composed, and closed like any value.
 ;;;
 ;;; Built-in channels:
-;;;   out  — standard output (stdout)
-;;;   in   — standard input  (stdin)
-;;;   err  — standard error  (stderr)
+;;;   out  — stdout
+;;;   in   — stdin
+;;;   err  — stderr
 
-;;; out with one argument writes to stdout.
-(out "hello, world\n")
+(out "hello, world\n")              ; write to stdout
+(out err "something went wrong\n")  ; write to an explicit channel
+(let line:string (in))              ; read a line from stdin
+(let data:string (in myfile))       ; read from an explicit channel
 
-;;; out with two arguments writes to an explicit channel.
-(out err "something went wrong\n")
+;;; io/def creates a named channel. The second argument is a channel descriptor.
 
-;;; in with no arguments reads a line from stdin.
-(let line:string (in))
+(io/def mylog   (io/file (/ "var" "log" "app.log") :append))
+(io/def port13  (io/pin 13 :digital :output))
+(io/def button  (io/pin 7  :digital :input))
+(io/def server  (io/tcp "0.0.0.0" 8080))
+(io/def conf    (io/file (/ "etc" "app" "config.toml") :read))
 
-;;; in from an explicit channel.
-(let data:string (in myfile))
-
-;;; io/def creates a named channel. Channels are values.
-
-(io/def mylog    (io/file (/ "var" "log" "app.log") :append))
-(io/def port13   (io/pin 13 :digital :output))
-(io/def button   (io/pin 7  :digital :input))
-(io/def server   (io/tcp "0.0.0.0" 8080))
-
-;;; Path construction with / composes cleanly with IO.
-
-(io/def conf (io/file (/ "etc" "app" "config.toml") :read))
-
-;;; Channels are passed to functions as IOChannel values.
+;;; Channels are values — pass them to functions, store them, compose them.
 
 (fn log_to (ch:IOChannel msg:string) -> Result[() IOError]
-  (out ch (+ msg "\n"))
+  (out ch (fmt "{}\n" msg))
   (Ok ()))
 
 (? (log_to mylog "server started"))
 (? (log_to err   "warning: high memory"))
 
-;;; Write to a hardware pin.
+;;; Hardware IO — same syntax, different channel type.
 
 (out port13 HIGH)
 (out port13 LOW)
 (let state:bool (in button))
+
+;;; Channels implement IOChannel, which is a trait.
+;;; You can write your own channel type by implementing IOChannel.
+
+(trait IOChannel
+  (fn write (self:&!Self data:&[u8]) -> Result[usize IOError])
+  (fn read  (self:&!Self buf:&![u8]) -> Result[usize IOError])
+  (fn close (self:Self)              -> Result[() IOError]))
+
+
+;; ============================================================
+;;; Async and Concurrency
+;; ============================================================
+
+;;; async fn returns a Future[T E] — a value representing a computation
+;;; that will produce T or E when awaited.
+;;; The ownership model makes async safe — mutable state cannot be shared
+;;; across tasks without explicit synchronization.
+
+(async fn fetch (url:string) -> Result[string IOError]
+  (let resp (await (http/get url)))
+  (Ok (. resp body)))
+
+;;; await suspends the current async fn until the future completes.
+;;; await is only valid inside async fn.
+
+(async fn load_config () -> Result[Config IOError]
+  (let raw (await (io/read conf)))
+  (Ok (? (Config/parse raw))))
+
+;;; spawn runs an async fn as an independent task.
+;;; spawn returns a Handle[T E] that you can await later.
+
+(let handle (spawn (fetch "https://api.example.com/data")))
+(let result (await handle))
+
+;;; Shared mutable state across tasks requires Shared[T].
+;;; Shared[T] is an atomically reference-counted, mutex-protected wrapper.
+;;; The compiler prevents sharing &!T across task boundaries without it.
+
+(let counter:Shared[i32] (Shared 0))
+
+(spawn (do
+  (let lock (Shared/lock &!counter))
+  (= lock (+ lock 1))))
+
+;;; Channels for message passing between tasks — the preferred model.
+;;; mpsc: multiple producer, single consumer.
+
+(let #(tx rx) (mpsc/channel[string]))
+
+(spawn (do
+  (tx/send tx "hello from task")
+  (tx/send tx "done")))
+
+(let msg (rx/recv rx))    ; "hello from task"
 
 
 ;; ============================================================
@@ -537,9 +888,8 @@
 ;; ============================================================
 
 ;;; Macros transform syntax at compile time.
-;;; Because Nyet source is already S-expressions, macros receive and
-;;; return AST nodes directly — there is no gap between code and data.
-;;; quote returns an expression unevaluated, as an AST value.
+;;; Because Nyet source is S-expressions, macros receive and return AST directly.
+;;; There is no gap between code and data — (quote expr) gives you the unevaluated AST.
 
 (macro unless (cond body)
   (if (! cond) body pass))
@@ -547,36 +897,46 @@
 (unless (== x 0)
   (out "nonzero"))
 
-;;; Macros enable DSLs. The same IO channel infrastructure supports
-;;; a web routing DSL:
+;;; Macros can introduce new bindings with gensym to avoid name collisions.
+
+(macro swap! (a b)
+  (let tmp (gensym)
+    (do
+      (let tmp a)
+      (= a b)
+      (= b tmp))))
+
+;;; Variadic macros use ... to accept any number of arguments.
+
+(macro do_all (forms ...)
+  (do forms ...))
+
+;;; DSL: web routing built on IO channels and macros.
 
 (macro route (method path handler)
   (io/on server method path handler))
 
 (route GET  (/ "users")     list_users)
 (route POST (/ "users")     create_user)
-(route GET  (/ "users" :id) get_user)    ; :id is a path parameter
+(route GET  (/ "users" :id) get_user)
 
-;;; And a hardware DSL:
+;;; DSL: hardware pin control.
 
 (macro pin/high   (p) (out p HIGH))
 (macro pin/low    (p) (out p LOW))
 (macro pin/toggle (p)
-  (if (== (in p) HIGH)
-    (pin/low  p)
-    (pin/high p)))
+  (if (== (in p) HIGH) (pin/low p) (pin/high p)))
 
 (io/def led (io/pin 13 :digital :output))
 (pin/high   led)
 (pin/toggle led)
 
-;;; A logging DSL that captures the expression source for context:
+;;; DSL: structured logging with expression source capture.
 
 (macro log/debug (expr)
   (do
-    (out err (+ "DEBUG " (quote expr) " = "))
     (let result expr)
-    (out err result)
+    (out err (fmt "DEBUG {} = {}" (quote expr) result))
     result))
 
-(log/debug (divide 10.0 2.0))    ; prints: DEBUG (divide 10.0 2.0) = Ok(5.0)
+(log/debug (divide 10.0 2.0))    ; DEBUG (divide 10.0 2.0) = Ok(5.0)

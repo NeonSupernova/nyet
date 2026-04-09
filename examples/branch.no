@@ -1,0 +1,6 @@
+;; If is an expression, both arms return the same type.
+(fn main () -> unit
+  (let n:i32 7)
+  (let label:string
+    (if (> n 0) "positive" "non-positive"))
+  (out label))

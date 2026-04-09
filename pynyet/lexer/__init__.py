@@ -1,5 +1,6 @@
-from .lexer import Lexer
+"""Nyet lexer — hand-written scanner.
 
-__all__ = [
-    "Lexer"
-]
+Use:
+    from pynyet.lexer.scanner import lex
+    from pynyet.lexer.token import Token, TokenKind
+"""

@@ -1,0 +1,6 @@
+;; Distinguishes type annotations from keyword literals.
+(let x:i32 42)
+(let y:string "hi")
+(let mode :read)
+(let lvl  :digital)
+(io/def log (io/file "x" :append))

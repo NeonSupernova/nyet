@@ -1,0 +1,5 @@
+(fn peek (x:&i32) -> i32 x)
+(fn mutate (x:&!i32) -> unit (= x (+ x 1)))
+(let inc (fn! () -> unit (= counter (+ counter 1))))
+(let take (move fn () -> i32 counter))
+(fn run (f:Fn[() unit]) -> unit (f))

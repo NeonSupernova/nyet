@@ -1,0 +1,6 @@
+(use std/io)
+(use std/collections (Array Map Set))
+(std/math/sqrt 2.0)
+(let r:Result[i32 string] (Ok 1))
+(let t:Tree[Tree[i32]] (Leaf 0))
+(fn swap[A B] (p:#(A B)) -> #(B A) ...)
