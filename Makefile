@@ -2,19 +2,22 @@
 # Run `make help` to see available targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help test-lexer test-parser test-sema test-codegen test-all lex runtime clean
+.PHONY: help test-lexer test-parser test-sema test-codegen test-all lex check build run runtime clean
 
 help:
 	@echo "Nyet dev targets:"
-	@echo "  make help          show this message"
-	@echo "  make test-lexer    run the lexer golden tests"
-	@echo "  make test-parser   run the parser golden tests (no cases yet)"
-	@echo "  make test-sema     run the sema golden tests (no cases yet)"
-	@echo "  make test-codegen  run the codegen golden tests (no cases yet)"
-	@echo "  make test-all      run every test harness"
-	@echo "  make lex FILE=...  lex a .no file and print its tokens"
-	@echo "  make runtime       compile the C runtime to build/runtime.o"
-	@echo "  make clean         remove generated files and caches"
+	@echo "  make help            show this message"
+	@echo "  make test-lexer      run the lexer golden tests"
+	@echo "  make test-parser     run the parser golden tests"
+	@echo "  make test-sema       run the sema golden tests (no cases yet)"
+	@echo "  make test-codegen    run the codegen golden tests (no cases yet)"
+	@echo "  make test-all        run every test harness"
+	@echo "  make lex FILE=...    lex a .no file and print its tokens"
+	@echo "  make check FILE=...  type-check a .no file"
+	@echo "  make build FILE=...  compile a .no file to a native binary"
+	@echo "  make run FILE=...    compile and run a .no file"
+	@echo "  make runtime         compile the C runtime to build/runtime.o"
+	@echo "  make clean           remove generated files and caches"
 
 test-lexer:
 	python3 tests/lexer/run.py
@@ -48,6 +51,27 @@ lex:
 		exit 1; \
 	fi
 	python3 -m pynyet.driver lex $(FILE)
+
+check:
+	@if [ -z "$(FILE)" ]; then \
+		echo "usage: make check FILE=<path>"; \
+		exit 1; \
+	fi
+	python3 -m pynyet.driver check $(FILE)
+
+build:
+	@if [ -z "$(FILE)" ]; then \
+		echo "usage: make build FILE=<path>"; \
+		exit 1; \
+	fi
+	python3 -m pynyet.driver build $(FILE)
+
+run:
+	@if [ -z "$(FILE)" ]; then \
+		echo "usage: make run FILE=<path>"; \
+		exit 1; \
+	fi
+	python3 -m pynyet.driver run $(FILE)
 
 runtime:
 	@if [ ! -d runtime ]; then \
