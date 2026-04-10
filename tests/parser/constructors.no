@@ -1,0 +1,4 @@
+(let origin (Point x:0.0 y:0.0))
+(let home (Address street:"1 Loop Rd" city:"London" zip:"EC1"))
+(Ok 42)
+(Some "hello")

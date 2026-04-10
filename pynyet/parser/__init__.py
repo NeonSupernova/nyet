@@ -1,5 +1,5 @@
-from .parser import Parser
+"""Nyet parser — recursive descent.
 
-__all__ = [
-    "Parser"
-]
+Use:
+    from pynyet.parser.parser import Parser, parse
+"""

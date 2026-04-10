@@ -1,8 +1,11 @@
 """Golden test runner for the parser.
 
 For every `<name>.no` under tests/parser/, produce a canonical AST dump
-and compare it against `<name>.golden`. Missing `.golden` files are
-created on the first run; subsequent runs diff against the stored output.
+(pretty-printed S-expression) and compare it against `<name>.ast`.
+Missing `.ast` files are created on the first run; subsequent runs diff
+against the stored output.
+
+Also smoke-tests main.no (parse-only, no golden compare).
 
 Usage:
     python3 tests/parser/run.py              # check all
@@ -21,11 +24,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from pynyet.source import SourceFile  # noqa: E402
+from pynyet.lexer.scanner import lex  # noqa: E402
+from pynyet.parser.parser import parse  # noqa: E402
+from pynyet.ast.pretty import pretty  # noqa: E402
+
 
 def dump_parser_output(path: Path) -> str:
-    raise NotImplementedError(
-        "parser harness awaits v0.2 — no parser implementation yet"
-    )
+    text = path.read_text()
+    sf = SourceFile(str(path), text)
+    tokens = lex(sf)
+    program = parse(tokens)
+    lines: list[str] = []
+    for node in program:
+        lines.append(pretty(node))
+    return "\n".join(lines) + "\n"
+
+
+def smoke_test_main(root: Path) -> int:
+    """Try to parse main.no — report success/failure, no golden comparison."""
+    main_no = root / "main.no"
+    if not main_no.exists():
+        return 0
+    try:
+        text = main_no.read_text()
+        sf = SourceFile(str(main_no), text)
+        tokens = lex(sf)
+        program = parse(tokens)
+        print(f"[SMOKE] main.no: {len(program)} top-level nodes parsed")
+        return 0
+    except Exception as e:
+        print(f"[SMOKE] main.no: FAILED — {e}")
+        return 1
 
 
 def main() -> int:
@@ -48,8 +78,15 @@ def main() -> int:
 
     failures = 0
     for src in sources:
-        golden = src.with_suffix(".golden")
-        actual = dump_parser_output(src)
+        golden = src.with_suffix(".ast")
+        try:
+            actual = dump_parser_output(src)
+        except Exception as e:
+            failures += 1
+            print(f"[ERROR]  {src.name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
         if args.update or not golden.exists():
             golden.write_text(actual)
             print(f"[{'UPDATED' if args.update else 'WROTE '}] {src.name}")
@@ -67,6 +104,9 @@ def main() -> int:
                 tofile=f"{src.name} (actual)",
             )
             sys.stdout.writelines(diff)
+
+    # Smoke-test main.no (no golden compare)
+    failures += smoke_test_main(ROOT)
 
     if failures:
         print(f"\n{failures} case(s) failed", file=sys.stderr)

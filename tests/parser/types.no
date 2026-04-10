@@ -1,0 +1,5 @@
+(let a:i32 1)
+(let b:&i32 a)
+(let c:&!i32 a)
+(let d:Result[i32 string] (Ok 1))
+(let e:#(i32 string) #(1 "hi"))

@@ -1,0 +1,4 @@
+(struct Point x:f64 y:f64)
+(use std/io)
+(use std/collections (Array Map Set))
+(type Option (Some T) (None))
