@@ -121,22 +121,23 @@ class Emitter:
         self._strings[key] = (name, len(raw), raw)
         return name
 
-    def _declare_puts(self) -> None:
-        self._declared_externs.add("declare i32 @puts(ptr)")
-
     def _declare_printf(self) -> None:
         self._declared_externs.add("declare i32 @printf(ptr, ...)")
 
+    def _get_fmt_str(self) -> str:
+        """Get format string for printing a raw string (no newline)."""
+        return self._get_format_string("%s", "str")
+
     def _get_fmt_i32(self) -> str:
-        """Get format string for printing an i32 with newline."""
+        """Get format string for printing an i32 (no newline)."""
         if self._fmt_i32 is None:
-            self._fmt_i32 = self._get_format_string("%d\n", "i32")
+            self._fmt_i32 = self._get_format_string("%d", "i32")
         return self._fmt_i32
 
     def _get_fmt_f64(self) -> str:
-        """Get format string for printing an f64 with newline."""
+        """Get format string for printing an f64 (no newline)."""
         if self._fmt_f64 is None:
-            self._fmt_f64 = self._get_format_string("%g\n", "f64")
+            self._fmt_f64 = self._get_format_string("%g", "f64")
         return self._fmt_f64
 
     @staticmethod
@@ -353,10 +354,11 @@ class Emitter:
         """Emit code for the `out` builtin."""
         for arg in args:
             if isinstance(arg, N.StringLit):
-                self._declare_puts()
+                self._declare_printf()
                 name, _ = self._get_string(arg.value)
+                fmt = self._get_fmt_str()
                 tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 @puts(ptr {name})")
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {name})")
             elif isinstance(arg, N.IntLit):
                 self._declare_printf()
                 fmt = self._get_fmt_i32()
@@ -366,17 +368,16 @@ class Emitter:
                 val = self._emit_expr(arg)
                 if val is not None:
                     ty = self._infer_llvm_type(arg)
+                    self._declare_printf()
                     if ty == "ptr":
-                        self._declare_puts()
+                        fmt = self._get_fmt_str()
                         tmp = self._fresh_tmp()
-                        self._emit_line(f"{tmp} = call i32 @puts(ptr {val})")
+                        self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})")
                     elif ty == "double":
-                        self._declare_printf()
                         fmt = self._get_fmt_f64()
                         tmp = self._fresh_tmp()
                         self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})")
                     else:
-                        self._declare_printf()
                         fmt = self._get_fmt_i32()
                         tmp = self._fresh_tmp()
                         self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
@@ -413,10 +414,14 @@ class Emitter:
         return "i32"
 
     def _emit_in(self, args: list[N.Expr]) -> str | None:
-        """Emit code for `(in type)` — read line from stdin and parse."""
+        """Emit code for `(in type)` — read line from stdin and parse.
+
+        For integer types, uses strtol with validation: if the input
+        cannot be parsed, prints an error and exits with code 1.
+        """
         self._declare_extern("declare ptr @fgets(ptr, i32, ptr)")
         self._declare_extern("declare ptr @fdopen(i32, ptr)")
-        self._declare_extern("declare i32 @atoi(ptr)")
+        self._declare_printf()
 
         # Allocate a 256-byte buffer for the input line
         buf = self._fresh_tmp()
@@ -439,13 +444,80 @@ class Emitter:
             target_type = self._llvm_type_from_name(args[0].name)
 
         if target_type in ("i32", "i64"):
-            # atoi(buf) for integer input
-            result = self._fresh_tmp()
-            self._emit_line(f"{result} = call i32 @atoi(ptr {buf_ptr})")
-            return result
+            return self._emit_in_int(buf_ptr, target_type)
         else:
             # Return the raw string pointer for string input
             return buf_ptr
+
+    def _emit_in_int(self, buf_ptr: str, target_type: str) -> str:
+        """Parse an integer from buf_ptr with strtol + validation."""
+        self._declare_extern("declare i64 @strtol(ptr, ptr, i32)")
+        self._declare_extern("declare void @exit(i32)")
+
+        # endptr for strtol
+        endptr = self._fresh_tmp()
+        self._emit_line(f"{endptr} = alloca ptr")
+
+        # val = strtol(buf, &endptr, 10)
+        val64 = self._fresh_tmp()
+        self._emit_line(f"{val64} = call i64 @strtol(ptr {buf_ptr}, ptr {endptr}, i32 10)")
+
+        # Load endptr
+        end = self._fresh_tmp()
+        self._emit_line(f"{end} = load ptr, ptr {endptr}")
+
+        # Check: *endptr should be '\n' (10) or '\0' (0) — i.e. we consumed
+        # all meaningful input.  If *endptr is something else AND endptr == buf
+        # (nothing was consumed), it's an error.
+        end_char = self._fresh_tmp()
+        self._emit_line(f"{end_char} = load i8, ptr {end}")
+
+        # Did strtol consume anything?  endptr != buf means yes.
+        moved = self._fresh_tmp()
+        self._emit_line(f"{moved} = icmp ne ptr {end}, {buf_ptr}")
+
+        # Is the stop char whitespace/null?  Allow '\n' (10), '\r' (13), ' ' (32), '\0' (0).
+        is_nl = self._fresh_tmp()
+        self._emit_line(f"{is_nl} = icmp eq i8 {end_char}, 10")
+        is_cr = self._fresh_tmp()
+        self._emit_line(f"{is_cr} = icmp eq i8 {end_char}, 13")
+        is_sp = self._fresh_tmp()
+        self._emit_line(f"{is_sp} = icmp eq i8 {end_char}, 32")
+        is_nul = self._fresh_tmp()
+        self._emit_line(f"{is_nul} = icmp eq i8 {end_char}, 0")
+        ws1 = self._fresh_tmp()
+        self._emit_line(f"{ws1} = or i1 {is_nl}, {is_cr}")
+        ws2 = self._fresh_tmp()
+        self._emit_line(f"{ws2} = or i1 {ws1}, {is_sp}")
+        ws3 = self._fresh_tmp()
+        self._emit_line(f"{ws3} = or i1 {ws2}, {is_nul}")
+
+        # valid = moved AND stop_is_ws
+        valid = self._fresh_tmp()
+        self._emit_line(f"{valid} = and i1 {moved}, {ws3}")
+
+        ok_label = self._fresh_label("in_ok")
+        err_label = self._fresh_label("in_err")
+
+        self._emit_line(f"br i1 {valid}, label %{ok_label}, label %{err_label}")
+
+        # Error path: print message and exit(1)
+        self._emit_label(err_label)
+        err_msg = self._get_format_string(
+            "error: expected integer, got invalid input\n", "in_err_i32")
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {err_msg})")
+        self._emit_line("call void @exit(i32 1)")
+        self._emit_line("unreachable")
+
+        # Success path
+        self._emit_label(ok_label)
+        if target_type == "i32":
+            result = self._fresh_tmp()
+            self._emit_line(f"{result} = trunc i64 {val64} to i32")
+            return result
+        else:
+            return val64
 
     def _emit_fmt(self, args: list[N.Expr]) -> str | None:
         """Emit code for `(fmt template arg1 arg2 ...)` — string formatting.
