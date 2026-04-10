@@ -53,6 +53,12 @@ BUILTINS = {"out", "in", "err", "fmt", "str", "len", "push", "pop",
             "append", "type", "print", "gensym", "parse",
             "http/get", "io/on"}
 
+# Primitive type names valid in expression position (e.g. `(in i32)`)
+PRIM_TYPE_NAMES = {
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize",
+    "f32", "f64", "bool", "string", "unit",
+}
+
 
 class NameResolver:
     """Walk the AST and resolve names to declarations."""
@@ -133,7 +139,7 @@ class NameResolver:
             sym = scope.lookup(name)
             if sym is not None:
                 node.resolved_def_id = sym.def_id
-            elif name not in BUILTINS and not name[0:1].isupper():
+            elif name not in BUILTINS and name not in PRIM_TYPE_NAMES and not name[0:1].isupper():
                 # Upper-case names might be type constructors (Ok, Some, etc.)
                 # Operators (+, -, etc.) are also fine
                 if name.isidentifier() and name not in {"self", "Self", "_"}:

@@ -189,6 +189,12 @@ class TypeChecker:
             # Infer arg types (for side effects and registration)
             for arg in node.args:
                 self._infer(arg)
+            # `(in type)` — return the specified type
+            if (isinstance(node.head, N.Ident) and node.head.name == "in"
+                    and node.args
+                    and isinstance(node.args[0], N.Ident)
+                    and node.args[0].name in PRIM_TYPES):
+                return PRIM_TYPES[node.args[0].name]
             if isinstance(head_ty, FnSig):
                 return head_ty.ret
             # Operator calls — infer from first operand
