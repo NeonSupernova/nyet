@@ -9,25 +9,29 @@
 
 (fn main () -> unit
   ;; out with string literal
-  (out "hello, world")
+  (out "hello, world\n")
 
   ;; let binding + out int
   (let x:i32 42)
   (out x)
+  (out "\n")
 
   ;; arithmetic
   (let sum:i32 (+ 3 4))
   (out sum)
+  (out "\n")
 
   ;; if expression (string result)
   (let n:i32 5)
   (let label:string
     (if (> n 0) "positive" "negative"))
   (out label)
+  (out "\n")
 
   ;; var + assignment
   (var count:i32 0)
   (= count 10)
   (out count)
+  (out "\n")
 
-  (out "done"))
+  (out "done\n"))

@@ -2,4 +2,5 @@
 (fn main () -> unit
   (let x:i32 10)
   (let y:i32 32)
-  (out (+ x y)))
+  (out (+ x y))
+  (out "\n"))

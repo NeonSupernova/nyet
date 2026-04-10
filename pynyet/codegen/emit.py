@@ -646,9 +646,10 @@ class Emitter:
         else_label = self._fresh_label("else")
         end_label = self._fresh_label("ifend")
 
-        # Allocate a slot for the result (if both branches produce values)
+        # Allocate a slot for the result, zero-initialized
         result_ptr = self._fresh_tmp()
         self._emit_line(f"{result_ptr} = alloca ptr")
+        self._emit_line(f"store ptr null, ptr {result_ptr}")
 
         self._emit_line(f"br i1 {cond}, label %{then_label}, label %{else_label}")
 
