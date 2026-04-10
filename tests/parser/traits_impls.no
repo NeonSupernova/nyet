@@ -1,0 +1,3 @@
+(trait Display (fn display (self:&Self) -> string))
+(impl Display Point (fn display (self:&Point) -> string "point"))
+(impl Point (fn x (self:&Self) -> f64 (. self x)))

@@ -1,0 +1,6 @@
+(match val
+  (0 :zero)
+  (1 :one)
+  ((Some x) x)
+  ((None) :nothing)
+  (_ :other))

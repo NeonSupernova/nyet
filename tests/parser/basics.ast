@@ -1,0 +1,5 @@
+(let x:i32 42)
+(let y 3.14)
+(let z "hello")
+(let b true)
+(let u ())

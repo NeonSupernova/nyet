@@ -1,0 +1,33 @@
+;; v0.1 demo: exercises the full v0.1 subset.
+;; Expected output:
+;;   hello, world
+;;   42
+;;   7
+;;   positive
+;;   10
+;;   done
+
+(fn main () -> unit
+  ;; out with string literal
+  (out "hello, world")
+
+  ;; let binding + out int
+  (let x:i32 42)
+  (out x)
+
+  ;; arithmetic
+  (let sum:i32 (+ 3 4))
+  (out sum)
+
+  ;; if expression (string result)
+  (let n:i32 5)
+  (let label:string
+    (if (> n 0) "positive" "negative"))
+  (out label)
+
+  ;; var + assignment
+  (var count:i32 0)
+  (= count 10)
+  (out count)
+
+  (out "done"))

@@ -1,0 +1,2 @@
+(fn identity [T] (x:T) -> T x)
+(fn swap [A B] (p:A q:B) -> #(B A) #(q p))

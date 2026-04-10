@@ -359,6 +359,14 @@ class Try(Expr):
     value: Optional[Expr] = None
 
 
+@dataclass
+class KeywordArg(Expr):
+    """Keyword argument in a call: ``name:value``."""
+
+    name: str = ""
+    value: Optional[Expr] = None
+
+
 # ---------------------------------------------------------------------------
 # Declarations
 # ---------------------------------------------------------------------------

@@ -48,20 +48,23 @@ def pretty_type(t) -> str:
     if cls == "NamedType":
         return t.name
     if cls == "GenericType":
-        return f"({pretty_type(t.base)} {' '.join(pretty_type(a) for a in t.args)})"
+        base = pretty_type(t.base)
+        args = " ".join(pretty_type(a) for a in t.args)
+        return f"{base}[{args}]"
     if cls == "RefType":
-        return ("&mut " if t.mutable else "&") + pretty_type(t.inner)
+        return ("&!" if t.mutable else "&") + pretty_type(t.inner)
     if cls == "FnType":
         ps = " ".join(pretty_type(p) for p in t.params)
-        return f"(fn ({ps}) -> {pretty_type(t.ret)})"
+        ret = f" -> {pretty_type(t.ret)}" if t.ret else ""
+        return f"(fn {ps}{ret})"
     if cls == "TupleType":
-        return f"(tuple {' '.join(pretty_type(e) for e in t.elements)})"
+        return f"#({' '.join(pretty_type(e) for e in t.elements)})"
     if cls == "DynType":
         return f"(dyn {pretty_type(t.trait)})"
     if cls == "SelfType":
         return "Self"
     if cls == "UnitType":
-        return "()"
+        return "unit"
     return f"(?{cls})"
 
 
@@ -81,12 +84,14 @@ def _pat(p) -> str:
     if cls == "LitPat":
         return pretty(p.value)
     if cls == "VariantPat":
-        return f"({p.name} {' '.join(_pat(a) for a in p.args)})"
+        if p.args:
+            return f"({p.name} {' '.join(_pat(a) for a in p.args)})"
+        return f"({p.name})"
     if cls == "StructPat":
         body = " ".join(f"{n}:{_pat(v)}" for n, v in p.fields)
         return f"({p.name} {body})"
     if cls == "TuplePat":
-        return f"(tuple {' '.join(_pat(e) for e in p.elements)})"
+        return f"#({' '.join(_pat(e) for e in p.elements)})"
     if cls == "GuardedPat":
         return f"({_pat(p.inner)} when {pretty(p.guard)})"
     return f"(?{cls})"
@@ -126,12 +131,12 @@ def _h_array(n):
 
 
 def _h_tuple(n):
-    return f"(tuple {_list(n.elements)})"
+    return f"#({_list(n.elements)})"
 
 
 def _h_map(n):
     body = " ".join(f"{pretty(k)} {pretty(v)}" for k, v in n.entries)
-    return f"(map {body})"
+    return "{" + body + "}"
 
 
 def _h_ident(n):
@@ -139,7 +144,7 @@ def _h_ident(n):
 
 
 def _h_path(n):
-    return "::".join(n.segments)
+    return "/".join(n.segments)
 
 
 def _h_call(n):
@@ -211,6 +216,10 @@ def _h_try(n):
     return f"(try {pretty(n.value)})"
 
 
+def _h_keyword_arg(n):
+    return f"{n.name}:{pretty(n.value)}"
+
+
 # ---------------------------------------------------------------------------
 # Declaration handlers
 # ---------------------------------------------------------------------------
@@ -219,7 +228,7 @@ def _h_try(n):
 def _h_let(n):
     ty = _type(n.type)
     name = f"{n.name}:{ty}" if ty else n.name
-    kw = "mlet" if n.mutable else "let"
+    kw = "var" if n.mutable else "let"
     return f"({kw} {name} {pretty(n.value)})"
 
 
@@ -230,22 +239,38 @@ def _h_const(n):
 
 
 def _h_fn_decl(n):
+    generics = ""
+    if n.generics:
+        gp = " ".join(g.name for g in n.generics)
+        generics = f" [{gp}]"
     params = " ".join(_param(p) for p in n.params)
     rt = _type(n.return_type)
     ret_str = f" -> {rt}" if rt else ""
-    return f"(fn {n.name} ({params}){ret_str} {pretty(n.body)})"
+    if n.body is None:
+        return f"(fn {n.name}{generics} ({params}){ret_str})"
+    return f"(fn {n.name}{generics} ({params}){ret_str} {pretty(n.body)})"
 
 
 def _h_struct(n):
+    generics = ""
+    if n.generics:
+        gp = " ".join(g.name for g in n.generics)
+        generics = f"[{gp}]"
     fields_str = " ".join(_param(p) for p in n.fields)
-    return f"(struct {n.name} ({fields_str}))"
+    return f"(struct {n.name}{generics} {fields_str})"
 
 
 def _h_type_decl(n):
-    variants = " ".join(
-        f"({name} {' '.join(pretty_type(t) for t in types)})" for name, types in n.variants
-    )
-    return f"(type {n.name} {variants})"
+    generics = ""
+    if n.generics:
+        gp = " ".join(g.name for g in n.generics)
+        generics = f"[{gp}]"
+    def _fmt_variant(name, types):
+        if types:
+            return f"({name} {' '.join(pretty_type(t) for t in types)})"
+        return f"({name})"
+    variants = " ".join(_fmt_variant(name, types) for name, types in n.variants)
+    return f"(type {n.name}{generics} {variants})"
 
 
 def _h_newtype(n):
@@ -265,7 +290,7 @@ def _h_impl(n):
     items = " ".join(pretty(i) for i in n.items)
     head = pretty_type(n.target)
     if n.trait is not None:
-        head = f"{pretty_type(n.trait)} for {head}"
+        head = f"{pretty_type(n.trait)} {head}"
     return f"(impl {head} {items})"
 
 
@@ -280,9 +305,11 @@ def _h_module(n):
 
 
 def _h_use(n):
-    path = "::".join(n.path)
+    path = "/".join(n.path)
     if n.alias:
-        return f"(use {path} as {n.alias})"
+        # Selective imports stored as comma-joined names
+        names = n.alias.split(",")
+        return f"(use {path} ({' '.join(names)}))"
     return f"(use {path})"
 
 
@@ -314,6 +341,7 @@ _HANDLERS: dict[str, Any] = {
     "Spawn": _h_spawn,
     "Quote": _h_quote,
     "Try": _h_try,
+    "KeywordArg": _h_keyword_arg,
     # Declarations
     "LetDecl": _h_let,
     "ConstDecl": _h_const,

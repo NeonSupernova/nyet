@@ -1,4 +1,4 @@
-"""Command-line driver for the Nyet compiler (v0.1)."""
+"""Command-line driver for the Nyet compiler (v0.3)."""
 
 from __future__ import annotations
 
@@ -44,9 +44,105 @@ def _cmd_lex(args: argparse.Namespace) -> int:
     return 0
 
 
-def _stub(name: str) -> int:
-    print(f"{name}: not implemented in v0.1", file=sys.stderr)
-    return 2
+def _cmd_parse(args: argparse.Namespace) -> int:
+    from pynyet.parser.parser import parse
+    from pynyet.ast.pretty import pretty
+
+    sf = _load_source(args.file)
+    try:
+        tokens = lex(sf)
+        program = parse(tokens)
+        for node in program:
+            print(pretty(node))
+    except NyetError as e:
+        print(e.diagnostic.format(), file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    from pynyet.parser.parser import parse
+    from pynyet.sema.resolve import resolve_names
+    from pynyet.sema.typeck import check_types
+
+    sf = _load_source(args.file)
+    try:
+        tokens = lex(sf)
+        program = parse(tokens)
+    except NyetError as e:
+        print(e.diagnostic.format(), file=sys.stderr)
+        return 1
+
+    errors = resolve_names(program) + check_types(program)
+    if errors:
+        for d in errors:
+            print(d.format(), file=sys.stderr)
+        return 1
+    print("check: ok")
+    return 0
+
+
+def _cmd_build(args: argparse.Namespace) -> int:
+    import subprocess
+    from pynyet.parser.parser import parse
+    from pynyet.sema.resolve import resolve_names
+    from pynyet.sema.typeck import check_types
+    from pynyet.codegen.emit import emit_ir
+
+    sf = _load_source(args.file)
+    try:
+        tokens = lex(sf)
+        program = parse(tokens)
+    except NyetError as e:
+        print(e.diagnostic.format(), file=sys.stderr)
+        return 1
+
+    # Run semantic checks (warnings only — don't block on sema errors in v0.1)
+    errors = resolve_names(program) + check_types(program)
+    for d in errors:
+        print(d.format(), file=sys.stderr)
+
+    # Emit LLVM IR
+    ir_text = emit_ir(program)
+    ll_path = Path(args.output + ".ll") if args.output else Path("output.ll")
+    ll_path.write_text(ir_text)
+
+    if args.emit_llvm:
+        print(ir_text)
+        return 0
+
+    # Compile with clang
+    out_path = Path(args.output) if args.output else Path("output")
+    try:
+        result = subprocess.run(
+            ["clang", "-o", str(out_path), str(ll_path)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"clang error:\n{result.stderr}", file=sys.stderr)
+            return 1
+    except FileNotFoundError:
+        print("error: clang not found — install LLVM/clang to compile", file=sys.stderr)
+        return 1
+
+    print(f"built: {out_path}", file=sys.stderr)
+    return 0
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    import subprocess
+
+    # Build first
+    args.emit_llvm = False
+    if not hasattr(args, "output") or args.output is None:
+        args.output = None
+    rc = _cmd_build(args)
+    if rc != 0:
+        return rc
+
+    out_path = Path(args.output) if args.output else Path("output")
+    result = subprocess.run([str(out_path.resolve())], capture_output=False)
+    return result.returncode
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -58,10 +154,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_lex.add_argument("--keep-trivia", action="store_true", help="include comment tokens")
     p_lex.set_defaults(func=_cmd_lex)
 
-    for name in ("parse", "check", "build", "run"):
-        sp = sub.add_parser(name, help=f"{name} a source file (stub)")
-        sp.add_argument("file")
-        sp.set_defaults(func=lambda _a, _n=name: _stub(_n))
+    p_parse = sub.add_parser("parse", help="parse a source file and print the AST")
+    p_parse.add_argument("file")
+    p_parse.set_defaults(func=_cmd_parse)
+
+    p_check = sub.add_parser("check", help="type-check a source file")
+    p_check.add_argument("file")
+    p_check.set_defaults(func=_cmd_check)
+
+    p_build = sub.add_parser("build", help="compile a source file to a native binary")
+    p_build.add_argument("file")
+    p_build.add_argument("-o", "--output", default=None, help="output file name")
+    p_build.add_argument("--emit-llvm", action="store_true", help="print LLVM IR and stop")
+    p_build.set_defaults(func=_cmd_build)
+
+    p_run = sub.add_parser("run", help="compile and run a source file")
+    p_run.add_argument("file")
+    p_run.add_argument("-o", "--output", default=None, help="output file name")
+    p_run.set_defaults(func=_cmd_run)
 
     args = parser.parse_args(argv)
     return args.func(args)
