@@ -25,15 +25,31 @@ class Emitter:
         self._tmp = 0  # SSA temp counter
         self._label = 0  # label counter
         self._env: dict[str, tuple[str, str]] = {}  # name → (llvm_ptr, llvm_type)
+        self._str_lits: dict[str, str] = {}  # name → string literal value (for fmt)
         self._declared_externs: set[str] = set()
         self._fn_lines: list[str] = []  # lines for current function body
 
     def emit(self, program: list[N.Node]) -> str:
         """Emit LLVM IR for a complete program. Returns IR text."""
-        # Collect all top-level declarations
+        # Separate fn declarations from top-level expressions/bindings
+        fns: list[N.FnDecl] = []
+        top_level: list[N.Node] = []
+        has_main = False
         for node in program:
             if isinstance(node, N.FnDecl):
-                self._emit_fn(node)
+                fns.append(node)
+                if node.name == "main":
+                    has_main = True
+            else:
+                top_level.append(node)
+
+        # Emit all named functions first (so they can be called from main)
+        for fn in fns:
+            self._emit_fn(fn)
+
+        # If no explicit main, wrap top-level code in an implicit main
+        if not has_main and top_level:
+            self._emit_implicit_main(top_level)
 
         # Assemble final module
         out: list[str] = []
@@ -106,12 +122,10 @@ class Emitter:
         return name
 
     def _declare_puts(self) -> None:
-        decl = "declare i32 @puts(ptr)"
-        self._declared_externs.add(decl)
+        self._declared_externs.add("declare i32 @puts(ptr)")
 
     def _declare_printf(self) -> None:
-        decl = "declare i32 @printf(ptr, ...)"
-        self._declared_externs.add(decl)
+        self._declared_externs.add("declare i32 @printf(ptr, ...)")
 
     def _get_fmt_i32(self) -> str:
         """Get format string for printing an i32 with newline."""
@@ -187,6 +201,25 @@ class Emitter:
                 else:
                     self._emit_line(f"ret {ret_type} 0")
 
+        self._lines.extend(self._fn_lines)
+        self._lines.append("}")
+        self._lines.append("")
+        self._env = saved_env
+
+    def _emit_implicit_main(self, stmts: list[N.Node]) -> None:
+        """Wrap top-level statements in an implicit main function."""
+        self._tmp = 0
+        self._label = 0
+        self._fn_lines = []
+        saved_env = dict(self._env)
+
+        self._lines.append("define i32 @main() {")
+        self._emit_label("entry")
+
+        for stmt in stmts:
+            self._emit_expr(stmt)
+
+        self._emit_line("ret i32 0")
         self._lines.extend(self._fn_lines)
         self._lines.append("}")
         self._lines.append("")
@@ -297,9 +330,12 @@ class Emitter:
     def _emit_call(self, node: N.Call) -> str | None:
         if isinstance(node.head, N.Ident):
             name = node.head.name
-            # Built-in: out
             if name == "out":
                 return self._emit_out(node.args)
+            if name == "in":
+                return self._emit_in(node.args)
+            if name == "fmt":
+                return self._emit_fmt(node.args)
             # Arithmetic operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -364,7 +400,125 @@ class Emitter:
                 return "i32"
             if op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||", "!"):
                 return "i1"
+            if op == "fmt":
+                return "ptr"
+            if op == "in":
+                if node.args and isinstance(node.args[0], N.Ident):
+                    return self._llvm_type_from_name(node.args[0].name)
+                return "ptr"
+        if isinstance(node, N.If):
+            # Infer from then branch
+            if node.then_branch:
+                return self._infer_llvm_type(node.then_branch)
         return "i32"
+
+    def _emit_in(self, args: list[N.Expr]) -> str | None:
+        """Emit code for `(in type)` — read line from stdin and parse."""
+        self._declare_extern("declare ptr @fgets(ptr, i32, ptr)")
+        self._declare_extern("declare ptr @fdopen(i32, ptr)")
+        self._declare_extern("declare i32 @atoi(ptr)")
+
+        # Allocate a 256-byte buffer for the input line
+        buf = self._fresh_tmp()
+        self._emit_line(f"{buf} = alloca [256 x i8]")
+        buf_ptr = self._fresh_tmp()
+        self._emit_line(f"{buf_ptr} = getelementptr [256 x i8], ptr {buf}, i32 0, i32 0")
+
+        # Open stdin (fd 0) for reading
+        mode_name = self._get_format_string("r", "r_mode")
+        stdin_fp = self._fresh_tmp()
+        self._emit_line(f"{stdin_fp} = call ptr @fdopen(i32 0, ptr {mode_name})")
+
+        # fgets(buf, 256, stdin)
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})")
+
+        # Determine target type from first arg
+        target_type = "i32"
+        if args and isinstance(args[0], N.Ident):
+            target_type = self._llvm_type_from_name(args[0].name)
+
+        if target_type in ("i32", "i64"):
+            # atoi(buf) for integer input
+            result = self._fresh_tmp()
+            self._emit_line(f"{result} = call i32 @atoi(ptr {buf_ptr})")
+            return result
+        else:
+            # Return the raw string pointer for string input
+            return buf_ptr
+
+    def _emit_fmt(self, args: list[N.Expr]) -> str | None:
+        """Emit code for `(fmt template arg1 arg2 ...)` — string formatting.
+
+        Allocates a buffer and uses snprintf to format the string.
+        """
+        if not args:
+            return None
+
+        self._declare_extern("declare i32 @snprintf(ptr, i32, ptr, ...)")
+
+        # First arg is the template string
+        template_val = self._emit_expr(args[0])
+        if template_val is None:
+            return None
+
+        # Evaluate remaining args
+        fmt_args: list[tuple[str, str]] = []  # (llvm_type, value)
+        for arg in args[1:]:
+            val = self._emit_expr(arg)
+            if val is not None:
+                ty = self._infer_llvm_type(arg)
+                fmt_args.append((ty, val))
+
+        # Resolve the template string: Nyet `{}` → C `%s`/`%d`/`%g`
+        template_text = None
+        if isinstance(args[0], N.StringLit):
+            template_text = args[0].value
+        elif isinstance(args[0], N.Ident) and args[0].name in self._str_lits:
+            template_text = self._str_lits[args[0].name]
+
+        if template_text is not None:
+            c_fmt = template_text
+            for llvm_ty, _ in fmt_args:
+                if llvm_ty == "ptr":
+                    c_fmt = c_fmt.replace("{}", "%s", 1)
+                elif llvm_ty == "double":
+                    c_fmt = c_fmt.replace("{}", "%g", 1)
+                else:
+                    c_fmt = c_fmt.replace("{}", "%d", 1)
+            fmt_name = self._get_format_string(c_fmt, f"fmt_{id(args[0])}")
+        else:
+            # Truly dynamic template — pass as-is ({}  won't expand)
+            fmt_name = template_val
+
+        # Allocate output buffer
+        buf = self._fresh_tmp()
+        self._emit_line(f"{buf} = alloca [1024 x i8]")
+        buf_ptr = self._fresh_tmp()
+        self._emit_line(f"{buf_ptr} = getelementptr [1024 x i8], ptr {buf}, i32 0, i32 0")
+
+        # Build snprintf call
+        snprintf_args = f"ptr {buf_ptr}, i32 1024, ptr {fmt_name}"
+        for llvm_ty, val in fmt_args:
+            snprintf_args += f", {llvm_ty} {val}"
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call i32 (ptr, i32, ptr, ...) @snprintf({snprintf_args})")
+
+        return buf_ptr
+
+    def _declare_extern(self, decl: str) -> None:
+        """Add an extern declaration (deduped)."""
+        self._declared_externs.add(decl)
+
+    @staticmethod
+    def _llvm_type_from_name(name: str) -> str:
+        """Map a Nyet type name to an LLVM type string."""
+        mapping = {
+            "i32": "i32", "int": "i32", "i64": "i64",
+            "f64": "double", "f32": "float",
+            "bool": "i1", "string": "ptr",
+        }
+        return mapping.get(name, "i32")
 
     def _emit_arith(self, op: str, args: list[N.Expr]) -> str | None:
         if len(args) < 2:
@@ -466,6 +620,9 @@ class Emitter:
             if val is not None:
                 self._emit_line(f"store {ty} {val}, ptr {ptr}")
         self._env[node.name] = (ptr, ty)
+        # Track string literal values for compile-time fmt resolution
+        if isinstance(node.value, N.StringLit):
+            self._str_lits[node.name] = node.value.value
         return None
 
     def _emit_assign(self, node: N.Assign) -> str | None:
