@@ -1,0 +1,29 @@
+;; Shape-area via sum type + match.
+;; Expected output:
+;;   78.5397
+;;   24
+;;   6
+
+(type Shape
+  (Circle f64)
+  (Rect f64 f64)
+  (Tri f64 f64))
+
+(fn area (s:Shape) -> f64
+  (match s
+    ((Circle r) (* 3.14159 (* r r)))
+    ((Rect w h) (* w h))
+    ((Tri b h) (* 0.5 (* b h)))))
+
+(fn main () -> unit
+  (let c:Shape (Circle 5.0))
+  (out (area c))
+  (out "\n")
+
+  (let r:Shape (Rect 4.0 6.0))
+  (out (area r))
+  (out "\n")
+
+  (let t:Shape (Tri 4.0 3.0))
+  (out (area t))
+  (out "\n"))

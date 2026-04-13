@@ -1,0 +1,49 @@
+;; Shape-area calculator — v0.2 milestone goal program.
+;; Demonstrates: structs, sum types, match, float arithmetic,
+;; struct params in functions, field access.
+;;
+;; Expected output:
+;;   circle area: 78.5397
+;;   rect area: 24
+;;   triangle area: 6
+
+(struct Circle radius:f64)
+(struct Rect width:f64 height:f64)
+(struct Triangle base:f64 height:f64)
+
+(type Shape
+  (CircleShape f64)
+  (RectShape f64 f64)
+  (TriShape f64 f64))
+
+(fn circle_area (c:Circle) -> f64
+  (* 3.14159 (* (. c radius) (. c radius))))
+
+(fn rect_area (r:Rect) -> f64
+  (* (. r width) (. r height)))
+
+(fn tri_area (t:Triangle) -> f64
+  (* 0.5 (* (. t base) (. t height))))
+
+(fn area (s:Shape) -> f64
+  (match s
+    ((CircleShape r) (* 3.14159 (* r r)))
+    ((RectShape w h) (* w h))
+    ((TriShape b h) (* 0.5 (* b h)))))
+
+(fn main () -> unit
+  ;; Using struct-based functions
+  (let c:Circle (Circle 5.0))
+  (out "circle area: ")
+  (out (circle_area c))
+  (out "\n")
+
+  (let r:Rect (Rect 4.0 6.0))
+  (out "rect area: ")
+  (out (rect_area r))
+  (out "\n")
+
+  (let t:Triangle (Triangle 4.0 3.0))
+  (out "triangle area: ")
+  (out (tri_area t))
+  (out "\n"))
