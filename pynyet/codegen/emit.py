@@ -32,6 +32,8 @@ class Emitter:
         self._fn_lines: list[str] = []
         # Stack of (end_label, result_ptr | None, result_ty | None) for loop/break
         self._loop_stack: list[tuple[str, str | None, str | None]] = []
+        # Alloca instructions hoisted to the function entry block
+        self._fn_alloca_lines: list[str] = []
 
         # v0.2: struct registry — name → [(field_name, llvm_type)]
         self._structs: dict[str, list[tuple[str, str]]] = {}
@@ -183,6 +185,12 @@ class Emitter:
     def _emit_label(self, name: str) -> None:
         self._fn_lines.append(f"{name}:")
 
+    def _emit_alloca(self, ty: str) -> str:
+        """Allocate a stack slot hoisted to the function entry block."""
+        ptr = self._fresh_tmp()
+        self._fn_alloca_lines.append(f"  {ptr} = alloca {ty}")
+        return ptr
+
     def _get_string(self, value: str) -> tuple[str, int]:
         key = f"str:{value}"
         if key in self._strings:
@@ -295,6 +303,7 @@ class Emitter:
         self._tmp = 0
         self._label = 0
         self._fn_lines = []
+        self._fn_alloca_lines = []
         saved_env = dict(self._env)
 
         if node.name == "main":
@@ -326,14 +335,12 @@ class Emitter:
             for t, n, nyet_n in zip(param_types, param_names, param_nyet_names):
                 if nyet_n and (nyet_n in self._structs or nyet_n in self._sum_types):
                     # Struct/sum params are already ptrs — register directly
-                    ptr = self._fresh_tmp()
-                    self._emit_line(f"{ptr} = alloca ptr")
+                    ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_struct_name[n] = nyet_n
                 else:
-                    ptr = self._fresh_tmp()
-                    self._emit_line(f"{ptr} = alloca {t}")
+                    ptr = self._emit_alloca(t)
                     self._emit_line(f"store {t} %{n}, ptr {ptr}")
                     self._env[n] = (ptr, t)
 
@@ -348,7 +355,7 @@ class Emitter:
             else:
                 self._emit_line("ret void" if ret_type == "void" else f"ret {ret_type} 0")
 
-        self._lines.extend(self._fn_lines)
+        self._splice_fn_lines()
         self._lines.append("}")
         self._lines.append("")
         self._env = saved_env
@@ -357,16 +364,26 @@ class Emitter:
         self._tmp = 0
         self._label = 0
         self._fn_lines = []
+        self._fn_alloca_lines = []
         saved_env = dict(self._env)
         self._lines.append("define i32 @main() {")
         self._emit_label("entry")
         for stmt in stmts:
             self._emit_expr(stmt)
         self._emit_line("ret i32 0")
-        self._lines.extend(self._fn_lines)
+        self._splice_fn_lines()
         self._lines.append("}")
         self._lines.append("")
         self._env = saved_env
+
+    def _splice_fn_lines(self) -> None:
+        """Append fn body to _lines, hoisting alloca instructions after entry:."""
+        if not self._fn_lines:
+            return
+        # fn_lines[0] is always "entry:" — put hoisted allocas right after it
+        self._lines.append(self._fn_lines[0])  # "entry:"
+        self._lines.extend(self._fn_alloca_lines)
+        self._lines.extend(self._fn_lines[1:])
 
     # ==================================================================
     # Type inference
@@ -590,8 +607,7 @@ class Emitter:
         self._declare_extern("declare ptr @fdopen(i32, ptr)")
         self._declare_printf()
 
-        buf = self._fresh_tmp()
-        self._emit_line(f"{buf} = alloca [256 x i8]")
+        buf = self._emit_alloca("[256 x i8]")
         buf_ptr = self._fresh_tmp()
         self._emit_line(
             f"{buf_ptr} = getelementptr [256 x i8], ptr {buf}, i32 0, i32 0"
@@ -618,8 +634,7 @@ class Emitter:
         self._declare_extern("declare i64 @strtol(ptr, ptr, i32)")
         self._declare_extern("declare void @exit(i32)")
 
-        endptr = self._fresh_tmp()
-        self._emit_line(f"{endptr} = alloca ptr")
+        endptr = self._emit_alloca("ptr")
         val64 = self._fresh_tmp()
         self._emit_line(
             f"{val64} = call i64 @strtol(ptr {buf_ptr}, ptr {endptr}, i32 10)"
@@ -703,8 +718,7 @@ class Emitter:
         else:
             fmt_name = template_val
 
-        buf = self._fresh_tmp()
-        self._emit_line(f"{buf} = alloca [1024 x i8]")
+        buf = self._emit_alloca("[1024 x i8]")
         buf_ptr = self._fresh_tmp()
         self._emit_line(
             f"{buf_ptr} = getelementptr [1024 x i8], ptr {buf}, i32 0, i32 0"
@@ -840,8 +854,7 @@ class Emitter:
     def _emit_struct_construct(self, name: str, args: list[N.Expr]) -> str:
         """Emit `(StructName field:val ...)` → alloca + store fields."""
         fields = self._structs[name]
-        ptr = self._fresh_tmp()
-        self._emit_line(f"{ptr} = alloca %{name}")
+        ptr = self._emit_alloca(f"%{name}")
 
         # Match args to fields — support both positional and keyword
         vals: dict[str, str] = {}
@@ -878,8 +891,7 @@ class Emitter:
         variants = self._sum_types[sum_name]
         _, payload_types = variants[tag_idx]
 
-        ptr = self._fresh_tmp()
-        self._emit_line(f"{ptr} = alloca %{sum_name}")
+        ptr = self._emit_alloca(f"%{sum_name}")
 
         # Store tag
         tag_ptr = self._fresh_tmp()
@@ -973,8 +985,7 @@ class Emitter:
 
         end_label = self._fresh_label("match_end")
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
-        result_ptr = self._fresh_tmp()
-        self._emit_line(f"{result_ptr} = alloca {result_ty}")
+        result_ptr = self._emit_alloca(result_ty)
 
         variants = self._sum_types[sum_name]
         default_label = self._fresh_label("match_default")
@@ -1044,8 +1055,7 @@ class Emitter:
                             self._emit_line(
                                 f"{val} = load {pty}, ptr {fld_ptr}"
                             )
-                            vptr = self._fresh_tmp()
-                            self._emit_line(f"{vptr} = alloca {pty}")
+                            vptr = self._emit_alloca(pty)
                             self._emit_line(
                                 f"store {pty} {val}, ptr {vptr}"
                             )
@@ -1054,8 +1064,7 @@ class Emitter:
 
             elif isinstance(pat, N.VarPat):
                 # Bind whole scrutinee
-                vptr = self._fresh_tmp()
-                self._emit_line(f"{vptr} = alloca ptr")
+                vptr = self._emit_alloca("ptr")
                 self._emit_line(f"store ptr {scrut}, ptr {vptr}")
                 self._env[pat.name] = (vptr, "ptr")
 
@@ -1079,8 +1088,7 @@ class Emitter:
         """Simple value-based match (integers, etc.)."""
         end_label = self._fresh_label("match_end")
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
-        result_ptr = self._fresh_tmp()
-        self._emit_line(f"{result_ptr} = alloca {result_ty}")
+        result_ptr = self._emit_alloca(result_ty)
 
         next_label = self._fresh_label("match_next")
         for i, arm in enumerate(node.arms):
@@ -1091,8 +1099,7 @@ class Emitter:
                 # Default arm
                 if isinstance(pat, N.VarPat):
                     saved = dict(self._env)
-                    vptr = self._fresh_tmp()
-                    self._emit_line(f"{vptr} = alloca i32")
+                    vptr = self._emit_alloca("i32")
                     self._emit_line(f"store i32 {scrut}, ptr {vptr}")
                     self._env[pat.name] = (vptr, "i32")
 
@@ -1152,8 +1159,7 @@ class Emitter:
         end_label = self._fresh_label("ifend")
 
         result_ty = self._infer_llvm_type(node.then_branch) if node.then_branch else "ptr"
-        result_ptr = self._fresh_tmp()
-        self._emit_line(f"{result_ptr} = alloca {result_ty}")
+        result_ptr = self._emit_alloca(result_ty)
         # Zero-initialize
         if result_ty == "ptr":
             self._emit_line(f"store ptr null, ptr {result_ptr}")
@@ -1232,8 +1238,7 @@ class Emitter:
         break_ty = self._find_break_type(node.body)
         result_ptr: str | None = None
         if break_ty is not None:
-            result_ptr = self._fresh_tmp()
-            self._emit_line(f"{result_ptr} = alloca {break_ty}")
+            result_ptr = self._emit_alloca(break_ty)
             if break_ty == "ptr":
                 self._emit_line(f"store ptr null, ptr {result_ptr}")
             elif self._is_float(break_ty):
@@ -1300,18 +1305,15 @@ class Emitter:
             if node.value is not None:
                 val = self._emit_expr(node.value)
                 if val is not None:
-                    ptr = self._fresh_tmp()
-                    self._emit_line(f"{ptr} = alloca ptr")
+                    ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr {val}, ptr {ptr}")
                     self._env[node.name] = (ptr, "ptr")
                     self._env_struct_name[node.name] = nyet_name
             else:
-                ptr = self._fresh_tmp()
-                self._emit_line(f"{ptr} = alloca ptr")
+                ptr = self._emit_alloca("ptr")
                 self._env[node.name] = (ptr, "ptr")
         else:
-            ptr = self._fresh_tmp()
-            self._emit_line(f"{ptr} = alloca {ty}")
+            ptr = self._emit_alloca(ty)
             if node.value is not None:
                 val = self._emit_expr(node.value)
                 if val is not None:
