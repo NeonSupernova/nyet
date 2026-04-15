@@ -1,0 +1,264 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Nyet",
+  "scopeName": "source.nyet",
+  "fileTypes": ["no"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#constant" },
+    { "include": "#fn-definition" },
+    { "include": "#type-definition" },
+    { "include": "#impl-definition" },
+    { "include": "#control-keyword" },
+    { "include": "#decl-keyword" },
+    { "include": "#module-keyword" },
+    { "include": "#other-keyword" },
+    { "include": "#builtin-function" },
+    { "include": "#generic-type" },
+    { "include": "#primitive-type" },
+    { "include": "#operator" },
+    { "include": "#type-annotation" },
+    { "include": "#keyword-literal" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+
+    "comment": {
+      "patterns": [
+        {
+          "name": "comment.line.section.nyet",
+          "match": ";;;+.*$"
+        },
+        {
+          "name": "comment.line.block.nyet",
+          "match": ";;.*$"
+        },
+        {
+          "name": "comment.line.semicolon.nyet",
+          "match": ";.*$"
+        }
+      ]
+    },
+
+    "string": {
+      "name": "string.quoted.double.nyet",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.nyet",
+          "match": "\\\\(?:[\\\\\"ntr0]|x[0-9a-fA-F]{2})"
+        },
+        {
+          "name": "invalid.illegal.escape.nyet",
+          "match": "\\\\."
+        }
+      ]
+    },
+
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.integer.hexadecimal.nyet",
+          "match": "\\b0x[0-9a-fA-F][0-9a-fA-F_]*(?:i8|i16|i32|i64|u8|u16|u32|u64|usize)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.binary.nyet",
+          "match": "\\b0b[01][01_]*(?:i8|i16|i32|i64|u8|u16|u32|u64|usize)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.octal.nyet",
+          "match": "\\b0o[0-7][0-7_]*(?:i8|i16|i32|i64|u8|u16|u32|u64|usize)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.nyet",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9]+)?(?:f32|f64)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.decimal.nyet",
+          "match": "\\b[0-9][0-9_]*(?:i8|i16|i32|i64|u8|u16|u32|u64|usize)?\\b"
+        }
+      ]
+    },
+
+    "constant": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.true.nyet",
+          "match": "\\btrue\\b"
+        },
+        {
+          "name": "constant.language.boolean.false.nyet",
+          "match": "\\bfalse\\b"
+        }
+      ]
+    },
+
+    "fn-definition": {
+      "comment": "Captures fn/fn! keyword and the function name that follows",
+      "match": "\\(\\s*(fn!?)\\s+([a-zA-Z_][a-zA-Z0-9_/]*[!?]?)",
+      "captures": {
+        "1": { "name": "keyword.declaration.function.nyet" },
+        "2": { "name": "entity.name.function.nyet" }
+      }
+    },
+
+    "type-definition": {
+      "comment": "Struct, type/enum, newtype, alias, trait definitions",
+      "match": "\\(\\s*(struct|type|newtype|alias|trait)\\s+([A-Z][a-zA-Z0-9_]*(?:\\[[^\\]]*\\])?)",
+      "captures": {
+        "1": { "name": "keyword.declaration.type.nyet" },
+        "2": { "name": "entity.name.type.nyet" }
+      }
+    },
+
+    "impl-definition": {
+      "comment": "impl TraitName TypeName — highlight keyword + both names",
+      "match": "\\(\\s*(impl)\\s+([A-Z][a-zA-Z0-9_]*)\\s+([A-Z][a-zA-Z0-9_]*(?:\\[[^\\]]*\\])?)",
+      "captures": {
+        "1": { "name": "keyword.declaration.impl.nyet" },
+        "2": { "name": "entity.name.type.trait.nyet" },
+        "3": { "name": "entity.name.type.nyet" }
+      }
+    },
+
+    "control-keyword": {
+      "name": "keyword.control.nyet",
+      "match": "(?<=\\()\\s*(if|match|when|loop|break|return|do)(?=[\\s)])"
+    },
+
+    "decl-keyword": {
+      "name": "keyword.declaration.variable.nyet",
+      "match": "(?<=\\()\\s*(let|var|const)(?=[\\s)])"
+    },
+
+    "module-keyword": {
+      "name": "keyword.other.module.nyet",
+      "match": "(?<=\\()\\s*(pub|use|module|macro|quote)(?=[\\s)])"
+    },
+
+    "other-keyword": {
+      "name": "keyword.other.nyet",
+      "match": "\\b(self|Self|dyn|move|async|await|spawn|pass)\\b"
+    },
+
+    "builtin-function": {
+      "name": "support.function.builtin.nyet",
+      "match": "(?<=\\()\\s*(out|err|in|fmt|str|len|push|pop|append|parse|gensym|type)(?=[\\s)])"
+    },
+
+    "generic-type": {
+      "comment": "Parameterised types like Option[T], Result[T E], Array[T]",
+      "match": "\\b(Option|Result|Array)(?=\\[)",
+      "captures": {
+        "1": { "name": "support.class.builtin.nyet" }
+      }
+    },
+
+    "primitive-type": {
+      "name": "storage.type.nyet",
+      "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64|bool|string|unit)\\b"
+    },
+
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.nyet",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.pipe.nyet",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.spread.nyet",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.try.nyet",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.comparison.nyet",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.nyet",
+          "match": "&&|\\|\\|"
+        },
+        {
+          "name": "keyword.operator.bitwise.nyet",
+          "match": "<<|>>|&!|&|\\^|~"
+        },
+        {
+          "name": "keyword.operator.arithmetic.nyet",
+          "match": "[+\\-*/%]"
+        },
+        {
+          "name": "keyword.operator.assignment.nyet",
+          "match": "(?<=\\()\\s*="
+        },
+        {
+          "name": "keyword.operator.borrow.nyet",
+          "match": "&!"
+        },
+        {
+          "name": "keyword.operator.dot.nyet",
+          "match": "(?<=\\()\\.(?=\\s)"
+        }
+      ]
+    },
+
+    "type-annotation": {
+      "comment": "Highlights name:Type in parameters, let/var, struct fields, keyword args",
+      "match": "([a-zA-Z_][a-zA-Z0-9_]*[!?]?)(:)(&!?)?([a-zA-Z_][a-zA-Z0-9_]*(?:\\[[^\\]]*\\])?)",
+      "captures": {
+        "1": { "name": "variable.parameter.nyet" },
+        "2": { "name": "punctuation.separator.type-annotation.nyet" },
+        "3": { "name": "keyword.operator.borrow.nyet" },
+        "4": { "name": "storage.type.nyet" }
+      }
+    },
+
+    "keyword-literal": {
+      "comment": "Keyword/atom literals like :ok :error :read",
+      "name": "constant.other.symbol.nyet",
+      "match": ":[a-zA-Z_][a-zA-Z0-9_]*[!?]?"
+    },
+
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.definition.tuple.begin.nyet",
+          "match": "#\\("
+        },
+        {
+          "name": "punctuation.section.parens.begin.nyet",
+          "match": "\\("
+        },
+        {
+          "name": "punctuation.section.parens.end.nyet",
+          "match": "\\)"
+        },
+        {
+          "name": "punctuation.section.brackets.begin.nyet",
+          "match": "\\["
+        },
+        {
+          "name": "punctuation.section.brackets.end.nyet",
+          "match": "\\]"
+        },
+        {
+          "name": "punctuation.section.braces.begin.nyet",
+          "match": "\\{"
+        },
+        {
+          "name": "punctuation.section.braces.end.nyet",
+          "match": "\\}"
+        }
+      ]
+    }
+  }
+}

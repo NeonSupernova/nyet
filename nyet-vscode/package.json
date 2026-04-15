@@ -1,0 +1,64 @@
+{
+  "name": "nyet-language",
+  "displayName": "Nyet Language Support",
+  "description": "Syntax highlighting, snippets, and LSP support for the Nyet programming language (.no files)",
+  "version": "0.1.0",
+  "publisher": "nyet",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Programming Languages"],
+  "keywords": ["nyet", "no", "lisp", "s-expression"],
+  "activationEvents": [],
+  "main": "./client/extension",
+  "contributes": {
+    "languages": [
+      {
+        "id": "nyet",
+        "aliases": ["Nyet", "nyet"],
+        "extensions": [".no"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "nyet",
+        "scopeName": "source.nyet",
+        "path": "./syntaxes/nyet.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "nyet",
+        "path": "./snippets/nyet.code-snippets"
+      }
+    ],
+    "configuration": {
+      "title": "Nyet",
+      "properties": {
+        "nyet.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python executable used to run the Nyet language server."
+        },
+        "nyet.lspServerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to lsp/server.py. Leave empty to auto-detect relative to this extension."
+        },
+        "nyet.lspEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Nyet language server (diagnostics, hover, completions)."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0"
+  }
+}
