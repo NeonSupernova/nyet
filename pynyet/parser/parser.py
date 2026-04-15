@@ -87,9 +87,34 @@ class Parser:
 
     def parse_program(self) -> list[N.Node]:
         items: list[N.Node] = []
+        errors: list[Diagnostic] = []
         while not self._eof():
-            items.append(self.parse_expr())
+            try:
+                items.append(self.parse_expr())
+            except NyetError as e:
+                errors.extend(e.diagnostics)
+                self._synchronize()
+        if errors:
+            raise NyetError(errors)
         return items
+
+    def _synchronize(self) -> None:
+        """Skip tokens until the start of the next top-level form after an error."""
+        depth = 0
+        while not self._eof():
+            tok = self._peek()
+            if tok.kind is TokenKind.LPAREN:
+                if depth == 0:
+                    return  # positioned at next top-level form
+                depth += 1
+                self._advance()
+            elif tok.kind is TokenKind.RPAREN:
+                self._advance()
+                depth -= 1
+                if depth <= 0:
+                    return
+            else:
+                self._advance()
 
     # ---------------------------------------------------------------
     # expressions (the core dispatch)

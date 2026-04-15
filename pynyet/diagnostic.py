@@ -41,11 +41,19 @@ class Diagnostic:
 
 
 class NyetError(Exception):
-    """Raised when the compiler hits a fatal diagnostic."""
+    """Raised when the compiler hits one or more fatal diagnostics."""
 
-    def __init__(self, diagnostic: Diagnostic) -> None:
-        super().__init__(diagnostic.format())
-        self.diagnostic = diagnostic
+    def __init__(self, diagnostic_or_list: "Diagnostic | list[Diagnostic]") -> None:
+        if isinstance(diagnostic_or_list, Diagnostic):
+            self.diagnostics: list[Diagnostic] = [diagnostic_or_list]
+        else:
+            self.diagnostics = list(diagnostic_or_list)
+        super().__init__("\n".join(d.format() for d in self.diagnostics))
+
+    @property
+    def diagnostic(self) -> Diagnostic:
+        """Compatibility shim: return the first diagnostic."""
+        return self.diagnostics[0]
 
 
 @dataclass

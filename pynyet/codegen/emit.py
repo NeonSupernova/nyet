@@ -384,10 +384,18 @@ class Emitter:
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
             op = node.head.name
             if op in ("+", "-", "*", "/", "%"):
-                # Float if any arg is float
+                has_double = False
+                has_float = False
                 for a in node.args:
-                    if self._infer_llvm_type(a) in ("double", "float"):
-                        return "double"
+                    t = self._infer_llvm_type(a)
+                    if t == "double":
+                        has_double = True
+                    elif t == "float":
+                        has_float = True
+                if has_double:
+                    return "double"
+                if has_float:
+                    return "float"
                 return "i32"
             if op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||", "!"):
                 return "i1"
@@ -550,6 +558,10 @@ class Emitter:
             elif self._is_float(ty):
                 fmt = self._get_fmt_f64()
                 tmp = self._fresh_tmp()
+                if ty == "float":
+                    ext = self._fresh_tmp()
+                    self._emit_line(f"{ext} = fpext float {val} to double")
+                    val = ext
                 self._emit_line(
                     f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})"
                 )
@@ -714,19 +726,28 @@ class Emitter:
         rty = self._infer_llvm_type(args[1])
 
         if self._is_float(lty) or self._is_float(rty):
-            # Promote to double
+            # Use double if either operand is double, else float
+            fty = "double" if "double" in (lty, rty) else "float"
             if not self._is_float(lty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {lhs} to double")
+                self._emit_line(f"{conv} = sitofp i32 {lhs} to {fty}")
+                lhs = conv
+            elif lty != fty:
+                conv = self._fresh_tmp()
+                self._emit_line(f"{conv} = fpext float {lhs} to double")
                 lhs = conv
             if not self._is_float(rty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {rhs} to double")
+                self._emit_line(f"{conv} = sitofp i32 {rhs} to {fty}")
+                rhs = conv
+            elif rty != fty:
+                conv = self._fresh_tmp()
+                self._emit_line(f"{conv} = fpext float {rhs} to double")
                 rhs = conv
             tmp = self._fresh_tmp()
             fops = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv",
                     "%": "frem"}
-            self._emit_line(f"{tmp} = {fops[op]} double {lhs}, {rhs}")
+            self._emit_line(f"{tmp} = {fops[op]} {fty} {lhs}, {rhs}")
             return tmp
         else:
             tmp = self._fresh_tmp()
@@ -751,18 +772,27 @@ class Emitter:
         rty = self._infer_llvm_type(args[1])
 
         if self._is_float(lty) or self._is_float(rty):
+            fty = "double" if "double" in (lty, rty) else "float"
             if not self._is_float(lty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {lhs} to double")
+                self._emit_line(f"{conv} = sitofp i32 {lhs} to {fty}")
+                lhs = conv
+            elif lty != fty:
+                conv = self._fresh_tmp()
+                self._emit_line(f"{conv} = fpext float {lhs} to double")
                 lhs = conv
             if not self._is_float(rty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {rhs} to double")
+                self._emit_line(f"{conv} = sitofp i32 {rhs} to {fty}")
+                rhs = conv
+            elif rty != fty:
+                conv = self._fresh_tmp()
+                self._emit_line(f"{conv} = fpext float {rhs} to double")
                 rhs = conv
             tmp = self._fresh_tmp()
             fconds = {"==": "oeq", "!=": "one", "<": "olt", ">": "ogt",
                       "<=": "ole", ">=": "oge"}
-            self._emit_line(f"{tmp} = fcmp {fconds[op]} double {lhs}, {rhs}")
+            self._emit_line(f"{tmp} = fcmp {fconds[op]} {fty} {lhs}, {rhs}")
             return tmp
         else:
             tmp = self._fresh_tmp()
@@ -1199,6 +1229,11 @@ class Emitter:
             if node.value is not None:
                 val = self._emit_expr(node.value)
                 if val is not None:
+                    val_ty = self._infer_llvm_type(node.value)
+                    if self._is_float(ty) and not self._is_float(val_ty):
+                        conv = self._fresh_tmp()
+                        self._emit_line(f"{conv} = sitofp {val_ty} {val} to {ty}")
+                        val = conv
                     self._emit_line(f"store {ty} {val}, ptr {ptr}")
             self._env[node.name] = (ptr, ty)
 
