@@ -725,6 +725,12 @@ class Emitter:
         )
         snprintf_args = f"ptr {buf_ptr}, i32 1024, ptr {fmt_name}"
         for llvm_ty, val in fmt_args:
+            if llvm_ty == "float":
+                # Variadic callee (snprintf %g) expects double — promote
+                ext = self._fresh_tmp()
+                self._emit_line(f"{ext} = fpext float {val} to double")
+                val = ext
+                llvm_ty = "double"
             snprintf_args += f", {llvm_ty} {val}"
         tmp = self._fresh_tmp()
         self._emit_line(
