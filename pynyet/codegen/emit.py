@@ -41,11 +41,28 @@ class Emitter:
 
         # v0.2: fn signature registry — name → (param_types, ret_type)
         self._fn_sigs: dict[str, tuple[list[str], str]] = {}
+        # v0.3: nyet return-type names per fn — lets `?` / let bindings
+        # recover the sum type when an expression is a fn call.
+        self._fn_ret_nyet_names: dict[str, str] = {}
 
         # v0.2: sum type registry — name → [(variant_name, payload_types)]
         self._sum_types: dict[str, list[tuple[str, list[str]]]] = {}
         # variant_name → (sum_type_name, variant_index)
         self._variant_ctors: dict[str, tuple[str, int]] = {}
+
+        # v0.3: generic fn templates — name → FnDecl (not yet emitted)
+        self._fn_templates: dict[str, N.FnDecl] = {}
+        # (fn_name, type_args_tuple) → mangled_name — already-monomorphized
+        self._mono_fns: dict[tuple, str] = {}
+        # v0.3: generic struct templates — name → StructDecl
+        self._struct_templates: dict[str, N.StructDecl] = {}
+        # v0.3: generic sum type templates — name → TypeDecl
+        self._sum_templates: dict[str, N.TypeDecl] = {}
+        # (type_name, type_args_tuple) → mangled_name — already-monomorphized
+        self._mono_types: dict[tuple, str] = {}
+        # Unqualified variant name → mangled sum type — set during monomorphization
+        # E.g. Some (generic) has ctor entry when we monomorphize Option[i32] → Option__i32
+        self._generic_variant_ctors: dict[str, set[str]] = {}
 
     # ==================================================================
     # Public entry point
@@ -58,11 +75,23 @@ class Emitter:
 
         for node in program:
             if isinstance(node, N.StructDecl):
-                self._register_struct(node)
+                if node.generics:
+                    self._struct_templates[node.name] = node
+                else:
+                    self._register_struct(node)
             elif isinstance(node, N.TypeDecl):
-                self._register_sum_type(node)
+                if node.generics:
+                    self._sum_templates[node.name] = node
+                    # Remember variant names so _emit_call can detect them
+                    for vname, _ in node.variants:
+                        self._generic_variant_ctors.setdefault(vname, set()).add(node.name)
+                else:
+                    self._register_sum_type(node)
             elif isinstance(node, N.FnDecl):
-                fns.append(node)
+                if node.generics:
+                    self._fn_templates[node.name] = node
+                else:
+                    fns.append(node)
                 if node.name == "main":
                     has_main = True
             else:
@@ -149,6 +178,282 @@ class Emitter:
             self._struct_type_lines.append(
                 f"%{node.name} = type {{ i32, [{max_payload} x i8] }}"
             )
+
+    # ==================================================================
+    # v0.3: Monomorphization
+    # ==================================================================
+
+    @staticmethod
+    def _mangle(name: str, type_args: tuple[str, ...]) -> str:
+        if not type_args:
+            return name
+        return name + "__" + "_".join(type_args)
+
+    def _nyet_type_name_of_node(self, tn: N.TypeNode | None) -> str | None:
+        """Get the Nyet type name used for mangling from a TypeNode."""
+        if isinstance(tn, (N.PrimType, N.NamedType)):
+            return tn.name
+        if isinstance(tn, N.GenericType):
+            base = self._nyet_type_name_of_node(tn.base)
+            if base is None:
+                return None
+            inner = [self._nyet_type_name_of_node(a) or "unk" for a in tn.args]
+            return self._mangle(base, tuple(inner))
+        return None
+
+    def _llvm_of_nyet_name(self, name: str) -> str:
+        """Map a Nyet type name (possibly mangled) to an LLVM type."""
+        if name in ("i32", "int"):
+            return "i32"
+        if name == "i64":
+            return "i64"
+        if name in ("f64", "double"):
+            return "double"
+        if name in ("f32", "float"):
+            return "float"
+        if name == "bool":
+            return "i1"
+        if name == "string":
+            return "ptr"
+        if name in self._structs or name in self._sum_types:
+            return "ptr"
+        return "i32"
+
+    def _infer_nyet_type_from_arg(self, node: N.Node) -> str:
+        """Infer a concrete Nyet type name for use as generic type arg."""
+        if isinstance(node, N.IntLit):
+            return "i32"
+        if isinstance(node, N.FloatLit):
+            return "f64"
+        if isinstance(node, N.BoolLit):
+            return "bool"
+        if isinstance(node, N.StringLit):
+            return "string"
+        if isinstance(node, N.Ident) and node.name in self._env:
+            ty = self._env[node.name][1]
+            struct_name = self._env_struct_name.get(node.name)
+            if struct_name:
+                return struct_name
+            return self._nyet_from_llvm(ty)
+        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
+            op = node.head.name
+            if op in self._structs:
+                return op
+            if op in self._variant_ctors:
+                return self._variant_ctors[op][0]
+            if op in self._fn_sigs:
+                ret = self._fn_sigs[op][1]
+                return self._nyet_from_llvm(ret)
+        ty = self._infer_llvm_type(node)
+        return self._nyet_from_llvm(ty)
+
+    @staticmethod
+    def _nyet_from_llvm(ty: str) -> str:
+        mapping = {
+            "i32": "i32", "i64": "i64", "double": "f64", "float": "f32",
+            "i1": "bool", "i8": "i8", "i16": "i16",
+        }
+        if ty in mapping:
+            return mapping[ty]
+        if ty == "ptr":
+            return "string"  # default ptr → string for mangling
+        return "i32"
+
+    def _subst_type(
+        self, tn: N.TypeNode | None, env: dict[str, N.TypeNode]
+    ) -> N.TypeNode | None:
+        """Substitute generic params in a TypeNode using env mapping."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.NamedType):
+            if tn.name in env:
+                return env[tn.name]
+            return tn
+        if isinstance(tn, N.PrimType):
+            return tn
+        if isinstance(tn, N.GenericType):
+            new_base = self._subst_type(tn.base, env) or tn.base
+            new_args = [self._subst_type(a, env) or a for a in tn.args]
+            return N.GenericType(tn.span, new_base, new_args)
+        if isinstance(tn, N.UnitType):
+            return tn
+        return tn
+
+    def _subst_body(self, node: N.Node, env: dict[str, N.TypeNode]) -> N.Node:
+        """Return a shallow clone of `node` with type annotations substituted.
+
+        We only rewrite nodes that carry TypeNode fields relevant to codegen.
+        """
+        import copy as _copy
+
+        if isinstance(node, N.LetDecl):
+            n = _copy.copy(node)
+            n.type = self._subst_type(node.type, env)
+            if node.value is not None:
+                n.value = self._subst_body(node.value, env)
+            return n
+        if isinstance(node, N.ConstDecl):
+            n = _copy.copy(node)
+            n.type = self._subst_type(node.type, env)
+            if node.value is not None:
+                n.value = self._subst_body(node.value, env)
+            return n
+        if isinstance(node, N.Do):
+            n = _copy.copy(node)
+            n.exprs = [self._subst_body(e, env) for e in node.exprs]
+            return n
+        if isinstance(node, N.If):
+            n = _copy.copy(node)
+            if node.cond is not None:
+                n.cond = self._subst_body(node.cond, env)
+            if node.then_branch is not None:
+                n.then_branch = self._subst_body(node.then_branch, env)
+            if node.else_branch is not None:
+                n.else_branch = self._subst_body(node.else_branch, env)
+            return n
+        if isinstance(node, N.Match):
+            n = _copy.copy(node)
+            if node.scrutinee is not None:
+                n.scrutinee = self._subst_body(node.scrutinee, env)
+            n.arms = []
+            for arm in node.arms:
+                a = _copy.copy(arm)
+                a.body = self._subst_body(arm.body, env)
+                n.arms.append(a)
+            return n
+        if isinstance(node, N.Return):
+            n = _copy.copy(node)
+            if node.value is not None:
+                n.value = self._subst_body(node.value, env)
+            return n
+        if isinstance(node, N.Call):
+            n = _copy.copy(node)
+            n.args = [self._subst_body(a, env) for a in node.args]
+            return n
+        if isinstance(node, N.Loop):
+            n = _copy.copy(node)
+            if node.body is not None:
+                n.body = self._subst_body(node.body, env)
+            return n
+        if isinstance(node, N.Break):
+            n = _copy.copy(node)
+            if node.value is not None:
+                n.value = self._subst_body(node.value, env)
+            return n
+        if isinstance(node, N.Assign):
+            n = _copy.copy(node)
+            if node.value is not None:
+                n.value = self._subst_body(node.value, env)
+            return n
+        if isinstance(node, N.FieldAccess):
+            n = _copy.copy(node)
+            if node.target is not None:
+                n.target = self._subst_body(node.target, env)
+            return n
+        return node
+
+    def _monomorphize_fn(
+        self, name: str, type_args: tuple[str, ...]
+    ) -> str | None:
+        """Emit a specialized copy of a generic fn and return the mangled name."""
+        key = (name, type_args)
+        if key in self._mono_fns:
+            return self._mono_fns[key]
+        tmpl = self._fn_templates.get(name)
+        if tmpl is None:
+            return None
+        if len(type_args) != len(tmpl.generics):
+            return None
+
+        mangled = self._mangle(name, type_args)
+        self._mono_fns[key] = mangled
+
+        # Build substitution env: generic param name → concrete TypeNode
+        env: dict[str, N.TypeNode] = {}
+        for gp, targ in zip(tmpl.generics, type_args):
+            env[gp.name] = N.NamedType(tmpl.span, targ)
+
+        # Clone the fn decl
+        import copy as _copy
+        clone = _copy.copy(tmpl)
+        clone.name = mangled
+        clone.generics = []
+        clone.params = []
+        for p in tmpl.params:
+            np = _copy.copy(p)
+            np.type = self._subst_type(p.type, env)
+            clone.params.append(np)
+        clone.return_type = self._subst_type(tmpl.return_type, env)
+        if tmpl.body is not None:
+            clone.body = self._subst_body(tmpl.body, env)
+
+        # Emit the specialized function
+        self._emit_fn(clone)
+        return mangled
+
+    def _monomorphize_sum_type(
+        self, name: str, type_args: tuple[str, ...]
+    ) -> str | None:
+        """Emit a specialized sum type and register it. Returns mangled name."""
+        key = (name, type_args)
+        if key in self._mono_types:
+            return self._mono_types[key]
+        tmpl = self._sum_templates.get(name)
+        if tmpl is None:
+            return None
+        if len(type_args) != len(tmpl.generics):
+            return None
+
+        mangled = self._mangle(name, type_args)
+        self._mono_types[key] = mangled
+
+        env: dict[str, N.TypeNode] = {}
+        for gp, targ in zip(tmpl.generics, type_args):
+            env[gp.name] = N.NamedType(tmpl.span, targ)
+
+        import copy as _copy
+        clone = _copy.copy(tmpl)
+        clone.name = mangled
+        clone.generics = []
+        clone.variants = []
+        for vname, vtypes in tmpl.variants:
+            subst_types = [self._subst_type(t, env) or t for t in vtypes]
+            clone.variants.append((vname, subst_types))
+
+        self._register_sum_type(clone)
+        return mangled
+
+    def _monomorphize_struct(
+        self, name: str, type_args: tuple[str, ...]
+    ) -> str | None:
+        key = (name, type_args)
+        if key in self._mono_types:
+            return self._mono_types[key]
+        tmpl = self._struct_templates.get(name)
+        if tmpl is None:
+            return None
+        if len(type_args) != len(tmpl.generics):
+            return None
+
+        mangled = self._mangle(name, type_args)
+        self._mono_types[key] = mangled
+
+        env: dict[str, N.TypeNode] = {}
+        for gp, targ in zip(tmpl.generics, type_args):
+            env[gp.name] = N.NamedType(tmpl.span, targ)
+
+        import copy as _copy
+        clone = _copy.copy(tmpl)
+        clone.name = mangled
+        clone.generics = []
+        clone.fields = []
+        for p in tmpl.fields:
+            np = _copy.copy(p)
+            np.type = self._subst_type(p.type, env)
+            clone.fields.append(np)
+
+        self._register_struct(clone)
+        return mangled
 
     @staticmethod
     def _sizeof(ty: str) -> int:
@@ -268,6 +573,24 @@ class Emitter:
             # Struct or sum type — pass by pointer
             if name in self._structs or name in self._sum_types:
                 return "ptr"
+        if isinstance(tn, N.GenericType):
+            # v0.3: instantiate on demand
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name is not None:
+                type_args = tuple(
+                    self._nyet_type_name_of_node(a) or "unk" for a in tn.args
+                )
+                if base_name in self._sum_templates:
+                    self._monomorphize_sum_type(base_name, type_args)
+                    return "ptr"
+                if base_name in self._struct_templates:
+                    self._monomorphize_struct(base_name, type_args)
+                    return "ptr"
+                # Already-monomorphized: base might be the mangled name
+                mangled = self._mangle(base_name, type_args)
+                if mangled in self._structs or mangled in self._sum_types:
+                    return "ptr"
         if isinstance(tn, N.UnitType):
             return "void"
         return "i32"
@@ -278,9 +601,29 @@ class Emitter:
         return self._llvm_type(tn)
 
     def _nyet_type_name(self, tn: N.TypeNode | None) -> str | None:
-        """Return the Nyet type name if it's a named/prim type."""
+        """Return the Nyet type name if it's a named/prim type.
+
+        For generic instantiations, returns the mangled name (and
+        triggers monomorphization if needed).
+        """
         if isinstance(tn, (N.PrimType, N.NamedType)):
             return tn.name
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name is None:
+                return None
+            type_args = tuple(
+                self._nyet_type_name_of_node(a) or "unk" for a in tn.args
+            )
+            if base_name in self._sum_templates:
+                return self._monomorphize_sum_type(base_name, type_args)
+            if base_name in self._struct_templates:
+                return self._monomorphize_struct(base_name, type_args)
+            mangled = self._mangle(base_name, type_args)
+            if mangled in self._structs or mangled in self._sum_types:
+                return mangled
+            return None
         return None
 
     @staticmethod
@@ -299,15 +642,42 @@ class Emitter:
     # Top-level emission
     # ==================================================================
 
+    def _save_fn_state(self) -> dict:
+        """Snapshot per-function emitter state (for re-entrant fn emission)."""
+        return {
+            "tmp": self._tmp,
+            "label": self._label,
+            "fn_lines": self._fn_lines,
+            "fn_alloca_lines": self._fn_alloca_lines,
+            "env": dict(self._env),
+            "env_struct_name": dict(self._env_struct_name),
+            "loop_stack": list(self._loop_stack),
+            "str_lits": dict(self._str_lits),
+        }
+
+    def _restore_fn_state(self, saved: dict) -> None:
+        self._tmp = saved["tmp"]
+        self._label = saved["label"]
+        self._fn_lines = saved["fn_lines"]
+        self._fn_alloca_lines = saved["fn_alloca_lines"]
+        self._env = saved["env"]
+        self._env_struct_name.clear()
+        self._env_struct_name.update(saved["env_struct_name"])
+        self._loop_stack = saved["loop_stack"]
+        self._str_lits = saved["str_lits"]
+
     def _emit_fn(self, node: N.FnDecl) -> None:
+        saved = self._save_fn_state()
         self._tmp = 0
         self._label = 0
         self._fn_lines = []
         self._fn_alloca_lines = []
-        saved_env = dict(self._env)
+
+        # Emit into a local buffer, then flush to self._lines at end.
+        body_lines: list[str] = []
 
         if node.name == "main":
-            self._lines.append("define i32 @main() {")
+            body_lines.append("define i32 @main() {")
             self._emit_label("entry")
             if node.body is not None:
                 self._emit_expr(node.body)
@@ -323,11 +693,14 @@ class Emitter:
 
             ret_type = self._llvm_ret_type(node.return_type)
             self._fn_sigs[node.name] = (param_types, ret_type)
+            ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
+            if ret_nyet:
+                self._fn_ret_nyet_names[node.name] = ret_nyet
 
             params_str = ", ".join(
                 f"{t} %{n}" for t, n in zip(param_types, param_names)
             )
-            self._lines.append(
+            body_lines.append(
                 f"define {ret_type} @{node.name}({params_str}) {{"
             )
             self._emit_label("entry")
@@ -355,35 +728,41 @@ class Emitter:
             else:
                 self._emit_line("ret void" if ret_type == "void" else f"ret {ret_type} 0")
 
-        self._splice_fn_lines()
-        self._lines.append("}")
-        self._lines.append("")
-        self._env = saved_env
+        # Splice this fn's body into body_lines, then append all at once
+        if self._fn_lines:
+            body_lines.append(self._fn_lines[0])  # "entry:"
+            body_lines.extend(self._fn_alloca_lines)
+            body_lines.extend(self._fn_lines[1:])
+        body_lines.append("}")
+        body_lines.append("")
+
+        self._restore_fn_state(saved)
+        self._lines.extend(body_lines)
 
     def _emit_implicit_main(self, stmts: list[N.Node]) -> None:
+        saved = self._save_fn_state()
         self._tmp = 0
         self._label = 0
         self._fn_lines = []
         self._fn_alloca_lines = []
-        saved_env = dict(self._env)
-        self._lines.append("define i32 @main() {")
+        body_lines: list[str] = []
+        body_lines.append("define i32 @main() {")
         self._emit_label("entry")
         for stmt in stmts:
             self._emit_expr(stmt)
         self._emit_line("ret i32 0")
-        self._splice_fn_lines()
-        self._lines.append("}")
-        self._lines.append("")
-        self._env = saved_env
+        if self._fn_lines:
+            body_lines.append(self._fn_lines[0])
+            body_lines.extend(self._fn_alloca_lines)
+            body_lines.extend(self._fn_lines[1:])
+        body_lines.append("}")
+        body_lines.append("")
+        self._restore_fn_state(saved)
+        self._lines.extend(body_lines)
 
     def _splice_fn_lines(self) -> None:
-        """Append fn body to _lines, hoisting alloca instructions after entry:."""
-        if not self._fn_lines:
-            return
-        # fn_lines[0] is always "entry:" — put hoisted allocas right after it
-        self._lines.append(self._fn_lines[0])  # "entry:"
-        self._lines.extend(self._fn_alloca_lines)
-        self._lines.extend(self._fn_lines[1:])
+        """Deprecated; kept for compatibility. Do nothing."""
+        pass
 
     # ==================================================================
     # Type inference
@@ -428,12 +807,41 @@ class Emitter:
                 return "ptr"
             if op in self._fn_sigs:
                 return self._fn_sigs[op][1]
+            # v0.3: generic fn — infer type args, look up monomorphized sig
+            if op in self._fn_templates:
+                tmpl = self._fn_templates[op]
+                type_args = self._infer_type_args_for_fn(tmpl, node.args)
+                if type_args is not None:
+                    mangled = self._mangle(op, type_args)
+                    if mangled in self._fn_sigs:
+                        return self._fn_sigs[mangled][1]
+                    # Walk return type with substitution
+                    env: dict[str, N.TypeNode] = {}
+                    for gp, targ in zip(tmpl.generics, type_args):
+                        env[gp.name] = N.NamedType(tmpl.span, targ)
+                    rt = self._subst_type(tmpl.return_type, env)
+                    return self._llvm_type(rt)
+            # v0.3: generic struct / generic variant
+            if op in self._struct_templates:
+                return "ptr"
+            if op in self._generic_variant_ctors:
+                return "ptr"
         if isinstance(node, N.FieldAccess):
             return self._infer_field_type(node)
         if isinstance(node, N.If) and node.then_branch:
             return self._infer_llvm_type(node.then_branch)
         if isinstance(node, N.Do) and node.exprs:
             return self._infer_llvm_type(node.exprs[-1])
+        if isinstance(node, N.Try):
+            # Payload type of the first (success) variant of the sum type.
+            sum_name = self._sum_name_of(node.value)
+            if sum_name and sum_name in self._sum_types:
+                variants = self._sum_types[sum_name]
+                if variants:
+                    _, payload_types = variants[0]
+                    if payload_types:
+                        return payload_types[0]
+            return "ptr"
         return "i32"
 
     def _infer_field_type(self, node: N.FieldAccess) -> str:
@@ -495,6 +903,9 @@ class Emitter:
         if isinstance(node, N.Match):
             return self._emit_match(node)
 
+        if isinstance(node, N.Try):
+            return self._emit_try(node)
+
         if isinstance(node, N.Do):
             return self._emit_do(node)
 
@@ -553,15 +964,174 @@ class Emitter:
                 return self._emit_cmp(name, node.args)
             if name in ("&&", "||", "!"):
                 return self._emit_bool_op(name, node.args)
-            # Struct constructor
+            # Struct constructor (already monomorphized — matched directly)
             if name in self._structs:
                 return self._emit_struct_construct(name, node.args)
-            # Sum type variant constructor
+            # Sum type variant constructor (already monomorphized)
             if name in self._variant_ctors:
                 return self._emit_variant_construct(name, node.args)
+            # v0.3: Generic sum type variant — pick instantiation from args
+            if name in self._generic_variant_ctors:
+                mangled_vname = self._resolve_generic_variant(name, node.args)
+                if mangled_vname:
+                    return self._emit_variant_construct(mangled_vname, node.args)
+            # v0.3: Generic struct constructor
+            if name in self._struct_templates:
+                mangled = self._monomorphize_struct_from_args(name, node.args)
+                if mangled:
+                    return self._emit_struct_construct(mangled, node.args)
+            # v0.3: Generic function call
+            if name in self._fn_templates:
+                mangled = self._monomorphize_fn_from_args(name, node.args)
+                if mangled:
+                    return self._emit_user_call(mangled, node.args)
             # User function
             return self._emit_user_call(name, node.args)
         return None
+
+    # ------------------------------------------------------------------
+    # v0.3: Generic call inference helpers
+    # ------------------------------------------------------------------
+
+    def _monomorphize_fn_from_args(
+        self, name: str, args: list[N.Expr]
+    ) -> str | None:
+        """Infer type args for a generic fn call and monomorphize."""
+        tmpl = self._fn_templates[name]
+        type_args = self._infer_type_args_for_fn(tmpl, args)
+        if type_args is None:
+            return None
+        return self._monomorphize_fn(name, type_args)
+
+    def _monomorphize_struct_from_args(
+        self, name: str, args: list[N.Expr]
+    ) -> str | None:
+        tmpl = self._struct_templates[name]
+        # Try to match field types with generic params
+        type_args = self._infer_type_args_for_struct(tmpl, args)
+        if type_args is None:
+            return None
+        return self._monomorphize_struct(name, type_args)
+
+    def _resolve_generic_variant(
+        self, vname: str, args: list[N.Expr]
+    ) -> str | None:
+        """Find the generic sum type this variant belongs to and monomorphize.
+
+        Returns the mangled variant ctor name, or None if we can't infer.
+        """
+        sum_names = self._generic_variant_ctors.get(vname, set())
+        if not sum_names:
+            return None
+        # Try each candidate sum type
+        for sum_name in sum_names:
+            tmpl = self._sum_templates.get(sum_name)
+            if tmpl is None:
+                continue
+            # Find the variant definition
+            variant_types: list[N.TypeNode] = []
+            for vn, vtypes in tmpl.variants:
+                if vn == vname:
+                    variant_types = vtypes
+                    break
+            type_args = self._infer_type_args_for_variant(
+                tmpl, variant_types, args
+            )
+            if type_args is None:
+                continue
+            mangled_sum = self._monomorphize_sum_type(sum_name, type_args)
+            if mangled_sum is None:
+                continue
+            # The monomorphized variant name — since _register_sum_type
+            # stores the original variant name keyed in _variant_ctors,
+            # we need to use a per-instantiation mangled variant.
+            # For simplicity: mangle variant names too.
+            return self._find_variant_ctor_for(mangled_sum, vname)
+        return None
+
+    def _find_variant_ctor_for(
+        self, sum_type_name: str, vname: str
+    ) -> str | None:
+        """Return the (possibly mangled) variant ctor key in _variant_ctors.
+
+        Since _register_sum_type uses the short variant name, collisions
+        can happen between different sum types sharing variant names.
+        To avoid that, we key variant ctors by a mangled composite name
+        `<sum_type>:<variant>` when the sum type has been monomorphized.
+        """
+        # Prefer the mangled form if registered
+        composite = f"{sum_type_name}::{vname}"
+        if composite in self._variant_ctors:
+            return composite
+        if vname in self._variant_ctors:
+            return vname
+        return None
+
+    def _infer_type_args_for_fn(
+        self, tmpl: N.FnDecl, args: list[N.Expr]
+    ) -> tuple[str, ...] | None:
+        return self._infer_type_args_from_params(
+            tmpl.generics, tmpl.params, args
+        )
+
+    def _infer_type_args_for_struct(
+        self, tmpl: N.StructDecl, args: list[N.Expr]
+    ) -> tuple[str, ...] | None:
+        # Filter keyword args out for positional matching
+        pos_args: list[N.Expr] = []
+        for a in args:
+            if not isinstance(a, N.KeywordArg):
+                pos_args.append(a)
+        return self._infer_type_args_from_params(
+            tmpl.generics, tmpl.fields, pos_args
+        )
+
+    def _infer_type_args_for_variant(
+        self,
+        tmpl: N.TypeDecl,
+        variant_types: list[N.TypeNode],
+        args: list[N.Expr],
+    ) -> tuple[str, ...] | None:
+        # Build fake params with the variant's field types
+        fake_params = [
+            N.Param(tmpl.span, f"_{i}", t)
+            for i, t in enumerate(variant_types)
+        ]
+        return self._infer_type_args_from_params(
+            tmpl.generics, fake_params, args
+        )
+
+    def _infer_type_args_from_params(
+        self,
+        generics: list[N.GenericParam],
+        params: list,
+        args: list[N.Expr],
+    ) -> tuple[str, ...] | None:
+        """Infer concrete type args by matching param types against arg types.
+
+        For each generic param name, find the first param with that type name,
+        then read the concrete type from the corresponding arg.
+        """
+        if not generics:
+            return ()
+        resolved: dict[str, str] = {}
+        for i, p in enumerate(params):
+            if i >= len(args):
+                break
+            ptype_name = self._nyet_type_name_of_node(p.type)
+            if ptype_name is None:
+                continue
+            # Only bind unresolved generic names
+            for gp in generics:
+                if gp.name not in resolved and ptype_name == gp.name:
+                    resolved[gp.name] = self._infer_nyet_type_from_arg(args[i])
+        # Check all are resolved
+        result = []
+        for gp in generics:
+            if gp.name not in resolved:
+                return None
+            result.append(resolved[gp.name])
+        return tuple(result)
 
     # ------------------------------------------------------------------
     # out
@@ -857,10 +1427,41 @@ class Emitter:
     # Struct construction
     # ------------------------------------------------------------------
 
+    def _heap_alloc_struct(self, llvm_struct_name: str, size_bytes: int) -> str:
+        """Malloc-allocate a struct; returns the ptr."""
+        self._declare_extern("declare ptr @malloc(i64)")
+        ptr = self._fresh_tmp()
+        self._emit_line(f"{ptr} = call ptr @malloc(i64 {size_bytes})")
+        return ptr
+
+    def _struct_size_bytes(self, name: str) -> int:
+        """Approximate struct size (sum of field sizes, rounded up to 8)."""
+        fields = self._structs.get(name, [])
+        total = sum(self._sizeof(ty) for _, ty in fields)
+        if total == 0:
+            return 8
+        # Round up to multiple of 8 for alignment
+        return (total + 7) & ~7
+
+    def _sum_type_size_bytes(self, name: str) -> int:
+        """Size of a sum type = tag + max payload."""
+        variants = self._sum_types.get(name, [])
+        max_payload = 0
+        for _, types in variants:
+            payload = sum(self._sizeof(t) for t in types)
+            if payload > max_payload:
+                max_payload = payload
+        total = 4 + max_payload  # i32 tag + payload
+        return (total + 7) & ~7
+
     def _emit_struct_construct(self, name: str, args: list[N.Expr]) -> str:
-        """Emit `(StructName field:val ...)` → alloca + store fields."""
+        """Emit `(StructName field:val ...)` → malloc + store fields.
+
+        Uses malloc instead of alloca so the struct survives the
+        callee's stack frame being popped (enables returning structs).
+        """
         fields = self._structs[name]
-        ptr = self._emit_alloca(f"%{name}")
+        ptr = self._heap_alloc_struct(name, self._struct_size_bytes(name))
 
         # Match args to fields — support both positional and keyword
         vals: dict[str, str] = {}
@@ -892,12 +1493,15 @@ class Emitter:
     # ------------------------------------------------------------------
 
     def _emit_variant_construct(self, vname: str, args: list[N.Expr]) -> str:
-        """Emit `(VariantName payload...)` → alloca sum type + store tag + payload."""
+        """Emit `(VariantName payload...)` → malloc sum type + store tag + payload.
+
+        Uses malloc so sum types can be safely returned from functions.
+        """
         sum_name, tag_idx = self._variant_ctors[vname]
         variants = self._sum_types[sum_name]
         _, payload_types = variants[tag_idx]
 
-        ptr = self._emit_alloca(f"%{sum_name}")
+        ptr = self._heap_alloc_struct(sum_name, self._sum_type_size_bytes(sum_name))
 
         # Store tag
         tag_ptr = self._fresh_tmp()
@@ -1150,6 +1754,110 @@ class Emitter:
         result = self._fresh_tmp()
         self._emit_line(f"{result} = load {result_ty}, ptr {result_ptr}")
         return result
+
+    # ------------------------------------------------------------------
+    # ? (Try) operator
+    # ------------------------------------------------------------------
+
+    def _emit_try(self, node: N.Try) -> str | None:
+        """(? expr) — Option/Result early-return.
+
+        For Option[T]: if Some(v), value is v; if None, return the None.
+        For Result[T, E]: if Ok(v), value is v; if Err(e), return the Err.
+        Convention: variant at tag 0 is success, tag 1 is failure.
+        The failure path re-returns the original scrutinee pointer (which
+        the enclosing fn must be declared to return).
+        """
+        scrut_val = self._emit_expr(node.value)
+        if scrut_val is None:
+            return None
+
+        # Determine the sum type of the scrutinee
+        sum_name = self._sum_name_of(node.value)
+        if sum_name is None or sum_name not in self._sum_types:
+            # Fallback: just return the value as-is (no-op ?)
+            return scrut_val
+
+        variants = self._sum_types[sum_name]
+        if len(variants) < 2:
+            return scrut_val
+
+        # Load the tag
+        tag_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{tag_ptr} = getelementptr inbounds %{sum_name}, "
+            f"ptr {scrut_val}, i32 0, i32 0"
+        )
+        tag = self._fresh_tmp()
+        self._emit_line(f"{tag} = load i32, ptr {tag_ptr}")
+
+        # success if tag == 0
+        is_ok = self._fresh_tmp()
+        self._emit_line(f"{is_ok} = icmp eq i32 {tag}, 0")
+
+        ok_label = self._fresh_label("try_ok")
+        fail_label = self._fresh_label("try_fail")
+        self._emit_line(
+            f"br i1 {is_ok}, label %{ok_label}, label %{fail_label}"
+        )
+
+        # Failure path: return the scrutinee
+        self._emit_label(fail_label)
+        self._emit_line(f"ret ptr {scrut_val}")
+
+        # Success path: extract payload of variant 0
+        self._emit_label(ok_label)
+        _, payload_types = variants[0]
+        if not payload_types:
+            # Unit success variant — return None equivalent (ptr)
+            return scrut_val
+
+        payload_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{payload_ptr} = getelementptr inbounds %{sum_name}, "
+            f"ptr {scrut_val}, i32 0, i32 1"
+        )
+        first_type = payload_types[0]
+        result = self._fresh_tmp()
+        self._emit_line(f"{result} = load {first_type}, ptr {payload_ptr}")
+        return result
+
+    def _sum_name_of(self, node: N.Node) -> str | None:
+        """Return the (possibly mangled) sum type name for a scrutinee."""
+        if isinstance(node, N.Ident):
+            return self._env_struct_name.get(node.name)
+        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
+            name = node.head.name
+            if name in self._variant_ctors:
+                return self._variant_ctors[name][0]
+            if name in self._generic_variant_ctors:
+                # Try to resolve via current call args
+                mangled = self._resolve_generic_variant(name, node.args)
+                if mangled and mangled in self._variant_ctors:
+                    return self._variant_ctors[mangled][0]
+            if name in self._fn_ret_nyet_names:
+                rn = self._fn_ret_nyet_names[name]
+                if rn in self._sum_types:
+                    return rn
+            if name in self._fn_templates:
+                # Generic fn — resolve via args, then use its mangled ret name
+                mangled = self._monomorphize_fn_from_args(name, node.args)
+                if mangled and mangled in self._fn_ret_nyet_names:
+                    rn = self._fn_ret_nyet_names[mangled]
+                    if rn in self._sum_types:
+                        return rn
+        if isinstance(node, N.Try):
+            # Chained ?: the payload of the first variant is itself a sum
+            inner = self._sum_name_of(node.value)
+            if inner and inner in self._sum_types:
+                variants = self._sum_types[inner]
+                if variants:
+                    _, payload_types = variants[0]
+                    if payload_types:
+                        # If the first variant's payload is the sum type itself
+                        # (rare), we fall through. Otherwise, we don't know.
+                        return None
+        return None
 
     # ------------------------------------------------------------------
     # If expression

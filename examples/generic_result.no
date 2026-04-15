@@ -1,0 +1,19 @@
+;; Generic Result[T, E] test with two type params.
+;; Expected output:
+;;   ok: 42
+;;   err: bad input
+
+(type Result[T E]
+  (Ok T)
+  (Err E))
+
+(fn report (r:Result[i32 string]) -> unit
+  (match r
+    ((Ok v) (do (out "ok: ") (out v) (out "\n")))
+    ((Err e) (do (out "err: ") (out e) (out "\n")))))
+
+(fn main () -> unit
+  (let a:Result[i32 string] (Ok 42))
+  (report a)
+  (let b:Result[i32 string] (Err "bad input"))
+  (report b))

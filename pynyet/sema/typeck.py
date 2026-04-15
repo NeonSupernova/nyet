@@ -282,7 +282,14 @@ class TypeChecker:
             return ERROR
 
         if isinstance(node, N.Try):
-            return self._infer(node.value)
+            inner = self._infer(node.value)
+            # For Option[T] / Result[T, E]: (? expr) yields the success variant's payload
+            if isinstance(inner, SumType) and inner.variants:
+                first_variant = inner.variants[0]
+                payload_types = first_variant[1]
+                if payload_types:
+                    return payload_types[0]
+            return inner
 
         if isinstance(node, N.Await):
             return self._infer(node.value)

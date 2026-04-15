@@ -1,0 +1,19 @@
+;; Generic Option[T] test.
+;; Expected output:
+;;   found: 42
+;;   nothing
+
+(type Option[T]
+  (Some T)
+  (None))
+
+(fn describe (o:Option[i32]) -> unit
+  (match o
+    ((Some n) (do (out "found: ") (out n) (out "\n")))
+    ((None) (out "nothing\n"))))
+
+(fn main () -> unit
+  (let a:Option[i32] (Some 42))
+  (describe a)
+  (let b:Option[i32] (None))
+  (describe b))

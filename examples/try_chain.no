@@ -1,0 +1,33 @@
+;; Chained `?` operators — each can early-return.
+;; safe_div n d = if d == 0 then None else Some(n/d)
+;; chain a b c = (safe_div a b) ? / c
+;;
+;; Expected output:
+;;   20 / 2 / 5 = 2
+;;   10 / 0 / 5 = none
+;;   done
+
+(type Option[T]
+  (Some T)
+  (None))
+
+(fn safe_div (n:i32 d:i32) -> Option[i32]
+  (if (== d 0)
+      (None)
+      (Some (/ n d))))
+
+(fn chain (a:i32 b:i32 c:i32) -> Option[i32]
+  (let first:i32 (? (safe_div a b)))
+  (Some (? (safe_div first c))))
+
+(fn describe (o:Option[i32]) -> unit
+  (match o
+    ((Some n) (do (out n) (out "\n")))
+    ((None) (out "none\n"))))
+
+(fn main () -> unit
+  (out "20 / 2 / 5 = ")
+  (describe (chain 20 2 5))
+  (out "10 / 0 / 5 = ")
+  (describe (chain 10 0 5))
+  (out "done\n"))
