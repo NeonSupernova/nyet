@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>name</key>
+    <string>Nyet</string>
+    <key>description</key>
+    <string>Syntax highlighting for the Nyet programming language (.no files)</string>
+    <key>contactName</key>
+    <string>Nyet Project</string>
+    <key>uuid</key>
+    <string>3B5D9A42-C1E7-4F8B-9D2A-7E3F6B0C4A1D</string>
+</dict>
+</plist>

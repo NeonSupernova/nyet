@@ -1,0 +1,138 @@
+{
+  "Function definition": {
+    "prefix": "fn",
+    "body": [
+      "(fn ${1:name} (${2:params}) -> ${3:unit}",
+      "  ${4:pass})"
+    ],
+    "description": "Define a named function"
+  },
+  "Generic function": {
+    "prefix": "fng",
+    "body": [
+      "(fn ${1:name} [${2:T}] (${3:x}:${2:T}) -> ${4:T}",
+      "  ${5:x})"
+    ],
+    "description": "Define a generic function"
+  },
+  "Let binding": {
+    "prefix": "let",
+    "body": ["(let ${1:name}:${2:i32} ${3:0})"],
+    "description": "Immutable variable binding"
+  },
+  "Var binding": {
+    "prefix": "var",
+    "body": ["(var ${1:name}:${2:i32} ${3:0})"],
+    "description": "Mutable variable binding"
+  },
+  "Const declaration": {
+    "prefix": "const",
+    "body": ["(const ${1:NAME}:${2:i32} ${3:0})"],
+    "description": "Constant declaration"
+  },
+  "If expression": {
+    "prefix": "if",
+    "body": [
+      "(if ${1:condition}",
+      "  ${2:then-branch}",
+      "  ${3:pass})"
+    ],
+    "description": "Conditional expression"
+  },
+  "Match expression": {
+    "prefix": "match",
+    "body": [
+      "(match ${1:value}",
+      "  (${2:pattern} ${3:body})",
+      "  (_ pass))"
+    ],
+    "description": "Pattern matching expression"
+  },
+  "Loop": {
+    "prefix": "loop",
+    "body": [
+      "(loop",
+      "  ${1:body})"
+    ],
+    "description": "Infinite loop"
+  },
+  "Do block": {
+    "prefix": "do",
+    "body": [
+      "(do",
+      "  ${1:expr1}",
+      "  ${2:expr2})"
+    ],
+    "description": "Sequence of expressions"
+  },
+  "Struct definition": {
+    "prefix": "struct",
+    "body": [
+      "(struct ${1:Name}",
+      "  (${2:field}:${3:i32}))"
+    ],
+    "description": "Define a struct"
+  },
+  "Sum type definition": {
+    "prefix": "type",
+    "body": [
+      "(type ${1:Name}",
+      "  (${2:Variant1} ${3:i32})",
+      "  (${4:Variant2}))"
+    ],
+    "description": "Define a sum type (enum)"
+  },
+  "Trait definition": {
+    "prefix": "trait",
+    "body": [
+      "(trait ${1:Name}",
+      "  (fn ${2:method} (self) -> ${3:unit}",
+      "    pass))"
+    ],
+    "description": "Define a trait"
+  },
+  "Impl block": {
+    "prefix": "impl",
+    "body": [
+      "(impl ${1:Trait} ${2:Type}",
+      "  (fn ${3:method} (self) -> ${4:unit}",
+      "    pass))"
+    ],
+    "description": "Implement a trait for a type"
+  },
+  "Option Some": {
+    "prefix": "some",
+    "body": ["(Some ${1:value})"],
+    "description": "Option::Some variant"
+  },
+  "Option None": {
+    "prefix": "none",
+    "body": ["(None)"],
+    "description": "Option::None variant"
+  },
+  "Result Ok": {
+    "prefix": "ok",
+    "body": ["(Ok ${1:value})"],
+    "description": "Result::Ok variant"
+  },
+  "Result Err": {
+    "prefix": "err",
+    "body": ["(Err ${1:message})"],
+    "description": "Result::Err variant"
+  },
+  "Try operator": {
+    "prefix": "try",
+    "body": ["(? ${1:expr})"],
+    "description": "Unwrap Option/Result or early-return on None/Err"
+  },
+  "Out (print)": {
+    "prefix": "out",
+    "body": ["(out ${1:\"hello\"})"],
+    "description": "Print to stdout"
+  },
+  "Section comment": {
+    "prefix": ";;;",
+    "body": [";;; ${1:Section name}"],
+    "description": "Section comment"
+  }
+}
