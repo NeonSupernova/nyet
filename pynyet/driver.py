@@ -34,12 +34,17 @@ def _load_source(path_str: str) -> SourceFile:
     return SourceFile(str(path), path.read_text())
 
 
+def _print_errors(e: NyetError) -> None:
+    for d in e.diagnostics:
+        print(d.format(), file=sys.stderr)
+
+
 def _cmd_lex(args: argparse.Namespace) -> int:
     sf = _load_source(args.file)
     try:
         sys.stdout.write(_dump_tokens(sf, keep_trivia=args.keep_trivia))
     except NyetError as e:
-        print(e.diagnostic.format(), file=sys.stderr)
+        _print_errors(e)
         return 1
     return 0
 
@@ -55,7 +60,7 @@ def _cmd_parse(args: argparse.Namespace) -> int:
         for node in program:
             print(pretty(node))
     except NyetError as e:
-        print(e.diagnostic.format(), file=sys.stderr)
+        _print_errors(e)
         return 1
     return 0
 
@@ -70,7 +75,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
         tokens = lex(sf)
         program = parse(tokens)
     except NyetError as e:
-        print(e.diagnostic.format(), file=sys.stderr)
+        _print_errors(e)
         return 1
 
     errors = resolve_names(program) + check_types(program)
@@ -94,7 +99,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         tokens = lex(sf)
         program = parse(tokens)
     except NyetError as e:
-        print(e.diagnostic.format(), file=sys.stderr)
+        _print_errors(e)
         return 1
 
     # Run semantic checks (warnings only — don't block on sema errors in v0.1)

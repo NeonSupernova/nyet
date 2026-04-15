@@ -300,6 +300,8 @@ class TypeChecker:
         """Check if actual is compatible with expected."""
         if expected is ERROR or actual is ERROR:
             return True  # don't cascade errors
+        if isinstance(expected, FloatType) and isinstance(actual, IntType):
+            return True  # integer literals can be assigned to float bindings
         return expected == actual
 
 

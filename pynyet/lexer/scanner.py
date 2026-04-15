@@ -102,6 +102,19 @@ class Lexer:
                     self.pos += 2
                     self._emit(TokenKind.HASH_LPAREN, start)
                     continue
+                if self._peek(1) == "|":
+                    # Block comment: #| ... |#
+                    self.pos += 2  # consume #|
+                    closed = False
+                    while not self._eof():
+                        if self._peek() == "|" and self._peek(1) == "#":
+                            self.pos += 2  # consume |#
+                            closed = True
+                            break
+                        self._advance()
+                    if not closed:
+                        raise self._error("unterminated block comment", start)
+                    continue
                 raise self._error("unexpected '#' — expected '#(' for tuple", start)
             if ch == '"':
                 self._lex_string(start); continue
