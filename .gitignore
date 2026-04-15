@@ -5,3 +5,7 @@
 !examples/*.no
 *.pyc
 __pycache__
+
+output*
+.claude/
+.idea/
