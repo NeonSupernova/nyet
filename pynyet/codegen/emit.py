@@ -30,6 +30,8 @@ class Emitter:
         self._str_lits: dict[str, str] = {}
         self._declared_externs: set[str] = set()
         self._fn_lines: list[str] = []
+        # Stack of (end_label, result_ptr | None, result_ty | None) for loop/break
+        self._loop_stack: list[tuple[str, str | None, str | None]] = []
 
         # v0.2: struct registry — name → [(field_name, llvm_type)]
         self._structs: dict[str, list[tuple[str, str]]] = {}
@@ -493,6 +495,12 @@ class Emitter:
 
         if isinstance(node, N.Assign):
             return self._emit_assign(node)
+
+        if isinstance(node, N.Loop):
+            return self._emit_loop(node)
+
+        if isinstance(node, N.Break):
+            return self._emit_break(node)
 
         if isinstance(node, (N.StructDecl, N.TypeDecl)):
             return None  # already processed in emit()
@@ -1191,6 +1199,84 @@ class Emitter:
         for expr in node.exprs:
             result = self._emit_expr(expr)
         return result
+
+    # ------------------------------------------------------------------
+    # Loop / Break
+    # ------------------------------------------------------------------
+
+    def _find_break_type(self, node: N.Node | None) -> str | None:
+        """Walk the subtree to find the LLVM type carried by the first break."""
+        if node is None:
+            return None
+        if isinstance(node, N.Break):
+            return self._infer_llvm_type(node.value) if node.value is not None else None
+        if isinstance(node, N.Loop):
+            return None  # nested loop owns its own breaks
+        if isinstance(node, N.Do):
+            for e in node.exprs:
+                t = self._find_break_type(e)
+                if t is not None:
+                    return t
+        if isinstance(node, N.If):
+            t = self._find_break_type(node.then_branch)
+            if t is not None:
+                return t
+            return self._find_break_type(node.else_branch)
+        return None
+
+    def _emit_loop(self, node: N.Loop) -> str | None:
+        top_label = self._fresh_label("loop_top")
+        end_label = self._fresh_label("loop_end")
+
+        # Allocate result slot for break-with-value
+        break_ty = self._find_break_type(node.body)
+        result_ptr: str | None = None
+        if break_ty is not None:
+            result_ptr = self._fresh_tmp()
+            self._emit_line(f"{result_ptr} = alloca {break_ty}")
+            if break_ty == "ptr":
+                self._emit_line(f"store ptr null, ptr {result_ptr}")
+            elif self._is_float(break_ty):
+                self._emit_line(f"store {break_ty} 0.0, ptr {result_ptr}")
+            else:
+                self._emit_line(f"store {break_ty} 0, ptr {result_ptr}")
+
+        self._emit_line(f"br label %{top_label}")
+        self._emit_label(top_label)
+
+        self._loop_stack.append((end_label, result_ptr, break_ty))
+        if node.body is not None:
+            self._emit_expr(node.body)
+        self._loop_stack.pop()
+
+        # Fall-through back to loop top (unreachable if body always breaks)
+        self._emit_line(f"br label %{top_label}")
+        self._emit_label(end_label)
+
+        if result_ptr is not None and break_ty is not None:
+            result = self._fresh_tmp()
+            self._emit_line(f"{result} = load {break_ty}, ptr {result_ptr}")
+            return result
+        return None
+
+    def _emit_break(self, node: N.Break) -> str | None:
+        if self._loop_stack:
+            end_label, result_ptr, break_ty = self._loop_stack[-1]
+            if node.value is not None and result_ptr is not None and break_ty is not None:
+                val = self._emit_expr(node.value)
+                if val is not None:
+                    val_ty = self._infer_llvm_type(node.value)
+                    if self._is_float(break_ty) and not self._is_float(val_ty):
+                        conv = self._fresh_tmp()
+                        self._emit_line(f"{conv} = sitofp {val_ty} {val} to {break_ty}")
+                        val = conv
+                    self._emit_line(f"store {break_ty} {val}, ptr {result_ptr}")
+            self._emit_line(f"br label %{end_label}")
+        # Start an unreachable block so any code emitted by callers
+        # (e.g. the if-then fallthrough br) remains structurally valid.
+        dead = self._fresh_label("dead")
+        self._emit_label(dead)
+        return None
 
     def _emit_let(self, node: N.LetDecl) -> str | None:
         if node.type:
