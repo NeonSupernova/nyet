@@ -498,7 +498,7 @@ class Emitter:
         if isinstance(node, N.Do):
             return self._emit_do(node)
 
-        if isinstance(node, N.LetDecl):
+        if isinstance(node, (N.LetDecl, N.ConstDecl)):
             return self._emit_let(node)
 
         if isinstance(node, N.Return):
