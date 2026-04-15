@@ -1,6 +1,5 @@
 ;;;; Nyet Language Reference
 ;;;; This file is valid Nyet source. It compiles.
-;;;; Comments are the specification. Code is the proof.
 ;;;;
 ;;;; Nyet: S-expression syntax, static types, Rust-inspired ownership,
 ;;;; extensible IO channels, first-class functions, and operator overloading.
@@ -21,7 +20,9 @@
 ;;;   section       — describes a logical section of the file
 ;;    block         — describes a declaration or a few lines
 ;     inline        — notes on a single expression
-
+#|    
+      Block Comment — describes a multiline comment These have full markdown support 
+|# 
 
 ;; ============================================================
 ;;; Primitives

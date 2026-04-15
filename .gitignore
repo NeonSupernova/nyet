@@ -9,3 +9,5 @@ __pycache__
 output*
 .claude/
 .idea/
+nyet-vscode/node_modules/
+.vscode/
