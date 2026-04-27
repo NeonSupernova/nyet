@@ -50,6 +50,12 @@ class Emitter:
         # variant_name → (sum_type_name, variant_index)
         self._variant_ctors: dict[str, tuple[str, int]] = {}
 
+        # Array bindings — name → LLVM element type ("i32", "double", "ptr"…).
+        # Set whenever a let/var/param resolves to `Array[T]`. Used by
+        # `_emit_call` and `_emit_assign` to dispatch `(arr i)` and
+        # `(= (arr i) v)` to indexed load/store instead of a function call.
+        self._env_array_elem: dict[str, str] = {}
+
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
         # (fn_name, type_args_tuple) → mangled_name — already-monomorphized
@@ -577,6 +583,9 @@ class Emitter:
             # v0.3: instantiate on demand
             base = tn.base
             base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Array":
+                # Arrays lower to a heap pointer (header + elements).
+                return "ptr"
             if base_name is not None:
                 type_args = tuple(
                     self._nyet_type_name_of_node(a) or "unk" for a in tn.args
@@ -591,9 +600,25 @@ class Emitter:
                 mangled = self._mangle(base_name, type_args)
                 if mangled in self._structs or mangled in self._sum_types:
                     return "ptr"
+        if isinstance(tn, N.RefType):
+            # `&T` and `&!T` lower to the same shape as T for codegen.
+            return self._llvm_type(tn.inner)
         if isinstance(tn, N.UnitType):
             return "void"
         return "i32"
+
+    def _array_elem_llvm_type(self, tn: N.TypeNode | None) -> str | None:
+        """Return the LLVM element type if `tn` is `Array[T]` (or `&Array[T]`)."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._array_elem_llvm_type(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Array" and tn.args:
+                return self._llvm_type(tn.args[0])
+        return None
 
     def _llvm_ret_type(self, tn: N.TypeNode | None) -> str:
         if tn is None:
@@ -651,6 +676,7 @@ class Emitter:
             "fn_alloca_lines": self._fn_alloca_lines,
             "env": dict(self._env),
             "env_struct_name": dict(self._env_struct_name),
+            "env_array_elem": dict(self._env_array_elem),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
         }
@@ -663,6 +689,7 @@ class Emitter:
         self._env = saved["env"]
         self._env_struct_name.clear()
         self._env_struct_name.update(saved["env_struct_name"])
+        self._env_array_elem = saved["env_array_elem"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
 
@@ -705,8 +732,17 @@ class Emitter:
             )
             self._emit_label("entry")
 
-            for t, n, nyet_n in zip(param_types, param_names, param_nyet_names):
-                if nyet_n and (nyet_n in self._structs or nyet_n in self._sum_types):
+            for p, t, n, nyet_n in zip(
+                node.params, param_types, param_names, param_nyet_names
+            ):
+                arr_elem = self._array_elem_llvm_type(p.type)
+                if arr_elem is not None:
+                    # Array params arrive as `ptr` to the heap block.
+                    ptr = self._emit_alloca("ptr")
+                    self._emit_line(f"store ptr %{n}, ptr {ptr}")
+                    self._env[n] = (ptr, "ptr")
+                    self._env_array_elem[n] = arr_elem
+                elif nyet_n and (nyet_n in self._structs or nyet_n in self._sum_types):
                     # Struct/sum params are already ptrs — register directly
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
@@ -777,10 +813,15 @@ class Emitter:
             return "i1"
         if isinstance(node, N.StringLit):
             return "ptr"
+        if isinstance(node, N.ArrayLit):
+            return "ptr"
         if isinstance(node, N.Ident) and node.name in self._env:
             return self._env[node.name][1]
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
             op = node.head.name
+            # Array indexing: shadows any same-named function.
+            if op in self._env_array_elem and len(node.args) == 1:
+                return self._env_array_elem[op]
             if op in ("+", "-", "*", "/", "%"):
                 has_double = False
                 has_float = False
@@ -891,6 +932,9 @@ class Emitter:
         if isinstance(node, N.Ident):
             return self._emit_ident(node)
 
+        if isinstance(node, N.ArrayLit):
+            return self._emit_array_lit(node)
+
         if isinstance(node, N.Call):
             return self._emit_call(node)
 
@@ -950,6 +994,10 @@ class Emitter:
     def _emit_call(self, node: N.Call) -> str | None:
         if isinstance(node.head, N.Ident):
             name = node.head.name
+            # Array indexing: `(arr i)` where `arr` is a local Array[T].
+            # A bound name shadows any same-named function, matching scoping.
+            if name in self._env_array_elem and len(node.args) == 1:
+                return self._emit_array_index(name, node.args[0])
             # Builtins
             if name == "out":
                 return self._emit_out(node.args)
@@ -2008,6 +2056,25 @@ class Emitter:
             ty = "i32"
             nyet_name = None
 
+        # Array bindings: store the heap pointer and remember its element
+        # type so `(name i)` and `(= (name i) v)` lower correctly. We
+        # detect via either a `Array[T]` annotation or an `ArrayLit` rhs.
+        elem_ty: str | None = None
+        if node.type is not None:
+            elem_ty = self._array_elem_llvm_type(node.type)
+        if elem_ty is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
+            elem_ty = self._infer_llvm_type(node.value.elements[0])
+        if elem_ty is not None and isinstance(node.value, N.ArrayLit):
+            ptr = self._emit_alloca("ptr")
+            val = self._emit_expr(node.value)
+            if val is not None:
+                self._emit_line(f"store ptr {val}, ptr {ptr}")
+            else:
+                self._emit_line(f"store ptr null, ptr {ptr}")
+            self._env[node.name] = (ptr, "ptr")
+            self._env_array_elem[node.name] = elem_ty
+            return None
+
         # For struct/sum-type bindings, the value is already a ptr (from construction)
         is_aggregate = (
             nyet_name is not None
@@ -2054,11 +2121,129 @@ class Emitter:
         return None
 
     def _emit_assign(self, node: N.Assign) -> str | None:
-        if isinstance(node.target, N.Ident) and node.target.name in self._env:
-            ptr, ty = self._env[node.target.name]
+        target = node.target
+        # Indexed assignment: `(= (arr i) v)`.
+        if (
+            isinstance(target, N.Call)
+            and isinstance(target.head, N.Ident)
+            and target.head.name in self._env_array_elem
+            and len(target.args) == 1
+        ):
+            return self._emit_array_assign(
+                target.head.name, target.args[0], node.value
+            )
+        if isinstance(target, N.Ident) and target.name in self._env:
+            ptr, ty = self._env[target.name]
             val = self._emit_expr(node.value)
             if val is not None:
                 self._emit_line(f"store {ty} {val}, ptr {ptr}")
+        return None
+
+    # ------------------------------------------------------------------
+    # Array literals, indexing, and indexed assignment
+    # ------------------------------------------------------------------
+    #
+    # In-memory layout for an `Array[T]`:
+    #     [0:8]   i64 length
+    #     [8:..]  N elements of T, packed (alignment matches T since the
+    #             header is 8 bytes and `_sizeof(T)` is a power of two).
+    # The Nyet value of an array is a `ptr` to this heap block, allocated
+    # via `malloc`.
+
+    def _array_data_base(self, arr_ptr: str) -> str:
+        """Skip the 8-byte length header to land on element 0."""
+        base = self._fresh_tmp()
+        self._emit_line(f"{base} = getelementptr i8, ptr {arr_ptr}, i64 8")
+        return base
+
+    def _idx_to_i64(self, idx_val: str, idx_ty: str) -> str:
+        """Promote an index value to i64 for pointer arithmetic."""
+        if idx_ty == "i64":
+            return idx_val
+        idx64 = self._fresh_tmp()
+        self._emit_line(f"{idx64} = sext {idx_ty} {idx_val} to i64")
+        return idx64
+
+    def _emit_array_lit(self, node: N.ArrayLit) -> str:
+        """Lower `[e0 e1 ... eN]` to malloc + length + element stores."""
+        n = len(node.elements)
+        elem_ty = (
+            self._infer_llvm_type(node.elements[0]) if node.elements else "i32"
+        )
+        elem_size = self._sizeof(elem_ty)
+        total = 8 + n * elem_size
+
+        self._declare_extern("declare ptr @malloc(i64)")
+        arr_ptr = self._fresh_tmp()
+        self._emit_line(f"{arr_ptr} = call ptr @malloc(i64 {total})")
+        self._emit_line(f"store i64 {n}, ptr {arr_ptr}")
+
+        if n > 0:
+            base = self._array_data_base(arr_ptr)
+            for i, elem in enumerate(node.elements):
+                val = self._emit_expr(elem)
+                if val is None:
+                    continue
+                if i == 0:
+                    slot = base
+                else:
+                    slot = self._fresh_tmp()
+                    self._emit_line(
+                        f"{slot} = getelementptr {elem_ty}, ptr {base}, i64 {i}"
+                    )
+                self._emit_line(f"store {elem_ty} {val}, ptr {slot}")
+        return arr_ptr
+
+    def _emit_array_index(self, name: str, idx_arg: N.Expr) -> str:
+        ptr_slot, _ = self._env[name]
+        elem_ty = self._env_array_elem[name]
+        arr = self._fresh_tmp()
+        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+
+        idx_val = self._emit_expr(idx_arg)
+        idx_ty = self._infer_llvm_type(idx_arg)
+        idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
+
+        base = self._array_data_base(arr)
+        elem_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}"
+        )
+        result = self._fresh_tmp()
+        self._emit_line(f"{result} = load {elem_ty}, ptr {elem_ptr}")
+        return result
+
+    def _emit_array_assign(
+        self, name: str, idx_arg: N.Expr, value: N.Expr | None
+    ) -> str | None:
+        ptr_slot, _ = self._env[name]
+        elem_ty = self._env_array_elem[name]
+        arr = self._fresh_tmp()
+        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+
+        idx_val = self._emit_expr(idx_arg)
+        idx_ty = self._infer_llvm_type(idx_arg)
+        idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
+
+        if value is None:
+            return None
+        val = self._emit_expr(value)
+        if val is None:
+            return None
+
+        # Coerce int→float when storing into a float-element array.
+        val_ty = self._infer_llvm_type(value)
+        if self._is_float(elem_ty) and not self._is_float(val_ty):
+            conv = self._fresh_tmp()
+            self._emit_line(f"{conv} = sitofp {val_ty} {val} to {elem_ty}")
+            val = conv
+
+        base = self._array_data_base(arr)
+        elem_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}"
+        )
+        self._emit_line(f"store {elem_ty} {val}, ptr {elem_ptr}")
         return None
 
     # ------------------------------------------------------------------

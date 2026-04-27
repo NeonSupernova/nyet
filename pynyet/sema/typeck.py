@@ -69,8 +69,14 @@ class TypeChecker:
         if isinstance(tn, N.SelfType):
             return ERROR  # resolved during trait checking
         if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(
+                base, (N.NamedType, N.PrimType)
+            ) else None
+            if base_name == "Array" and tn.args:
+                return ArrayType(self._resolve_type_node(tn.args[0]))
             # For now, just return the base type name
-            return self._resolve_type_node(tn.base)
+            return self._resolve_type_node(base)
         if isinstance(tn, N.DynType):
             return ERROR  # deferred
         return ERROR
@@ -195,6 +201,9 @@ class TypeChecker:
                     and isinstance(node.args[0], N.Ident)
                     and node.args[0].name in PRIM_TYPES):
                 return PRIM_TYPES[node.args[0].name]
+            # `(arr i)` — array indexing yields the element type.
+            if isinstance(head_ty, ArrayType) and len(node.args) == 1:
+                return head_ty.element
             if isinstance(head_ty, FnSig):
                 return head_ty.ret
             # Operator calls — infer from first operand
