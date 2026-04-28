@@ -1,0 +1,17 @@
+;; Higher-order: top-level fn passed as a value, plus a lambda.
+;; Expected:
+;;   inc(5) = 6
+;;   apply_twice(inc, 5) = 7
+;;   apply_twice((fn n: n*n), 3) = 81
+
+(fn inc (n:i32) -> i32 (+ n 1))
+
+(fn apply_twice (f:(fn i32 -> i32) x:i32) -> i32
+  (f (f x)))
+
+(fn main () -> unit
+  (out "inc(5) = ") (out (inc 5)) (out "\n")
+  (out "apply_twice(inc, 5) = ") (out (apply_twice inc 5)) (out "\n")
+  (out "apply_twice(square, 3) = ")
+  (out (apply_twice (fn (n:i32) -> i32 (* n n)) 3))
+  (out "\n"))

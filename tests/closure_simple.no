@@ -1,0 +1,9 @@
+;; Simplest closure: lambda with no captures, called via fn pointer.
+;; Expected: 10
+
+(fn apply (f:(fn i32 -> i32) x:i32) -> i32
+  (f x))
+
+(fn main () -> unit
+  (let r (apply (fn (n:i32) -> i32 (* n 2)) 5))
+  (out r) (out "\n"))

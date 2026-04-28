@@ -76,11 +76,143 @@ class Emitter:
         # `_emit_arith` / `_emit_cmp` to dispatch through the impl.
         self._method_impls: dict[tuple[str, str], str] = {}
 
+        # v0.6: lambda lifting state.
+        # `_closure_counter`: monotonic id used to generate unique
+        # `__closure_N` names when a `(fn ...)` literal is lifted to a
+        # top-level function. `_env_fn_sig` is the per-function map of
+        # binding-name → (param_llvm_types, ret_llvm_type) for any binding
+        # that refers to a function (a fn-typed parameter, or a let bound
+        # to a lifted closure / top-level fn). Calls go through it to
+        # decide between a direct named `call @fn` and an indirect
+        # `call %fnptr` through a function pointer.
+        self._closure_counter: int = 0
+        self._env_fn_sig: dict[str, tuple[list[str], str]] = {}
+
+    # ==================================================================
+    # v0.6: Closure lifting
+    # ==================================================================
+
+    def _lift_closures(self, program: list[N.Node]) -> list[N.Node]:
+        """Hoist `(fn ...)` literals to top-level functions.
+
+        Each `FnExpr` is replaced with an `Ident` referring to a fresh
+        top-level `__closure_N` `FnDecl` appended to the program list.
+        The lifted name is later treated as a function pointer at call
+        sites (see `_emit_call`'s indirect-call path).
+
+        Captures are not yet supported: any free variable in the lambda
+        body will fail later as an undefined identifier. That's fine for
+        the v0.6 milestone goal, which exercises non-capturing lambdas
+        through higher-order functions.
+        """
+        lifted: list[N.FnDecl] = []
+        new_program = [self._lift_in(n, lifted) for n in program]
+        return new_program + lifted
+
+    def _lift_in(self, node: N.Node, lifted: list[N.FnDecl]) -> N.Node:
+        if node is None:
+            return node
+
+        if isinstance(node, N.FnExpr):
+            # Recurse into the body first so nested lambdas are lifted too.
+            inner_body = self._lift_in(node.body, lifted) if node.body else None
+            name = f"__closure_{self._closure_counter}"
+            self._closure_counter += 1
+            decl = N.FnDecl(
+                node.span, name, list(node.params), node.return_type, inner_body
+            )
+            lifted.append(decl)
+            return N.Ident(node.span, name)
+
+        if isinstance(node, N.FnDecl):
+            if node.body is not None:
+                node.body = self._lift_in(node.body, lifted)
+            return node
+
+        if isinstance(node, N.ImplDecl):
+            node.items = [self._lift_in(it, lifted) for it in node.items]
+            return node
+
+        if isinstance(node, (N.LetDecl, N.ConstDecl)):
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        if isinstance(node, N.Call):
+            if node.head is not None:
+                node.head = self._lift_in(node.head, lifted)
+            node.args = [self._lift_in(a, lifted) for a in node.args]
+            return node
+
+        if isinstance(node, N.Do):
+            node.exprs = [self._lift_in(e, lifted) for e in node.exprs]
+            return node
+
+        if isinstance(node, N.If):
+            if node.cond is not None:
+                node.cond = self._lift_in(node.cond, lifted)
+            if node.then_branch is not None:
+                node.then_branch = self._lift_in(node.then_branch, lifted)
+            if node.else_branch is not None:
+                node.else_branch = self._lift_in(node.else_branch, lifted)
+            return node
+
+        if isinstance(node, N.Match):
+            if node.scrutinee is not None:
+                node.scrutinee = self._lift_in(node.scrutinee, lifted)
+            for arm in node.arms:
+                arm.body = self._lift_in(arm.body, lifted)
+            return node
+
+        if isinstance(node, N.Return):
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        if isinstance(node, N.Assign):
+            if node.target is not None:
+                node.target = self._lift_in(node.target, lifted)
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        if isinstance(node, N.Loop):
+            if node.body is not None:
+                node.body = self._lift_in(node.body, lifted)
+            return node
+
+        if isinstance(node, N.Break):
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        if isinstance(node, (N.ArrayLit, N.TupleLit)):
+            node.elements = [self._lift_in(e, lifted) for e in node.elements]
+            return node
+
+        if isinstance(node, N.KeywordArg):
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        if isinstance(node, (N.Try, N.Await, N.Spawn)):
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        return node
+
     # ==================================================================
     # Public entry point
     # ==================================================================
 
     def emit(self, program: list[N.Node]) -> str:
+        # v0.6: lambda-lift `(fn ...)` literals into auto-named top-level
+        # functions. The pre-pass mutates the program list in place by
+        # appending the lifted decls and substituting Ident references for
+        # each FnExpr.
+        program = self._lift_closures(program)
+
         fns: list[N.FnDecl] = []
         top_level: list[N.Node] = []
         has_main = False
@@ -131,6 +263,12 @@ class Emitter:
                             fns.append(item)
             else:
                 top_level.append(node)
+
+        # Pre-register every concrete function's signature so call sites
+        # in bodies can reference fns regardless of declaration order
+        # (matters for v0.6 lifted lambdas appended after `main`).
+        for fn in fns:
+            self._register_fn_sig(fn)
 
         for fn in fns:
             self._emit_fn(fn)
@@ -632,6 +770,9 @@ class Emitter:
         if isinstance(tn, N.RefType):
             # `&T` and `&!T` lower to the same shape as T for codegen.
             return self._llvm_type(tn.inner)
+        if isinstance(tn, N.FnType):
+            # Function pointer.
+            return "ptr"
         if isinstance(tn, N.UnitType):
             return "void"
         return "i32"
@@ -708,6 +849,7 @@ class Emitter:
             "env": dict(self._env),
             "env_struct_name": dict(self._env_struct_name),
             "env_array_elem": dict(self._env_array_elem),
+            "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
         }
@@ -721,8 +863,21 @@ class Emitter:
         self._env_struct_name.clear()
         self._env_struct_name.update(saved["env_struct_name"])
         self._env_array_elem = saved["env_array_elem"]
+        self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
+
+    def _register_fn_sig(self, node: N.FnDecl) -> None:
+        """Pre-populate `_fn_sigs` so call sites resolve regardless of
+        the order functions appear in the program list."""
+        if node.name == "main":
+            return
+        param_types = [self._llvm_type(p.type) for p in node.params]
+        ret_type = self._llvm_ret_type(node.return_type)
+        self._fn_sigs[node.name] = (param_types, ret_type)
+        ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
+        if ret_nyet:
+            self._fn_ret_nyet_names[node.name] = ret_nyet
 
     def _emit_fn(self, node: N.FnDecl) -> None:
         saved = self._save_fn_state()
@@ -773,6 +928,18 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_array_elem[n] = arr_elem
+                elif isinstance(p.type, N.FnType):
+                    # Function-typed param: a pointer to a function. Track its
+                    # signature so calls like `(f x)` can be lowered as an
+                    # indirect call through the slot.
+                    ptr = self._emit_alloca("ptr")
+                    self._emit_line(f"store ptr %{n}, ptr {ptr}")
+                    self._env[n] = (ptr, "ptr")
+                    fn_param_tys = [self._llvm_type(pt) for pt in p.type.params]
+                    fn_ret_ty = (
+                        self._llvm_ret_type(p.type.ret) if p.type.ret else "void"
+                    )
+                    self._env_fn_sig[n] = (fn_param_tys, fn_ret_ty)
                 elif nyet_n and (nyet_n in self._structs or nyet_n in self._sum_types):
                     # Struct/sum params are already ptrs — register directly
                     ptr = self._emit_alloca("ptr")
@@ -848,6 +1015,9 @@ class Emitter:
             return "ptr"
         if isinstance(node, N.Ident) and node.name in self._env:
             return self._env[node.name][1]
+        # v0.6: a bare reference to a top-level fn yields its function pointer.
+        if isinstance(node, N.Ident) and node.name in self._fn_sigs:
+            return "ptr"
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
             op = node.head.name
             # Array indexing: shadows any same-named function.
@@ -1036,6 +1206,10 @@ class Emitter:
             tmp = self._fresh_tmp()
             self._emit_line(f"{tmp} = load {ty}, ptr {ptr}")
             return tmp
+        # v0.6: lifted lambda / top-level function used as a value yields
+        # the global function pointer.
+        if node.name in self._fn_sigs:
+            return f"@{node.name}"
         return None
 
     # ==================================================================
@@ -1058,6 +1232,8 @@ class Emitter:
                 return self._emit_fmt(node.args)
             if name == "panic":
                 return self._emit_panic(node.args)
+            if name == "len" and len(node.args) == 1:
+                return self._emit_array_len(node.args[0])
             # Operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -1101,6 +1277,10 @@ class Emitter:
                     return self._emit_user_call(
                         self._method_impls[(sn, name)], node.args
                     )
+            # v0.6: indirect call through a fn-typed binding (parameter
+            # or let bound to a lifted lambda).
+            if name in self._env_fn_sig:
+                return self._emit_indirect_call(name, node.args)
             # User function
             return self._emit_user_call(name, node.args)
         return None
@@ -2263,6 +2443,27 @@ class Emitter:
 
         if isinstance(node.value, N.StringLit):
             self._str_lits[node.name] = node.value.value
+
+        # v0.6: if the let binds to a function (lifted lambda or top-level
+        # fn name), copy the signature over so `(<name> args...)` later
+        # dispatches as an indirect call through the slot.
+        sig = self._fn_sig_of_value(node.value)
+        if sig is not None:
+            self._env_fn_sig[node.name] = sig
+        return None
+
+    def _fn_sig_of_value(
+        self, value: N.Node | None
+    ) -> tuple[list[str], str] | None:
+        """If `value` is an Ident referring to a known function, return its
+        (param_llvm_types, ret_llvm_type) signature. Otherwise None."""
+        if value is None:
+            return None
+        if isinstance(value, N.Ident):
+            if value.name in self._fn_sigs:
+                return self._fn_sigs[value.name]
+            if value.name in self._env_fn_sig:
+                return self._env_fn_sig[value.name]
         return None
 
     def _infer_nyet_type_name(self, node: N.Node) -> str | None:
@@ -2333,6 +2534,27 @@ class Emitter:
         idx64 = self._fresh_tmp()
         self._emit_line(f"{idx64} = sext {idx_ty} {idx_val} to i64")
         return idx64
+
+    def _emit_array_len(self, arg: N.Expr) -> str:
+        """Read the i64 length stored at offset 0 of an array's heap block,
+        then truncate to i32 so it can be used in `i32` arithmetic and
+        comparisons without explicit casts."""
+        target = self._unwrap_borrow(arg)
+        # Find the slot holding the array pointer.
+        arr_ptr: str | None = None
+        if isinstance(target, N.Ident) and target.name in self._env:
+            slot, _ = self._env[target.name]
+            arr_ptr = self._fresh_tmp()
+            self._emit_line(f"{arr_ptr} = load ptr, ptr {slot}")
+        else:
+            arr_ptr = self._emit_expr(target)
+        if arr_ptr is None:
+            return "0"
+        len64 = self._fresh_tmp()
+        self._emit_line(f"{len64} = load i64, ptr {arr_ptr}")
+        len32 = self._fresh_tmp()
+        self._emit_line(f"{len32} = trunc i64 {len64} to i32")
+        return len32
 
     def _emit_array_lit(self, node: N.ArrayLit) -> str:
         """Lower `[e0 e1 ... eN]` to malloc + length + element stores."""
@@ -2442,6 +2664,32 @@ class Emitter:
             tmp = self._fresh_tmp()
             self._emit_line(f"{tmp} = call {ret_type} @{name}({args_str})")
             return tmp
+
+    def _emit_indirect_call(self, name: str, args: list[N.Expr]) -> str | None:
+        """Call through a fn-pointer binding (v0.6 closure / fn parameter).
+
+        Loads the function pointer from the binding's slot, then issues
+        an indirect `call` using the binding's stored signature.
+        """
+        sig_types, ret_type = self._env_fn_sig[name]
+        ptr, _slot_ty = self._env[name]
+        fnptr = self._fresh_tmp()
+        self._emit_line(f"{fnptr} = load ptr, ptr {ptr}")
+
+        arg_vals: list[tuple[str, str]] = []
+        for i, arg in enumerate(args):
+            v = self._emit_expr(arg)
+            if v is None:
+                continue
+            ty = sig_types[i] if i < len(sig_types) else self._infer_llvm_type(arg)
+            arg_vals.append((ty, v))
+        args_str = ", ".join(f"{t} {v}" for t, v in arg_vals)
+        if ret_type == "void":
+            self._emit_line(f"call void {fnptr}({args_str})")
+            return None
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call {ret_type} {fnptr}({args_str})")
+        return tmp
 
     # ==================================================================
     # env_struct_name: tracks which Nyet struct/sum type a binding holds
