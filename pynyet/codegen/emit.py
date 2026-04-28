@@ -1005,6 +1005,8 @@ class Emitter:
                 return self._emit_in(node.args)
             if name == "fmt":
                 return self._emit_fmt(node.args)
+            if name == "panic":
+                return self._emit_panic(node.args)
             # Operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -1214,6 +1216,31 @@ class Emitter:
                 self._emit_line(
                     f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})"
                 )
+        return None
+
+    # ------------------------------------------------------------------
+    # panic — print all args and exit(1). Terminates control flow.
+    # ------------------------------------------------------------------
+
+    def _emit_panic(self, args: list[N.Expr]) -> str | None:
+        # Reuse the same per-type printf logic as `out` for the message.
+        self._emit_out(args)
+        # Append a trailing newline if no string arg likely contains one.
+        # Cheap and consistent: always emit "\n" so panics stay legible.
+        self._declare_printf()
+        nl = self._get_format_string("\n", "panic_nl")
+        nl_tmp = self._fresh_tmp()
+        self._emit_line(
+            f"{nl_tmp} = call i32 (ptr, ...) @printf(ptr {nl})"
+        )
+        self._declare_extern("declare void @exit(i32)")
+        self._emit_line("call void @exit(i32 1)")
+        self._emit_line("unreachable")
+        # Open a fresh dead block so any following emission still has a
+        # valid insertion point — LLVM rejects instructions after a
+        # terminator within the same basic block.
+        dead = self._fresh_label("after_panic")
+        self._emit_label(dead)
         return None
 
     # ------------------------------------------------------------------

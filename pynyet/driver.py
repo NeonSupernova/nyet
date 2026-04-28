@@ -67,6 +67,7 @@ def _cmd_parse(args: argparse.Namespace) -> int:
 
 def _cmd_check(args: argparse.Namespace) -> int:
     from pynyet.parser.parser import parse
+    from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
 
@@ -78,7 +79,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
         _print_errors(e)
         return 1
 
-    errors = resolve_names(program) + check_types(program)
+    program, expand_errors = expand_macros(program)
+    errors = expand_errors + resolve_names(program) + check_types(program)
     if errors:
         for d in errors:
             print(d.format(), file=sys.stderr)
@@ -90,6 +92,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
 def _cmd_build(args: argparse.Namespace) -> int:
     import subprocess
     from pynyet.parser.parser import parse
+    from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
     from pynyet.codegen.emit import emit_ir
@@ -102,8 +105,9 @@ def _cmd_build(args: argparse.Namespace) -> int:
         _print_errors(e)
         return 1
 
+    program, expand_errors = expand_macros(program)
     # Run semantic checks (warnings only — don't block on sema errors in v0.1)
-    errors = resolve_names(program) + check_types(program)
+    errors = expand_errors + resolve_names(program) + check_types(program)
     for d in errors:
         print(d.format(), file=sys.stderr)
 

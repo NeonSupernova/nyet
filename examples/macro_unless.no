@@ -1,0 +1,37 @@
+;; Macro expansion demo. The expander replaces `(unless cond body)` with
+;; `(if (! cond) body pass)` before the rest of semantic analysis runs.
+;; Macros are top-level, positionally substituted, and erased from the
+;; program after expansion. (See PLAN.md §5a; full hygiene is v0.8.)
+;;
+;; The prelude pre-registers `assert`, which uses the `panic` builtin to
+;; abort with a message when its condition is false. User-defined macros
+;; can call prelude macros — this file relies on that for `require`.
+
+(macro unless (cond body)
+  (if (! cond) body pass))
+
+(macro when_pos (n body)
+  (if (> n 0) body pass))
+
+(macro shout (msg)
+  (when_pos 1 (out msg)))
+
+(macro require (cond)
+  (assert cond))
+
+(fn main () -> unit
+  (let x:i32 5)
+  (unless (== x 0)
+    (out "x is nonzero\n"))
+  (shout "hello from a nested macro\n")
+
+  ;; Arrays: literals, indexing, indexed assignment.
+  (var nums:Array[i32] [10 20 30])
+  (= (nums 1) 99)
+  (assert (== (nums 0) 10))
+  (assert (== (nums 1) 99))
+  (assert (== (nums 2) 30))
+
+  ;; require expands to assert, which expands to (if (! cond) (panic ...) pass).
+  (require (> x 0))
+  (out "all assertions passed\n"))

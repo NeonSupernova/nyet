@@ -188,6 +188,8 @@ class TypeChecker:
                 return FnSig((), STRING)
             if node.name == "err":
                 return FnSig((), UNIT)
+            if node.name == "panic":
+                return FnSig((), UNIT)
             return ERROR
 
         if isinstance(node, N.Call):

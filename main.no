@@ -619,7 +619,9 @@
 ;;; Collections
 ;; ============================================================
 
-;;; Array literals use square brackets.
+;;; Array literals use square brackets. Array[T] is implemented today —
+;;; literals, indexing, and indexed assignment all lower to a flat heap
+;;; layout: one i64 length followed by N elements packed in place.
 
 (let nums:Array[i32]        [1 2 3 4 5])
 (let words:Array[string]    ["one" "two" "three"])
@@ -637,6 +639,7 @@
 
 (var scores:Array[i32] [10 20 30])
 (= (scores 1) 99)
+(assert (== (scores 1) 99))
 
 ;;; Map — key-value store. K must implement Hash and Eq.
 
@@ -891,14 +894,50 @@
 ;;; Macros transform syntax at compile time.
 ;;; Because Nyet source is S-expressions, macros receive and return AST directly.
 ;;; There is no gap between code and data — (quote expr) gives you the unevaluated AST.
+;;;
+;;; v0.7 expander: positional template substitution. Each parameter
+;;; name in the macro body is replaced with a deep copy of the
+;;; corresponding argument expression. Macros can call other macros;
+;;; the expander recurses up to a fixed depth.
+;;;
+;;; v0.8 adds gensym-based hygiene and variadic parameters (...).
+;;; Examples in this file that use `gensym`, `quote`, `...`, or external
+;;; channel calls (io/on, io/def) are forward-looking.
+
+;;; The standard prelude pre-registers `assert`. It expands to an
+;;; `if`-guarded `panic` and needs no import. A user `(macro assert ...)`
+;;; in the same file silently shadows it.
+
+(let n:i32 5)
+(assert (== n 5))      ; passes silently
+;; (assert (== n 99))  ; would print "assertion failed" and exit 1
+
+;;; The expansion of `(assert (== n 5))` is:
+;;;
+;;;   (if (! (== n 5)) (panic "assertion failed") pass)
+;;;
+;;; `panic` is a built-in: it prints its arguments and exits with code 1.
+
+;;; User-defined macros use `(macro NAME (PARAMS...) BODY)`.
 
 (macro unless (cond body)
   (if (! cond) body pass))
 
-(unless (== x 0)
-  (out "nonzero"))
+(unless (== n 0)
+  (out "nonzero\n"))
 
-;;; Macros can introduce new bindings with gensym to avoid name collisions.
+;;; Macros may call other macros. The expander walks results until no
+;;; macro calls remain (bounded recursion guards against infinite loops).
+
+(macro require (cond)
+  (assert cond))
+
+(require (> n 0))
+
+;;; -- Forward-looking (v0.8+) ----------------------------------------
+
+;;; Hygiene with gensym — fresh symbols that cannot collide with any
+;;; binding at the call site.
 
 (macro swap! (a b)
   (let tmp (gensym)
