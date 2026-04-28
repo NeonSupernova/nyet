@@ -1,0 +1,15 @@
+;; Should be accepted: only one branch consumes p, so after the
+;; merge p is *not* known-moved.
+
+(struct Person name:string age:i32)
+
+(fn consume (p:Person) -> unit
+  (out (. p name)))
+
+(fn show (p:&Person) -> unit
+  (out (. p name)))
+
+(fn main () -> unit
+  (let p (Person name:"alice" age:30))
+  (let cond true)
+  (if cond (consume p) (show &p)))

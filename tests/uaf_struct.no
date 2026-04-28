@@ -1,0 +1,13 @@
+;; Should be rejected: Person contains a string (non-Copy), so it's
+;; not Copy. Passing `p` by value moves it, then reading p.name is
+;; use-after-move.
+
+(struct Person name:string age:i32)
+
+(fn consume (p:Person) -> unit
+  (out (. p name)))
+
+(fn main () -> unit
+  (let p (Person name:"alice" age:30))
+  (consume p)
+  (out (. p name)))

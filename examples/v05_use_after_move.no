@@ -1,0 +1,17 @@
+;; v0.5 demo (negative): the borrow checker rejects this.
+;;
+;; `consume` takes a Person *by value*, which moves the binding.
+;; Reading `(. alice name)` on the next line would be a use-after-move.
+;;
+;; Expected (from `pynyet check`):
+;;   error: use of moved value 'alice'
+
+(struct Person name:string age:i32)
+
+(fn consume (p:Person) -> unit
+  (out (. p name)) (out "\n"))
+
+(fn main () -> unit
+  (let alice (Person name:"alice" age:30))
+  (consume alice)
+  (out (. alice name)) (out "\n"))

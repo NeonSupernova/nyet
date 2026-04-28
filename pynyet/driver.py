@@ -70,6 +70,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
+    from pynyet.sema.borrow import check_borrows
 
     sf = _load_source(args.file)
     try:
@@ -80,7 +81,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    errors = expand_errors + resolve_names(program) + check_types(program)
+    errors = (
+        expand_errors
+        + resolve_names(program)
+        + check_types(program)
+        + check_borrows(program)
+    )
     if errors:
         for d in errors:
             print(d.format(), file=sys.stderr)
@@ -95,6 +101,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
+    from pynyet.sema.borrow import check_borrows
     from pynyet.codegen.emit import emit_ir
 
     sf = _load_source(args.file)
@@ -106,10 +113,16 @@ def _cmd_build(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    # Run semantic checks (warnings only — don't block on sema errors in v0.1)
+    # Borrow errors are hard errors (v0.5 milestone). Other sema errors
+    # are reported but don't block — they're still being filled in.
     errors = expand_errors + resolve_names(program) + check_types(program)
+    borrow_errs = check_borrows(program)
     for d in errors:
         print(d.format(), file=sys.stderr)
+    if borrow_errs:
+        for d in borrow_errs:
+            print(d.format(), file=sys.stderr)
+        return 1
 
     # Emit LLVM IR
     ir_text = emit_ir(program)

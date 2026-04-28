@@ -1,0 +1,12 @@
+;; Should be accepted: `&p` borrows, never moves. Reading `(. p name)`
+;; afterwards is fine.
+
+(struct Person name:string age:i32)
+
+(fn show (p:&Person) -> unit
+  (out (. p name)))
+
+(fn main () -> unit
+  (let p (Person name:"alice" age:30))
+  (show &p)
+  (out (. p name)))

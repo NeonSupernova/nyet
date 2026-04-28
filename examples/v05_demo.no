@@ -1,0 +1,33 @@
+;; v0.5 demo: move semantics + borrow checking.
+;;
+;; This program *compiles* — it carefully borrows non-Copy values
+;; (Person contains a string) wherever they're used more than once.
+;; The companion file `examples/v05_use_after_move.no` shows what
+;; the borrow checker rejects.
+;;
+;; Expected output:
+;;   alice is 30
+;;   bob is 25
+;;   alice is 30
+;;   total ages = 55
+
+(struct Person name:string age:i32)
+
+(fn show (p:&Person) -> unit
+  (out (. p name)) (out " is ") (out (. p age)) (out "\n"))
+
+(fn age_of (p:&Person) -> i32
+  (. p age))
+
+(fn main () -> unit
+  (let alice (Person name:"alice" age:30))
+  (let bob (Person name:"bob" age:25))
+
+  ;; Repeated borrows are fine — neither call moves the value.
+  (show &alice)
+  (show &bob)
+  (show &alice)
+
+  ;; Sum of ages — also via borrows.
+  (let total (+ (age_of &alice) (age_of &bob)))
+  (out "total ages = ") (out total) (out "\n"))
