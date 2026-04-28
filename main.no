@@ -895,14 +895,15 @@
 ;;; Because Nyet source is S-expressions, macros receive and return AST directly.
 ;;; There is no gap between code and data — (quote expr) gives you the unevaluated AST.
 ;;;
-;;; v0.7 expander: positional template substitution. Each parameter
+;;; The expander uses positional template substitution. Each parameter
 ;;; name in the macro body is replaced with a deep copy of the
 ;;; corresponding argument expression. Macros can call other macros;
 ;;; the expander recurses up to a fixed depth.
 ;;;
-;;; v0.8 adds gensym-based hygiene and variadic parameters (...).
-;;; Examples in this file that use `gensym`, `quote`, `...`, or external
-;;; channel calls (io/on, io/def) are forward-looking.
+;;; Supported today: variadic params (`name ...`) with splice, hygiene
+;;; for `let`/`var` names introduced inside a body, and `(quote expr)`
+;;; which renders the substituted expression to a Nyet source string.
+;;; External channel calls (`io/on`, `io/def`) are still forward-looking.
 
 ;;; The standard prelude pre-registers `assert`. It expands to an
 ;;; `if`-guarded `panic` and needs no import. A user `(macro assert ...)`
@@ -934,22 +935,46 @@
 
 (require (> n 0))
 
-;;; -- Forward-looking (v0.8+) ----------------------------------------
+;;; Variadic macros use `...` to capture any number of trailing args.
+;;; Inside the body, `name ...` splices the captured list into the
+;;; surrounding position. The prelude's `do_all` is the canonical use.
 
-;;; Hygiene with gensym — fresh symbols that cannot collide with any
-;;; binding at the call site.
+;;;   (macro do_all (forms ...) (do forms ...))
+
+(do_all
+  (out "step 1\n")
+  (out "step 2\n")
+  (out "step 3\n"))
+
+;;; `quote` captures the source form of its argument as a string. After
+;;; substitution, `(quote x)` becomes a `StringLit` of the call-site
+;;; expression — handy for log macros that show the original code.
+
+(macro show (x)
+  (do
+    (out (quote x))
+    (out " = ")
+    (out x)
+    (out "\n")))
+
+(show (+ 1 2))                ; prints "(+ 1 2) = 3"
+
+;;; Hygiene: `let`/`var` names introduced inside a macro body are
+;;; auto-renamed to fresh suffixes (e.g. `tmp__hyg3`) so they cannot
+;;; capture user names from the call site, even when the call site
+;;; passes a variable with the *same* name as the macro's local.
 
 (macro swap! (a b)
-  (let tmp (gensym)
-    (do
-      (let tmp a)
-      (= a b)
-      (= b tmp))))
+  (do
+    (var tmp a)
+    (= a b)
+    (= b tmp)))
 
-;;; Variadic macros use ... to accept any number of arguments.
+(var tmp_a:i32 1)
+(var tmp_b:i32 2)
+(swap! tmp_a tmp_b)           ; tmp_a is now 2, tmp_b is now 1
 
-(macro do_all (forms ...)
-  (do forms ...))
+;;; -- Forward-looking (v0.8+) ----------------------------------------
 
 ;;; DSL: web routing built on IO channels and macros.
 

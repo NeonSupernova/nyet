@@ -107,6 +107,15 @@ class NameResolver:
             did = self._fresh_id()
             sym = scope.define(node.name, node, did)
             self.symbols[did] = sym
+        elif isinstance(node, N.ImplDecl):
+            # Hoist named (non-operator) methods to the top-level scope so
+            # `(method receiver ...)` calls resolve. Operator methods stay
+            # internal — the codegen built-in dispatch handles those names.
+            for item in node.items:
+                if isinstance(item, N.FnDecl) and item.name.isidentifier():
+                    did = self._fresh_id()
+                    sym = scope.define(item.name, item, did)
+                    self.symbols[did] = sym
 
     def _resolve_node(self, node: N.Node, scope: Scope) -> None:
         if node is None:
@@ -229,6 +238,12 @@ class NameResolver:
                 self._resolve_node(v, scope)
 
         elif isinstance(node, N.Try):
+            self._resolve_node(node.value, scope)
+
+        elif isinstance(node, N.Splice):
+            self._resolve_node(node.value, scope)
+
+        elif isinstance(node, N.Quote):
             self._resolve_node(node.value, scope)
 
         elif isinstance(node, N.Await):

@@ -121,6 +121,15 @@ class Parser:
     # ---------------------------------------------------------------
 
     def parse_expr(self) -> N.Node:
+        expr = self._parse_expr_inner()
+        # Postfix `...` marks a splice (variadic macro arg). Only meaningful
+        # inside macro bodies; surviving Splices error during expansion.
+        if self._at(TokenKind.ELLIPSIS):
+            ell = self._advance()
+            expr = N.Splice(expr.span.merge(ell.span), expr)
+        return expr
+
+    def _parse_expr_inner(self) -> N.Node:
         tok = self._peek()
 
         if tok.kind is TokenKind.LPAREN:
@@ -185,13 +194,12 @@ class Parser:
         if tok.kind in _PRIM_TYPE_TOKENS:
             self._advance()
             return N.Ident(tok.span, _PRIM_TYPE_TOKENS[tok.kind])
-        # Ellipsis: ... (DOT_DOT + DOT) as a placeholder/todo body
-        if (tok.kind is TokenKind.DOT_DOT
-                and self.pos + 1 < len(self.tokens)
-                and self.tokens[self.pos + 1].kind is TokenKind.DOT):
-            self._advance()  # consume DOT_DOT
-            self._advance()  # consume DOT
-            return N.Pass(self._span_from(tok))
+        # Bare `...` as a placeholder/TODO body (e.g. `(fn foo () ...)`).
+        # A postfix `...` after another expression is handled in `parse_expr`
+        # as a Splice — bare standalone form means "to be filled in".
+        if tok.kind is TokenKind.ELLIPSIS:
+            self._advance()
+            return N.Pass(tok.span)
         # Spread operator ..ident
         if tok.kind is TokenKind.DOT_DOT:
             self._advance()
@@ -812,20 +820,20 @@ class Parser:
         self._expect(TokenKind.LPAREN)
         params: list[N.Param] = []
         while not self._at(TokenKind.RPAREN):
-            # Variadic: ... at end of param list
-            if self._at(TokenKind.DOT_DOT):
+            # Bare `...` at end of param list — accept and stop.
+            if self._at(TokenKind.ELLIPSIS):
                 self._advance()
-                if self._at(TokenKind.DOT):
-                    self._advance()  # consume trailing DOT of ...
                 break
             start = self._peek()
             name, ty = self._parse_name_maybe_type()
-            params.append(N.Param(self._span_from(start), name, ty))
-            # Variadic marker after param: name ...
-            if self._at(TokenKind.DOT_DOT):
+            variadic = False
+            # Variadic marker after a name: `name ...` (must come last).
+            if self._at(TokenKind.ELLIPSIS):
                 self._advance()
-                if self._at(TokenKind.DOT):
-                    self._advance()
+                variadic = True
+            params.append(N.Param(self._span_from(start), name, ty, variadic=variadic))
+            if variadic:
+                break
         self._expect(TokenKind.RPAREN)
         return params
 

@@ -134,7 +134,10 @@ class Lexer:
                     self._emit(TokenKind.COLON, start)
                 continue
             if ch == ".":
-                if self._peek(1) == ".":
+                if self._peek(1) == "." and self._peek(2) == ".":
+                    self.pos += 3
+                    self._emit(TokenKind.ELLIPSIS, start)
+                elif self._peek(1) == ".":
                     self.pos += 2
                     self._emit(TokenKind.DOT_DOT, start)
                 else:

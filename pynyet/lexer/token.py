@@ -21,6 +21,7 @@ class TokenKind(Enum):
     COLON = auto()
     COMMA = auto()
     DOT_DOT = auto()
+    ELLIPSIS = auto()
     ARROW = auto()
 
     # Operators — two-char

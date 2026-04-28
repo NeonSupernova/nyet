@@ -1,0 +1,50 @@
+;; Vec2 demo — struct + inherent methods that take and return structs.
+;; Demonstrates: impl block, &T self params, methods returning structs,
+;; chained field access on let-bound returns.
+;;
+;; Expected output:
+;;   a.x = 3
+;;   a.y = 4
+;;   lensq(a) = 25
+;;   c.x = 4
+;;   c.y = 6
+
+(struct Vec2 x:f64 y:f64)
+
+(impl Vec2
+  (fn lensq (self:&Vec2) -> f64
+    (+ (* (. self x) (. self x))
+       (* (. self y) (. self y))))
+
+  (fn add_v (self:&Vec2 other:&Vec2) -> Vec2
+    (Vec2 x:(+ (. self x) (. other x))
+          y:(+ (. self y) (. other y))))
+
+  (fn scale (self:&Vec2 k:f64) -> Vec2
+    (Vec2 x:(* (. self x) k)
+          y:(* (. self y) k))))
+
+(fn main () -> unit
+  (let a (Vec2 x:3.0 y:4.0))
+  (let b (Vec2 x:1.0 y:2.0))
+
+  (out "a.x = ")
+  (out (. a x))
+  (out "\n")
+
+  (out "a.y = ")
+  (out (. a y))
+  (out "\n")
+
+  (out "lensq(a) = ")
+  (out (lensq &a))
+  (out "\n")
+
+  (let c (add_v &a &b))
+  (out "c.x = ")
+  (out (. c x))
+  (out "\n")
+
+  (out "c.y = ")
+  (out (. c y))
+  (out "\n"))

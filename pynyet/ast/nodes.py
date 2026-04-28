@@ -83,6 +83,7 @@ class Param(Node):
     name: str
     type: Optional[TypeNode] = None
     default: Optional[Expr] = None
+    variadic: bool = False
 
 
 @dataclass
@@ -351,6 +352,17 @@ class Spawn(Expr):
 
 @dataclass
 class Quote(Expr):
+    value: Optional[Expr] = None
+
+
+@dataclass
+class Splice(Expr):
+    """``expr ...`` — splice a variadic macro argument into the surrounding list.
+
+    Only meaningful inside a macro body. The expander replaces it with the
+    bound list of argument nodes; if it survives expansion (e.g. used outside
+    a macro, or referencing a non-variadic name), an error is reported.
+    """
     value: Optional[Expr] = None
 
 

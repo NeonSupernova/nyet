@@ -1,0 +1,22 @@
+;; Demo: hygienic macros.
+;;
+;; The `swap!` macro introduces a `tmp` binding inside its body. Without
+;; hygiene, calling `(swap! tmp other)` from a context that already has
+;; a `tmp` would silently shadow it. The expander auto-renames body
+;; bindings to fresh names (`tmp__hyg<n>`) so they cannot collide with
+;; user names — including names supplied as macro arguments.
+
+(macro swap! (a b)
+  (do
+    (var tmp a)
+    (= a b)
+    (= b tmp)))
+
+(fn main () -> unit
+  (var tmp:i32 1)
+  (var other:i32 2)
+  ;; The user's `tmp` here is the *value* being swapped — it must NOT
+  ;; be captured by the macro's internal `tmp`.
+  (swap! tmp other)
+  (out tmp)    (out "\n")    ; expects 2
+  (out other)  (out "\n"))   ; expects 1

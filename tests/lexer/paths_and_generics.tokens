@@ -65,7 +65,6 @@ HASH_LPAREN      6:29
 IDENT            6:31     value='B'
 IDENT            6:33     value='A'
 RPAREN           6:34    
-DOT_DOT          6:36    
-DOT              6:38    
+ELLIPSIS         6:36    
 RPAREN           6:39    
 EOF              7:1     

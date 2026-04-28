@@ -6,7 +6,8 @@ semantic pipeline.
 
 ## Modules
 
-- `expand.py` — macro expansion (positional substitution; no hygiene yet).
+- `expand.py` — macro expansion (positional substitution, variadic
+  splicing, hygienic `let`/`var` renaming, source-capture via `quote`).
 - `resolve.py` — name resolution and symbol table construction.
 - `typeck.py` — type inference and checking.
 - `types.py` — semantic-level type representations.

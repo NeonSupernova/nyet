@@ -212,6 +212,10 @@ def _h_quote(n):
     return f"(quote {pretty(n.value)})"
 
 
+def _h_splice(n):
+    return f"{pretty(n.value)} ..."
+
+
 def _h_try(n):
     return f"(try {pretty(n.value)})"
 
@@ -340,6 +344,7 @@ _HANDLERS: dict[str, Any] = {
     "Await": _h_await,
     "Spawn": _h_spawn,
     "Quote": _h_quote,
+    "Splice": _h_splice,
     "Try": _h_try,
     "KeywordArg": _h_keyword_arg,
     # Declarations

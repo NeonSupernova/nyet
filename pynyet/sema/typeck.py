@@ -123,6 +123,14 @@ class TypeChecker:
                 ty = self._infer(node.value)
             self.env[node.name] = ty
 
+        elif isinstance(node, N.ImplDecl):
+            # Register named methods so their signatures are visible at
+            # call sites. Operator methods are skipped — the built-in
+            # codegen dispatch handles those.
+            for item in node.items:
+                if isinstance(item, N.FnDecl) and item.name.isidentifier():
+                    self._register_decl(item)
+
     def _check_node(self, node: N.Node) -> None:
         if node is None:
             return
@@ -301,6 +309,17 @@ class TypeChecker:
                 if payload_types:
                     return payload_types[0]
             return inner
+
+        if isinstance(node, N.Splice):
+            # A surviving Splice is a macro misuse; the expander will have
+            # reported it. Just descend so we don't lose downstream errors.
+            self._infer(node.value)
+            return ERROR
+
+        if isinstance(node, N.Quote):
+            # Quote is consumed by the macro expander; if one survives here,
+            # it had no enclosing macro — fall back to its inner expression.
+            return self._infer(node.value)
 
         if isinstance(node, N.Await):
             return self._infer(node.value)

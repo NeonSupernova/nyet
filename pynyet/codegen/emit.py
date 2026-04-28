@@ -100,6 +100,16 @@ class Emitter:
                     fns.append(node)
                 if node.name == "main":
                     has_main = True
+            elif isinstance(node, N.ImplDecl):
+                # Hoist impl methods to top-level fns. Skip operator
+                # methods (`+`, `==`, etc.) — those collide with the
+                # built-in arithmetic/comparison dispatch in _emit_call.
+                for item in node.items:
+                    if isinstance(item, N.FnDecl) and item.name.isidentifier():
+                        if item.generics:
+                            self._fn_templates[item.name] = item
+                        else:
+                            fns.append(item)
             else:
                 top_level.append(node)
 
@@ -631,6 +641,8 @@ class Emitter:
         For generic instantiations, returns the mangled name (and
         triggers monomorphization if needed).
         """
+        if isinstance(tn, N.RefType):
+            return self._nyet_type_name(tn.inner)
         if isinstance(tn, (N.PrimType, N.NamedType)):
             return tn.name
         if isinstance(tn, N.GenericType):
@@ -838,6 +850,8 @@ class Emitter:
                 return "i32"
             if op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||", "!"):
                 return "i1"
+            if op in ("&", "&!") and len(node.args) == 1:
+                return self._infer_llvm_type(node.args[0])
             if op == "fmt":
                 return "ptr"
             if op == "in":
@@ -1014,6 +1028,10 @@ class Emitter:
                 return self._emit_cmp(name, node.args)
             if name in ("&&", "||", "!"):
                 return self._emit_bool_op(name, node.args)
+            # Borrow / mutable borrow — pass-through; struct/sum values are
+            # already pointer-shaped, so `&x` is just `x`.
+            if name in ("&", "&!") and len(node.args) == 1:
+                return self._emit_expr(node.args[0])
             # Struct constructor (already monomorphized — matched directly)
             if name in self._structs:
                 return self._emit_struct_construct(name, node.args)
@@ -2145,6 +2163,10 @@ class Emitter:
                 return name
             if name in self._variant_ctors:
                 return self._variant_ctors[name][0]
+            if name in self._fn_ret_nyet_names:
+                return self._fn_ret_nyet_names[name]
+        if isinstance(node, N.Ident) and node.name in self._env_struct_name:
+            return self._env_struct_name[node.name]
         return None
 
     def _emit_assign(self, node: N.Assign) -> str | None:
