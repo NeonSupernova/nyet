@@ -1,0 +1,50 @@
+;; v0.4 demo: traits + impl + operator overloading + display dispatch.
+;; Demonstrates inherent methods, `+`/`==`/`!=` overloads on a user
+;; struct, and `(out vec)` automatically calling the `display` impl.
+;;
+;; Expected output:
+;;   a = (1, 2)
+;;   b = (3, 4)
+;;   a + b = (4, 6)
+;;   lensq(a) = 5
+;;   a == a? yes
+;;   a == b? no
+;;   a != b? yes
+
+(struct Vec2 x:f64 y:f64)
+
+(impl Vec2
+  (fn lensq (self:&Vec2) -> f64
+    (+ (* (. self x) (. self x))
+       (* (. self y) (. self y))))
+
+  (fn display (self:&Vec2) -> string
+    (fmt "({}, {})" (. self x) (. self y))))
+
+(impl Add Vec2
+  (fn + (self:Vec2 other:Vec2) -> Vec2
+    (Vec2 x:(+ (. self x) (. other x))
+          y:(+ (. self y) (. other y)))))
+
+(impl Eq Vec2
+  (fn == (self:&Vec2 other:&Vec2) -> bool
+    (&& (== (. self x) (. other x))
+        (== (. self y) (. other y))))
+  (fn != (self:&Vec2 other:&Vec2) -> bool
+    (! (== self other))))
+
+(fn main () -> unit
+  (let a (Vec2 x:1.0 y:2.0))
+  (let b (Vec2 x:3.0 y:4.0))
+
+  (out "a = ") (out a) (out "\n")
+  (out "b = ") (out b) (out "\n")
+
+  (let c (+ a b))
+  (out "a + b = ") (out c) (out "\n")
+
+  (out "lensq(a) = ") (out (lensq &a)) (out "\n")
+
+  (if (== &a &a) (out "a == a? yes\n") (out "a == a? no\n"))
+  (if (== &a &b) (out "a == b? yes\n") (out "a == b? no\n"))
+  (if (!= &a &b) (out "a != b? yes\n") (out "a != b? no\n")))

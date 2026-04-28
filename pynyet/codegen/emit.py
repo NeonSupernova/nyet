@@ -70,6 +70,12 @@ class Emitter:
         # E.g. Some (generic) has ctor entry when we monomorphize Option[i32] → Option__i32
         self._generic_variant_ctors: dict[str, set[str]] = {}
 
+        # v0.4: operator overload registry — (struct_name, op) → mangled fn name.
+        # Populated when `(impl Trait Type ...)` or `(impl Type ...)` declares
+        # a method whose name is an operator (`+`, `==`, etc.). Looked up by
+        # `_emit_arith` / `_emit_cmp` to dispatch through the impl.
+        self._method_impls: dict[tuple[str, str], str] = {}
+
     # ==================================================================
     # Public entry point
     # ==================================================================
@@ -101,11 +107,24 @@ class Emitter:
                 if node.name == "main":
                     has_main = True
             elif isinstance(node, N.ImplDecl):
-                # Hoist impl methods to top-level fns. Skip operator
-                # methods (`+`, `==`, etc.) — those collide with the
-                # built-in arithmetic/comparison dispatch in _emit_call.
+                # Hoist impl methods to top-level fns. Inherent and operator
+                # methods are both mangled per target type so multiple impls
+                # of `display`, `+`, etc. can coexist. The mangled name is
+                # registered in `_method_impls` for `_emit_call` /
+                # `_emit_arith` / `_emit_cmp` / `_emit_out` dispatch.
+                target_name = self._nyet_type_name(node.target)
                 for item in node.items:
-                    if isinstance(item, N.FnDecl) and item.name.isidentifier():
+                    if not isinstance(item, N.FnDecl):
+                        continue
+                    if target_name is not None:
+                        mangled = self._op_mangle(target_name, item.name)
+                        self._method_impls[(target_name, item.name)] = mangled
+                        item.name = mangled
+                        if item.generics:
+                            self._fn_templates[item.name] = item
+                        else:
+                            fns.append(item)
+                    elif item.name.isidentifier():
                         if item.generics:
                             self._fn_templates[item.name] = item
                         else:
@@ -835,6 +854,14 @@ class Emitter:
             if op in self._env_array_elem and len(node.args) == 1:
                 return self._env_array_elem[op]
             if op in ("+", "-", "*", "/", "%"):
+                if node.args:
+                    sn = self._infer_nyet_type_name(node.args[0])
+                    if sn is None and isinstance(node.args[0], N.Ident):
+                        sn = self._env_struct_name.get(node.args[0].name)
+                    if sn is not None and (sn, op) in self._method_impls:
+                        mangled = self._method_impls[(sn, op)]
+                        if mangled in self._fn_sigs:
+                            return self._fn_sigs[mangled][1]
                 has_double = False
                 has_float = False
                 for a in node.args:
@@ -862,6 +889,16 @@ class Emitter:
                 return "ptr"
             if op in self._fn_sigs:
                 return self._fn_sigs[op][1]
+            # Inherent method dispatch — look up the receiver's struct.
+            if node.args:
+                probe = self._unwrap_borrow(node.args[0])
+                sn = self._infer_nyet_type_name(probe)
+                if sn is None and isinstance(probe, N.Ident):
+                    sn = self._env_struct_name.get(probe.name)
+                if sn is not None and (sn, op) in self._method_impls:
+                    mangled = self._method_impls[(sn, op)]
+                    if mangled in self._fn_sigs:
+                        return self._fn_sigs[mangled][1]
             # v0.3: generic fn — infer type args, look up monomorphized sig
             if op in self._fn_templates:
                 tmpl = self._fn_templates[op]
@@ -1053,6 +1090,17 @@ class Emitter:
                 mangled = self._monomorphize_fn_from_args(name, node.args)
                 if mangled:
                     return self._emit_user_call(mangled, node.args)
+            # Inherent method dispatch: `(method receiver ...)` —
+            # look up the receiver's struct type and try its impl.
+            if name not in self._fn_sigs and node.args:
+                probe = self._unwrap_borrow(node.args[0])
+                sn = self._infer_nyet_type_name(probe)
+                if sn is None and isinstance(probe, N.Ident):
+                    sn = self._env_struct_name.get(probe.name)
+                if sn is not None and (sn, name) in self._method_impls:
+                    return self._emit_user_call(
+                        self._method_impls[(sn, name)], node.args
+                    )
             # User function
             return self._emit_user_call(name, node.args)
         return None
@@ -1207,6 +1255,23 @@ class Emitter:
 
     def _emit_out(self, args: list[N.Expr]) -> str | None:
         for arg in args:
+            sn = self._infer_nyet_type_name(self._unwrap_borrow(arg))
+            if (
+                sn is not None
+                and sn in self._structs
+                and (sn, "display") in self._method_impls
+            ):
+                mangled = self._method_impls[(sn, "display")]
+                val = self._emit_user_call(mangled, [arg])
+                if val is not None:
+                    self._declare_printf()
+                    fmt = self._get_fmt_str()
+                    tmp = self._fresh_tmp()
+                    self._emit_line(
+                        f"{tmp} = call i32 (ptr, ...) "
+                        f"@printf(ptr {fmt}, ptr {val})"
+                    )
+                continue
             val = self._emit_expr(arg)
             if val is None:
                 continue
@@ -1381,11 +1446,9 @@ class Emitter:
         else:
             fmt_name = template_val
 
-        buf = self._emit_alloca("[1024 x i8]")
         buf_ptr = self._fresh_tmp()
-        self._emit_line(
-            f"{buf_ptr} = getelementptr [1024 x i8], ptr {buf}, i32 0, i32 0"
-        )
+        self._emit_line(f"{buf_ptr} = call ptr @malloc(i64 1024)")
+        self._declare_extern("declare ptr @malloc(i64)")
         snprintf_args = f"ptr {buf_ptr}, i32 1024, ptr {fmt_name}"
         for llvm_ty, val in fmt_args:
             if llvm_ty == "float":
@@ -1405,9 +1468,53 @@ class Emitter:
     # Arithmetic (type-aware: int or float)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _op_mangle(struct_name: str, op: str) -> str:
+        """Generate a unique LLVM-safe name for an impl method (operator or named)."""
+        op_words = {
+            "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod",
+            "==": "eq", "!=": "ne", "<": "lt", "<=": "le", ">": "gt",
+            ">=": "ge", "&&": "and", "||": "or", "!": "not",
+        }
+        if op in op_words:
+            return f"{struct_name}__op__{op_words[op]}"
+        return f"{struct_name}__{op}"
+
+    @staticmethod
+    def _unwrap_borrow(node: N.Node) -> N.Node:
+        """Peel off `(& x)` / `(&! x)` so we can inspect the inner expression."""
+        while (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name in ("&", "&!")
+            and len(node.args) == 1
+        ):
+            node = node.args[0]
+        return node
+
+    def _maybe_dispatch_op_impl(
+        self, op: str, args: list[N.Expr]
+    ) -> str | None:
+        """If args[0] is a struct with an op impl, call it and return result."""
+        if not args:
+            return None
+        probe = self._unwrap_borrow(args[0])
+        struct_name = self._infer_nyet_type_name(probe)
+        if struct_name is None and isinstance(probe, N.Ident):
+            struct_name = self._env_struct_name.get(probe.name)
+        if struct_name is None:
+            return None
+        mangled = self._method_impls.get((struct_name, op))
+        if mangled is None:
+            return None
+        return self._emit_user_call(mangled, args)
+
     def _emit_arith(self, op: str, args: list[N.Expr]) -> str | None:
         if len(args) < 2:
             return None
+        dispatched = self._maybe_dispatch_op_impl(op, args)
+        if dispatched is not None:
+            return dispatched
         lhs = self._emit_expr(args[0])
         rhs = self._emit_expr(args[1])
         if lhs is None or rhs is None:
@@ -1454,6 +1561,9 @@ class Emitter:
     def _emit_cmp(self, op: str, args: list[N.Expr]) -> str | None:
         if len(args) < 2:
             return None
+        dispatched = self._maybe_dispatch_op_impl(op, args)
+        if dispatched is not None:
+            return dispatched
         lhs = self._emit_expr(args[0])
         rhs = self._emit_expr(args[1])
         if lhs is None or rhs is None:
@@ -2165,6 +2275,17 @@ class Emitter:
                 return self._variant_ctors[name][0]
             if name in self._fn_ret_nyet_names:
                 return self._fn_ret_nyet_names[name]
+            if node.args:
+                probe = self._unwrap_borrow(node.args[0])
+                sn = None
+                if isinstance(probe, N.Ident) and probe.name in self._env_struct_name:
+                    sn = self._env_struct_name[probe.name]
+                if sn is None:
+                    sn = self._infer_nyet_type_name(probe)
+                if sn is not None and (sn, name) in self._method_impls:
+                    mangled = self._method_impls[(sn, name)]
+                    if mangled in self._fn_ret_nyet_names:
+                        return self._fn_ret_nyet_names[mangled]
         if isinstance(node, N.Ident) and node.name in self._env_struct_name:
             return self._env_struct_name[node.name]
         return None
