@@ -49,6 +49,12 @@ class Emitter:
         self._sum_types: dict[str, list[tuple[str, list[str]]]] = {}
         # variant_name → (sum_type_name, variant_index)
         self._variant_ctors: dict[str, tuple[str, int]] = {}
+        # v0.7: parallel registry tracking the Nyet type name of each
+        # payload field so nested patterns can recover the inner sum/struct
+        # type when the LLVM type is just `ptr`. Indexed by sum name →
+        # variant index → field index → Nyet type name (or None if not a
+        # sum/struct type).
+        self._sum_payload_nyet: dict[str, list[list[str | None]]] = {}
 
         # Array bindings — name → LLVM element type ("i32", "double", "ptr"…).
         # Set whenever a let/var/param resolves to `Array[T]`. Used by
@@ -331,16 +337,37 @@ class Emitter:
         variant, plus the i32 tag.
         """
         variants: list[tuple[str, list[str]]] = []
+        payload_nyet: list[list[str | None]] = []
         max_payload = 0
         for vname, vtypes in node.variants:
             field_types = [self._llvm_type(t) for t in vtypes]
+            nyet_names: list[str | None] = []
+            for t in vtypes:
+                n = self._nyet_type_name_of_node(t)
+                if n is not None and (
+                    n in self._sum_types
+                    or n in self._sum_templates
+                    or n in self._structs
+                    or n in self._struct_templates
+                ):
+                    nyet_names.append(n)
+                else:
+                    nyet_names.append(None)
+            payload_nyet.append(nyet_names)
             payload = sum(self._sizeof(t) for t in field_types)
             if payload > max_payload:
                 max_payload = payload
             variants.append((vname, field_types))
-            self._variant_ctors[vname] = (node.name, len(variants) - 1)
+            tag_idx = len(variants) - 1
+            self._variant_ctors[vname] = (node.name, tag_idx)
+            # v0.7: also register a composite key so nested-generic sum
+            # types whose monomorphizations share variant names (e.g.
+            # Option__i32::Some and Option__Option__i32::Some) can be
+            # disambiguated at construction and pattern-test time.
+            self._variant_ctors[f"{node.name}::{vname}"] = (node.name, tag_idx)
 
         self._sum_types[node.name] = variants
+        self._sum_payload_nyet[node.name] = payload_nyet
 
         if max_payload == 0:
             # Pure enum (all unit variants)
@@ -754,6 +781,11 @@ class Emitter:
                 # Arrays lower to a heap pointer (header + elements).
                 return "ptr"
             if base_name is not None:
+                # Force inner generic args to monomorphize first so any
+                # nested sum/struct types are registered before we use
+                # their mangled names as a payload field type.
+                for a in tn.args:
+                    self._llvm_type(a)
                 type_args = tuple(
                     self._nyet_type_name_of_node(a) or "unk" for a in tn.args
                 )
@@ -1248,14 +1280,20 @@ class Emitter:
             # Struct constructor (already monomorphized — matched directly)
             if name in self._structs:
                 return self._emit_struct_construct(name, node.args)
-            # Sum type variant constructor (already monomorphized)
-            if name in self._variant_ctors:
-                return self._emit_variant_construct(name, node.args)
-            # v0.3: Generic sum type variant — pick instantiation from args
+            # v0.3: Generic sum type variant — pick instantiation from args.
+            # Try this before the bare-name lookup because monomorphization
+            # registers each variant under its plain name, which means the
+            # last-registered sum type wins in `_variant_ctors[name]` for
+            # multi-instantiation programs (e.g. Option[i32] AND
+            # Option[Option[i32]]).
             if name in self._generic_variant_ctors:
                 mangled_vname = self._resolve_generic_variant(name, node.args)
                 if mangled_vname:
                     return self._emit_variant_construct(mangled_vname, node.args)
+            # Sum type variant constructor (already monomorphized or
+            # belonging to a non-generic sum type)
+            if name in self._variant_ctors:
+                return self._emit_variant_construct(name, node.args)
             # v0.3: Generic struct constructor
             if name in self._struct_templates:
                 mangled = self._monomorphize_struct_from_args(name, node.args)
@@ -1953,129 +1991,266 @@ class Emitter:
     # ------------------------------------------------------------------
 
     def _emit_match(self, node: N.Match) -> str | None:
-        """Emit a match expression (v0.2: variant tag matching)."""
+        """Emit a match expression.
+
+        v0.7: linear-test scheme — each arm emits a refutable test that
+        branches to the next arm on failure and falls through with bindings
+        on success. This uniformly supports nested VariantPats, GuardedPats,
+        LitPats nested in payloads, and wildcards/variables.
+        """
         scrut = self._emit_expr(node.scrutinee)
         if scrut is None:
             return None
 
         # Determine the sum type of the scrutinee
-        sum_name = None
-        if isinstance(node.scrutinee, N.Ident):
+        sum_name = self._sum_name_of(node.scrutinee)
+        if sum_name is None and isinstance(node.scrutinee, N.Ident):
             sum_name = self._env_struct_name.get(node.scrutinee.name)
 
         if sum_name is None or sum_name not in self._sum_types:
-            # Can't determine sum type — try simple value matching
+            # Not a sum type — fall back to value-based matching
             return self._emit_match_simple(scrut, node)
-
-        # Load the tag
-        tag_ptr = self._fresh_tmp()
-        self._emit_line(
-            f"{tag_ptr} = getelementptr inbounds %{sum_name}, "
-            f"ptr {scrut}, i32 0, i32 0"
-        )
-        tag = self._fresh_tmp()
-        self._emit_line(f"{tag} = load i32, ptr {tag_ptr}")
 
         end_label = self._fresh_label("match_end")
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
         result_ptr = self._emit_alloca(result_ty)
 
-        variants = self._sum_types[sum_name]
-        default_label = self._fresh_label("match_default")
+        self._exhaustiveness_warn(node, sum_name)
 
-        # Build arms
-        arm_labels = []
         for arm in node.arms:
-            arm_labels.append(self._fresh_label("match_arm"))
-
-        # Switch on tag
-        cases = []
-        for arm, arm_label in zip(node.arms, arm_labels):
+            next_label = self._fresh_label("match_next")
             pat = arm.pattern
-            if isinstance(pat, N.VariantPat) and pat.name in self._variant_ctors:
-                _, tag_idx = self._variant_ctors[pat.name]
-                cases.append(f"i32 {tag_idx}, label %{arm_label}")
-            elif isinstance(pat, N.WildPat) or (isinstance(pat, N.VarPat)):
-                # Wildcard/variable — becomes default
-                cases.append(None)  # mark as default
-            else:
-                cases.append(None)
+            guard: N.Expr | None = None
+            if isinstance(pat, N.GuardedPat):
+                guard = pat.guard
+                pat = pat.inner
 
-        case_strs = [c for c in cases if c is not None]
-        switch_cases = "\n    ".join(f"{c}" for c in case_strs)
-        self._emit_line(
-            f"switch i32 {tag}, label %{default_label} [\n    {switch_cases}\n  ]"
-        )
+            saved_env = dict(self._env)
+            saved_struct = dict(self._env_struct_name)
+            saved_array = dict(self._env_array_elem)
+            saved_fnsig = dict(self._env_fn_sig)
 
-        # Emit each arm
-        for arm, arm_label, case in zip(node.arms, arm_labels, cases):
-            if case is None:
-                # This is the default arm
-                self._emit_label(default_label)
-                default_label = None  # mark as used
-            else:
-                self._emit_label(arm_label)
+            self._emit_pattern_test_sum(scrut, sum_name, pat, next_label)
 
-            saved = dict(self._env)
-
-            # Bind pattern variables
-            pat = arm.pattern
-            if isinstance(pat, N.VariantPat) and pat.name in self._variant_ctors:
-                _, tag_idx = self._variant_ctors[pat.name]
-                payload_types = variants[tag_idx][1]
-
-                if pat.args and payload_types:
-                    payload_ptr = self._fresh_tmp()
+            if guard is not None:
+                guard_val = self._emit_expr(guard)
+                if guard_val is not None:
+                    body_label = self._fresh_label("match_body")
                     self._emit_line(
-                        f"{payload_ptr} = getelementptr inbounds "
-                        f"%{sum_name}, ptr {scrut}, i32 0, i32 1"
+                        f"br i1 {guard_val}, label %{body_label}, label %{next_label}"
                     )
-                    offset = 0
-                    for pi, ppat in enumerate(pat.args):
-                        if pi >= len(payload_types):
-                            break
-                        pty = payload_types[pi]
-                        if offset == 0:
-                            fld_ptr = payload_ptr
-                        else:
-                            fld_ptr = self._fresh_tmp()
-                            self._emit_line(
-                                f"{fld_ptr} = getelementptr i8, "
-                                f"ptr {payload_ptr}, i32 {offset}"
-                            )
-                        if isinstance(ppat, N.VarPat):
-                            val = self._fresh_tmp()
-                            self._emit_line(
-                                f"{val} = load {pty}, ptr {fld_ptr}"
-                            )
-                            vptr = self._emit_alloca(pty)
-                            self._emit_line(
-                                f"store {pty} {val}, ptr {vptr}"
-                            )
-                            self._env[ppat.name] = (vptr, pty)
-                        offset += self._sizeof(pty)
-
-            elif isinstance(pat, N.VarPat):
-                # Bind whole scrutinee
-                vptr = self._emit_alloca("ptr")
-                self._emit_line(f"store ptr {scrut}, ptr {vptr}")
-                self._env[pat.name] = (vptr, "ptr")
+                    self._emit_label(body_label)
 
             body_val = self._emit_expr(arm.body)
             if body_val is not None:
                 self._emit_line(f"store {result_ty} {body_val}, ptr {result_ptr}")
             self._emit_line(f"br label %{end_label}")
-            self._env = saved
 
-        # If no default was used, emit an empty one
-        if default_label is not None:
-            self._emit_label(default_label)
-            self._emit_line(f"br label %{end_label}")
+            self._env = saved_env
+            self._env_struct_name.clear()
+            self._env_struct_name.update(saved_struct)
+            self._env_array_elem = saved_array
+            self._env_fn_sig = saved_fnsig
+
+            self._emit_label(next_label)
+
+        # Fallthrough when no arm matched: just branch to end. result_ptr
+        # is left at its undef alloca state, matching v0.2 behavior.
+        self._emit_line(f"br label %{end_label}")
 
         self._emit_label(end_label)
         result = self._fresh_tmp()
         self._emit_line(f"{result} = load {result_ty}, ptr {result_ptr}")
         return result
+
+    def _emit_pattern_test_sum(
+        self,
+        scrut_val: str,
+        sum_name: str,
+        pat: N.Pattern,
+        fail_label: str,
+    ) -> None:
+        """Emit a refutable test against a scrutinee that is a pointer to
+        a sum type struct. Branches to fail_label on mismatch; falls
+        through with bindings populated on success."""
+        if isinstance(pat, N.WildPat):
+            return
+        if isinstance(pat, N.VarPat):
+            vptr = self._emit_alloca("ptr")
+            self._emit_line(f"store ptr {scrut_val}, ptr {vptr}")
+            self._env[pat.name] = (vptr, "ptr")
+            self._env_struct_name[pat.name] = sum_name
+            return
+        if isinstance(pat, N.VariantPat):
+            # Prefer the composite key so nested-generic sum types pick
+            # the right variant.
+            composite = f"{sum_name}::{pat.name}"
+            ctor = self._variant_ctors.get(composite) or self._variant_ctors.get(
+                pat.name
+            )
+            if ctor is None:
+                self._emit_line(f"br label %{fail_label}")
+                dead = self._fresh_label("after_dead")
+                self._emit_label(dead)
+                return
+            ctor_sum, tag_idx = ctor
+            actual_sum = ctor_sum if ctor_sum in self._sum_types else sum_name
+
+            tag_ptr = self._fresh_tmp()
+            self._emit_line(
+                f"{tag_ptr} = getelementptr inbounds %{actual_sum}, "
+                f"ptr {scrut_val}, i32 0, i32 0"
+            )
+            tag = self._fresh_tmp()
+            self._emit_line(f"{tag} = load i32, ptr {tag_ptr}")
+            cmp = self._fresh_tmp()
+            self._emit_line(f"{cmp} = icmp eq i32 {tag}, {tag_idx}")
+            ok_label = self._fresh_label("tag_ok")
+            self._emit_line(
+                f"br i1 {cmp}, label %{ok_label}, label %{fail_label}"
+            )
+            self._emit_label(ok_label)
+
+            variants = self._sum_types[actual_sum]
+            _, payload_types = variants[tag_idx]
+            payload_nyet = self._sum_payload_nyet.get(actual_sum, [])
+            nyet_names: list[str | None] = (
+                payload_nyet[tag_idx] if tag_idx < len(payload_nyet) else []
+            )
+
+            if pat.args and payload_types:
+                payload_ptr = self._fresh_tmp()
+                self._emit_line(
+                    f"{payload_ptr} = getelementptr inbounds %{actual_sum}, "
+                    f"ptr {scrut_val}, i32 0, i32 1"
+                )
+                offset = 0
+                for pi, ppat in enumerate(pat.args):
+                    if pi >= len(payload_types):
+                        break
+                    pty = payload_types[pi]
+                    inner_nyet = (
+                        nyet_names[pi] if pi < len(nyet_names) else None
+                    )
+                    if offset == 0:
+                        fld_ptr = payload_ptr
+                    else:
+                        fld_ptr = self._fresh_tmp()
+                        self._emit_line(
+                            f"{fld_ptr} = getelementptr i8, "
+                            f"ptr {payload_ptr}, i32 {offset}"
+                        )
+                    val = self._fresh_tmp()
+                    self._emit_line(f"{val} = load {pty}, ptr {fld_ptr}")
+                    self._emit_pattern_test_value(
+                        val, pty, inner_nyet, ppat, fail_label
+                    )
+                    offset += self._sizeof(pty)
+            return
+        if isinstance(pat, N.LitPat):
+            # Match a literal against the whole sum struct — treat as fail.
+            self._emit_line(f"br label %{fail_label}")
+            dead = self._fresh_label("after_dead")
+            self._emit_label(dead)
+            return
+        # TuplePat / StructPat against a sum scrutinee: not supported.
+        self._emit_line(f"br label %{fail_label}")
+        dead = self._fresh_label("after_dead")
+        self._emit_label(dead)
+
+    def _emit_pattern_test_value(
+        self,
+        val: str,
+        llvm_ty: str,
+        nyet_name: str | None,
+        pat: N.Pattern,
+        fail_label: str,
+    ) -> None:
+        """Emit a refutable test against a value (already loaded). For
+        nested sum-typed payloads, `val` is a `ptr` and `nyet_name` is the
+        sum type's mangled name."""
+        if isinstance(pat, N.WildPat):
+            return
+        if isinstance(pat, N.VarPat):
+            vptr = self._emit_alloca(llvm_ty)
+            self._emit_line(f"store {llvm_ty} {val}, ptr {vptr}")
+            self._env[pat.name] = (vptr, llvm_ty)
+            if nyet_name is not None:
+                self._env_struct_name[pat.name] = nyet_name
+            return
+        if isinstance(pat, N.LitPat):
+            cmp_val = self._emit_expr(pat.value)
+            if cmp_val is None:
+                self._emit_line(f"br label %{fail_label}")
+                dead = self._fresh_label("after_dead")
+                self._emit_label(dead)
+                return
+            cmp = self._fresh_tmp()
+            if llvm_ty in ("double", "float"):
+                self._emit_line(
+                    f"{cmp} = fcmp oeq {llvm_ty} {val}, {cmp_val}"
+                )
+            else:
+                self._emit_line(
+                    f"{cmp} = icmp eq {llvm_ty} {val}, {cmp_val}"
+                )
+            ok_label = self._fresh_label("lit_ok")
+            self._emit_line(
+                f"br i1 {cmp}, label %{ok_label}, label %{fail_label}"
+            )
+            self._emit_label(ok_label)
+            return
+        if isinstance(pat, N.VariantPat):
+            # Nested sum match. Prefer the carrier-derived sum name so
+            # `Some(Some x)` against Option[Option[i32]] resolves the
+            # inner Some to Option[i32], not the outer one.
+            inner_sum = nyet_name
+            if inner_sum is None or inner_sum not in self._sum_types:
+                ctor = self._variant_ctors.get(pat.name)
+                if ctor is not None:
+                    inner_sum = ctor[0]
+            if inner_sum is None or inner_sum not in self._sum_types:
+                self._emit_line(f"br label %{fail_label}")
+                dead = self._fresh_label("after_dead")
+                self._emit_label(dead)
+                return
+            self._emit_pattern_test_sum(val, inner_sum, pat, fail_label)
+            return
+        # TuplePat / StructPat / GuardedPat against a value: not supported
+        # at this depth (guards live on whole arms).
+        self._emit_line(f"br label %{fail_label}")
+        dead = self._fresh_label("after_dead")
+        self._emit_label(dead)
+
+    def _exhaustiveness_warn(self, node: N.Match, sum_name: str) -> None:
+        """Print a warning if the match doesn't cover every variant of
+        `sum_name` and has no catch-all (Wild/Var/guardless) arm."""
+        if sum_name not in self._sum_types:
+            return
+        variants = self._sum_types[sum_name]
+        all_names = {v[0] for v in variants}
+        covered: set[str] = set()
+        has_catchall = False
+        for arm in node.arms:
+            pat = arm.pattern
+            if isinstance(pat, N.GuardedPat):
+                # A guarded arm is conditional — doesn't guarantee coverage.
+                continue
+            if isinstance(pat, (N.WildPat, N.VarPat)):
+                has_catchall = True
+                break
+            if isinstance(pat, N.VariantPat) and pat.name in all_names:
+                covered.add(pat.name)
+        if has_catchall:
+            return
+        missing = sorted(all_names - covered)
+        if missing:
+            import sys
+            print(
+                f"warning: non-exhaustive match on {sum_name}; "
+                f"missing variants: {', '.join(missing)}",
+                file=sys.stderr,
+            )
 
     def _emit_match_simple(self, scrut: str, node: N.Match) -> str | None:
         """Simple value-based match (integers, etc.)."""

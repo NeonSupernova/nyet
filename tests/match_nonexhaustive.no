@@ -1,0 +1,17 @@
+;; Match that doesn't cover all variants — emits a warning.
+;; Expected stderr line:
+;;   warning: non-exhaustive match on Sign; missing variants: Neg
+;;
+;; Expected output:
+;;   pos 5
+
+(type Sign
+  (Pos i32)
+  (Neg i32))
+
+(fn describe (s:Sign) -> unit
+  (match s
+    ((Pos n) (do (out "pos ") (out n) (out "\n")))))
+
+(fn main () -> unit
+  (describe (Pos 5)))

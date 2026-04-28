@@ -1,0 +1,23 @@
+;; Guarded match arm: `when` adds an extra predicate.
+;; Expected:
+;;   small: 5
+;;   big: 100
+;;   zero: 0
+;;   neg: 7
+
+(type Sign
+  (Pos i32)
+  (Neg i32))
+
+(fn describe (s:Sign) -> unit
+  (match s
+    ((Pos n) when (== n 0) (do (out "zero: ") (out n) (out "\n")))
+    ((Pos n) when (< n 10) (do (out "small: ") (out n) (out "\n")))
+    ((Pos n) (do (out "big: ") (out n) (out "\n")))
+    ((Neg n) (do (out "neg: ") (out n) (out "\n")))))
+
+(fn main () -> unit
+  (describe (Pos 5))
+  (describe (Pos 100))
+  (describe (Pos 0))
+  (describe (Neg 7)))
