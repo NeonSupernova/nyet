@@ -1,0 +1,21 @@
+;; v0.9 demo entry — pulls in `examples/v09_lib.no` via `(use ...)`.
+;;
+;; The driver's multi-file loader resolves `(use v09_lib)` relative to this
+;; file's directory, parses the dep, marks each declaration with its source
+;; module, and concatenates the programs (deps first) before handing off to
+;; the rest of the pipeline.
+;;
+;; Expected output:
+;;   2 + 3 = 5
+;;   sum_to(10) = 55
+;;   hello, world!
+;;   hello, world!
+;;   hello, world!
+
+(use v09_lib)
+
+(fn main () -> unit
+  (out "2 + 3 = ") (out (add 2 3)) (out "\n")
+  (out "sum_to(10) = ") (out (sum_to 10)) (out "\n")
+  (let g:Greeter (make_greeter "hello" 3))
+  (greet &g "world"))

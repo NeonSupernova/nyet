@@ -1,0 +1,32 @@
+;; v0.9 demo library — declarations re-used by v09_demo.no.
+;;
+;; Items marked `pub` are intended for cross-module use; non-pub items
+;; are module-private (visibility enforcement isn't yet wired into the
+;; checker, but the marker is preserved through the pipeline).
+
+(module v09_lib)
+
+(pub struct Greeter
+  greeting:string
+  count:i32)
+
+(pub fn make_greeter (g:string n:i32) -> Greeter
+  (Greeter greeting:g count:n))
+
+(pub fn greet (g:&Greeter who:string) -> unit
+  (var i:i32 0)
+  (loop
+    (if (>= i (. g count)) (break) (pass))
+    (out (. g greeting)) (out ", ") (out who) (out "!\n")
+    (= i (+ i 1))))
+
+(pub fn add (a:i32 b:i32) -> i32 (+ a b))
+
+(pub fn sum_to (n:i32) -> i32
+  (var acc:i32 0)
+  (var i:i32 1)
+  (loop
+    (if (> i n) (break) (pass))
+    (= acc (+ acc i))
+    (= i (+ i 1)))
+  acc)

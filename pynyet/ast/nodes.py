@@ -64,7 +64,16 @@ class Expr(Node):
 
 @dataclass
 class Decl(Node):
-    """Base class for top-level / item-level declarations."""
+    """Base class for top-level / item-level declarations.
+
+    v0.9 annotation slots:
+      - ``is_public``: set to True when the decl was wrapped with ``pub``.
+      - ``module``: name of the source module the decl was loaded from
+        (set by the multi-file loader; ``None`` for the entry program).
+    """
+
+    is_public: bool = field(default=False, init=False, compare=False, repr=False)
+    module: Optional[str] = field(default=None, init=False, compare=False, repr=False)
 
 
 # ---------------------------------------------------------------------------

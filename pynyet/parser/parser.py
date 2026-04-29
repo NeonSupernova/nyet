@@ -662,7 +662,10 @@ class Parser:
         # pub modifies a declaration keyword: dispatch directly
         handler = _SPECIAL_FORMS.get(head.kind)
         if handler is not None and handler is not Parser._parse_pub:
-            return handler(self, lparen)
+            decl = handler(self, lparen)
+            if isinstance(decl, N.Decl):
+                decl.is_public = True
+            return decl
         # Fallback: pub wraps an expression
         inner = self.parse_expr()
         self._expect(TokenKind.RPAREN)

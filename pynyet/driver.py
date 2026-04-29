@@ -10,6 +10,7 @@ from typing import Optional
 from pynyet.diagnostic import NyetError
 from pynyet.lexer.scanner import lex
 from pynyet.source import SourceFile
+import pynyet.ast.nodes as N
 
 
 def _dump_tokens(sf: SourceFile, keep_trivia: bool) -> str:
@@ -39,6 +40,62 @@ def _print_errors(e: NyetError) -> None:
         print(d.format(), file=sys.stderr)
 
 
+def _load_program_with_deps(entry_path: str) -> list[N.Node]:
+    """Load `entry_path` and recursively any `(use ...)` deps it imports.
+
+    Returns a single combined program with imported modules' decls listed
+    before the entry's, and `ModuleDecl` / `UseDecl` nodes stripped before
+    returning so downstream passes don't need to know about them. Each
+    surviving `Decl` has its `module` annotation set.
+
+    Resolution: `(use foo/bar)` in a file at `<dir>/<file>.no` looks for
+    `<dir>/foo/bar.no`. Missing targets are silently ignored — that's how
+    references to not-yet-implemented stdlib modules (`std/io`, etc.) stay
+    benign while we ship the multi-file driver.
+    """
+    from pynyet.parser.parser import parse
+
+    entry = Path(entry_path).resolve()
+    seen: set[Path] = set()
+    order: list[Path] = []
+    loaded: dict[Path, list[N.Node]] = {}
+
+    def load(path: Path) -> None:
+        path = path.resolve()
+        if path in seen:
+            return
+        seen.add(path)
+        if not path.is_file():
+            return
+        sf = SourceFile(str(path), path.read_text())
+        tokens = lex(sf)
+        program = parse(tokens)
+        mod_name = path.stem
+        for n in program:
+            if isinstance(n, N.ModuleDecl):
+                mod_name = n.name
+                break
+        for n in program:
+            if isinstance(n, N.Decl):
+                n.module = mod_name
+        loaded[path] = program
+        for n in program:
+            if isinstance(n, N.UseDecl):
+                target = path.parent / ("/".join(n.path) + ".no")
+                load(target)
+        order.append(path)
+
+    load(entry)
+
+    combined: list[N.Node] = []
+    for p in order:
+        for n in loaded[p]:
+            if isinstance(n, (N.ModuleDecl, N.UseDecl)):
+                continue
+            combined.append(n)
+    return combined
+
+
 def _cmd_lex(args: argparse.Namespace) -> int:
     sf = _load_source(args.file)
     try:
@@ -66,16 +123,13 @@ def _cmd_parse(args: argparse.Namespace) -> int:
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    from pynyet.parser.parser import parse
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
     from pynyet.sema.borrow import check_borrows
 
-    sf = _load_source(args.file)
     try:
-        tokens = lex(sf)
-        program = parse(tokens)
+        program = _load_program_with_deps(args.file)
     except NyetError as e:
         _print_errors(e)
         return 1
@@ -97,17 +151,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 def _cmd_build(args: argparse.Namespace) -> int:
     import subprocess
-    from pynyet.parser.parser import parse
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
     from pynyet.sema.borrow import check_borrows
     from pynyet.codegen.emit import emit_ir
 
-    sf = _load_source(args.file)
     try:
-        tokens = lex(sf)
-        program = parse(tokens)
+        program = _load_program_with_deps(args.file)
     except NyetError as e:
         _print_errors(e)
         return 1
