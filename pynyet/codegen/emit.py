@@ -1083,6 +1083,8 @@ class Emitter:
                 return self._infer_llvm_type(node.args[0])
             if op == "fmt":
                 return "ptr"
+            if op in ("file_open", "file_read_all"):
+                return "ptr"
             if op == "in":
                 if node.args and isinstance(node.args[0], N.Ident):
                     return self._llvm_type_from_name(node.args[0].name)
@@ -1266,6 +1268,14 @@ class Emitter:
                 return self._emit_panic(node.args)
             if name == "len" and len(node.args) == 1:
                 return self._emit_array_len(node.args[0])
+            if name == "file_open":
+                return self._emit_file_open(node.args)
+            if name == "file_read_all":
+                return self._emit_file_read_all(node.args)
+            if name == "file_write":
+                return self._emit_file_write(node.args)
+            if name == "file_close":
+                return self._emit_file_close(node.args)
             # Operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -1628,6 +1638,84 @@ class Emitter:
             self._emit_line(f"{result} = trunc i64 {val64} to i32")
             return result
         return val64
+
+    # ------------------------------------------------------------------
+    # File IO (v1.0): open / read_all / write / close.
+    #
+    # Handles are FILE* opaque pointers. Strings come in/out as null-
+    # terminated `i8*` (the same shape `out`/`fmt` already produce).
+    # ------------------------------------------------------------------
+
+    def _emit_file_open(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 2:
+            return None
+        self._declare_extern("declare ptr @fopen(ptr, ptr)")
+        path = self._emit_expr(args[0])
+        mode = self._emit_expr(args[1])
+        if path is None or mode is None:
+            return None
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call ptr @fopen(ptr {path}, ptr {mode})")
+        return tmp
+
+    def _emit_file_read_all(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 1:
+            return None
+        self._declare_extern("declare i32 @fseek(ptr, i64, i32)")
+        self._declare_extern("declare i64 @ftell(ptr)")
+        self._declare_extern("declare void @rewind(ptr)")
+        self._declare_extern("declare i64 @fread(ptr, i64, i64, ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        h = self._emit_expr(args[0])
+        if h is None:
+            return None
+        seek_rc = self._fresh_tmp()
+        self._emit_line(
+            f"{seek_rc} = call i32 @fseek(ptr {h}, i64 0, i32 2)"
+        )
+        size = self._fresh_tmp()
+        self._emit_line(f"{size} = call i64 @ftell(ptr {h})")
+        self._emit_line(f"call void @rewind(ptr {h})")
+        size_p1 = self._fresh_tmp()
+        self._emit_line(f"{size_p1} = add i64 {size}, 1")
+        buf = self._fresh_tmp()
+        self._emit_line(f"{buf} = call ptr @malloc(i64 {size_p1})")
+        nread = self._fresh_tmp()
+        self._emit_line(
+            f"{nread} = call i64 @fread(ptr {buf}, i64 1, i64 {size}, ptr {h})"
+        )
+        end = self._fresh_tmp()
+        self._emit_line(f"{end} = getelementptr i8, ptr {buf}, i64 {size}")
+        self._emit_line(f"store i8 0, ptr {end}")
+        return buf
+
+    def _emit_file_write(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 2:
+            return None
+        self._declare_extern("declare i64 @strlen(ptr)")
+        self._declare_extern("declare i64 @fwrite(ptr, i64, i64, ptr)")
+        h = self._emit_expr(args[0])
+        text = self._emit_expr(args[1])
+        if h is None or text is None:
+            return None
+        n = self._fresh_tmp()
+        self._emit_line(f"{n} = call i64 @strlen(ptr {text})")
+        wrote = self._fresh_tmp()
+        self._emit_line(
+            f"{wrote} = call i64 @fwrite(ptr {text}, i64 1, i64 {n}, ptr {h})"
+        )
+        return None
+
+    def _emit_file_close(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 1:
+            return None
+        self._declare_extern("declare i32 @fclose(ptr)")
+        h = self._emit_expr(args[0])
+        if h is None:
+            return None
+        rc = self._fresh_tmp()
+        self._emit_line(f"{rc} = call i32 @fclose(ptr {h})")
+        return None
 
     # ------------------------------------------------------------------
     # fmt

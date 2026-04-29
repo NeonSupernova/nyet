@@ -1,0 +1,47 @@
+;; v1.0 demo — read a text file, transform its contents, write it back out.
+;;
+;; The four file IO builtins are:
+;;   (file_open path mode)   -> handle    ; thin wrapper around fopen
+;;   (file_read_all handle)  -> string    ; reads the whole file into memory
+;;   (file_write  handle s)  -> unit      ; writes a null-terminated string
+;;   (file_close  handle)    -> unit      ; closes the handle
+;;
+;; This demo:
+;;   1. writes a short greeting to /tmp/v10_demo.in
+;;   2. reads it back with file_read_all
+;;   3. echoes the contents to stdout
+;;   4. writes a derived line to /tmp/v10_demo.out
+;;   5. reads /tmp/v10_demo.out and prints it.
+;;
+;; Expected output:
+;;   read: hello from nyet v1.0!
+;;   wrote: nyet wrote: hello from nyet v1.0!
+;;   final: nyet wrote: hello from nyet v1.0!
+
+(fn main () -> unit
+  (let in_path:string "/tmp/v10_demo.in")
+  (let out_path:string "/tmp/v10_demo.out")
+
+  ;; 1. Seed the input file.
+  (let h_w (file_open in_path "w"))
+  (file_write h_w "hello from nyet v1.0!")
+  (file_close h_w)
+
+  ;; 2. Read it back.
+  (let h_r (file_open in_path "r"))
+  (let body (file_read_all h_r))
+  (file_close h_r)
+  (out "read: ") (out body) (out "\n")
+
+  ;; 3. Write a derived line.
+  (let h_o (file_open out_path "w"))
+  (file_write h_o "nyet wrote: ")
+  (file_write h_o body)
+  (file_close h_o)
+  (out "wrote: nyet wrote: ") (out body) (out "\n")
+
+  ;; 4. Read the output back to confirm the round-trip.
+  (let h_v (file_open out_path "r"))
+  (let final (file_read_all h_v))
+  (file_close h_v)
+  (out "final: ") (out final) (out "\n"))

@@ -198,6 +198,18 @@ class TypeChecker:
                 return FnSig((), UNIT)
             if node.name == "panic":
                 return FnSig((), UNIT)
+            # v1.0 file IO builtins. STRING return for handles is approximate
+            # — handles are opaque pointers, but STRING shares the LLVM `ptr`
+            # shape and isn't Copy, which keeps the borrow checker honest if
+            # someone tries to alias them.
+            if node.name == "file_open":
+                return FnSig((STRING, STRING), STRING)
+            if node.name == "file_read_all":
+                return FnSig((STRING,), STRING)
+            if node.name == "file_write":
+                return FnSig((STRING, STRING), UNIT)
+            if node.name == "file_close":
+                return FnSig((STRING,), UNIT)
             return ERROR
 
         if isinstance(node, N.Call):

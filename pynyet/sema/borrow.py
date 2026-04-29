@@ -48,6 +48,7 @@ _BUILTIN_BORROW = {
     "&&", "||", "!",
     "&", "&!",
     "len", "push", "pop", "append", "str",
+    "file_open", "file_read_all", "file_write", "file_close",
 }
 
 

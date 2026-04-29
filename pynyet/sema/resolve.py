@@ -51,7 +51,8 @@ class Scope:
 # Built-in names that don't require declaration
 BUILTINS = {"out", "in", "err", "fmt", "str", "len", "push", "pop",
             "append", "type", "print", "gensym", "parse", "panic",
-            "http/get", "io/on"}
+            "http/get", "io/on",
+            "file_open", "file_read_all", "file_write", "file_close"}
 
 # Primitive type names valid in expression position (e.g. `(in i32)`)
 PRIM_TYPE_NAMES = {
