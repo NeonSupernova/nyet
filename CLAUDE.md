@@ -27,24 +27,24 @@ python3 -m pynyet.driver check FILE    # macro-expand + resolve + typecheck + bo
 python3 -m pynyet.driver build FILE    # compile to a native binary (writes output.ll + output)
 python3 -m pynyet.driver run FILE      # build, then execute
 
-# Equivalent Makefile wrappers
-make lex FILE=...
-make parse FILE=...
-make check FILE=...
-make build FILE=...
-make run FILE=...
+# Equivalent justfile wrappers (run `just` to list all)
+just lex FILE
+just parse FILE
+just check FILE
+just build FILE
+just run FILE
 
 # Tests (golden-file harnesses, see tests/README.md)
-make test-lexer
-make test-parser
-make test-sema
-make test-codegen
-make test-all
+just test-lexer
+just test-parser
+just test-sema
+just test-codegen
+just test-all
 
 # C runtime (currently unused by codegen — see CONTINUATION_PLAN.md Phase 3)
-make runtime
+just runtime
 
-make clean   # remove build/, output, output.ll, __pycache__
+just clean   # remove build/, output, output.ll, __pycache__
 ```
 
 No `app.py`, no `input.toy`, no `rply`, no `llvmlite` — none of those

@@ -69,7 +69,7 @@ pynyet/
   ir/                  unused stub — PLAN.md §6 typed IR, never built
   interp/              unused stub — tree-walk interpreter, never built
 
-runtime/               C runtime sources; compiles via `make runtime`
+runtime/               C runtime sources; compiles via `just runtime`
                         but is not linked by the driver/codegen yet
 
 tests/

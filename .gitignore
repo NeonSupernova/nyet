@@ -9,4 +9,4 @@ __pycache__
 
 output*
 .idea/
-nyet-vscode/node_modules/
+node_modules/

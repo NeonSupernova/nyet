@@ -16,10 +16,10 @@ fully pass `driver check` yet).
   directly (`pynyet/codegen/emit.py`).
 - **clang** is required to link generated `.ll` files into a native
   binary (`driver build` / `driver run`, and the codegen test harness).
-- `rply`/`llvmlite` were used by an earlier prototype, remnants of
-  which still live at `pynyet/lexer/lexer.py`, `pynyet/ast/ast.py`,
-  and `pynyet/codegen/codegen.py`. Nothing in the live pipeline
-  imports them; they're scheduled for deletion. Don't build on them.
+- **[`just`](https://github.com/casey/just)** runs the dev commands
+  (see the [justfile](justfile), or `just --list`).
+- **Node/bun** (for `bun install` or `npm install`) is only needed for
+  the commit-message git hook — unrelated to the compiler itself.
 
 ## Running tests
 
@@ -32,9 +32,10 @@ python3 tests/lexer/run.py --update     # rewrite all golden files
 ```
 
 Same interface for `tests/parser/run.py`, `tests/sema/run.py`, and
-`tests/codegen/run.py` — or run everything with `make test-all`. See
+`tests/codegen/run.py` — or run everything with `just test-all`. See
 [tests/README.md](tests/README.md) for what each phase's golden format
-looks like.
+looks like, and the [justfile](justfile) (`just --list`) for every
+available command.
 
 ## Adding a test
 
@@ -70,16 +71,33 @@ To update goldens after an intentional compiler change, run with
 
 ## Commit style
 
-Terse, present-tense, imperative commit messages. Milestone prefixes are
-encouraged but not required:
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-v1.1: async fn state-machine lowering
-fix: array bounds checks in codegen
+type(scope): subject
+```
+
+`type` is one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`,
+`test`, `build`, `ci`, `chore`, `revert`. `scope` is optional but
+encouraged — e.g. `lang`, `codegen`, `sema`, `lsp`, `repo`. Examples:
+
+```
+feat(lang): add char primitive type and (as expr type) casts
+fix(codegen): array bounds checks
 docs: update architecture.md pipeline walkthrough
+chore(repo): rebuild test harness after v0.4-v1.0 rescue
 ```
 
-When a change crosses multiple phases, pick the dominant one.
+This is enforced by a `commit-msg` git hook (Husky + commitlint) — a
+non-conforming message is rejected at commit time. First-time setup:
+
+```bash
+bun install   # or npm install — installs husky + commitlint, wires up hooks via `prepare`
+```
+
+If you don't have the hook tooling installed, `git commit` still works
+(hooks just won't run) — but CI/reviewers expect the convention
+regardless, so follow it by hand in that case.
 
 ## Pointers
 

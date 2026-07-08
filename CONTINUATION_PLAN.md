@@ -36,8 +36,9 @@ cleanly — merged 2026-07-08, tagged v0.4 through v1.0.
 - [x] Seed sema goldens (uaf_let/uaf_branch/uaf_struct/borrow_ok/branch_ok,
       moved from loose `tests/*.no` into `tests/sema/`) and codegen
       goldens (closure_*/match_*, moved into `tests/codegen/`)
-- [x] Add GitHub Actions: `make test-all` + hello-world e2e smoke
-      (`.github/workflows/ci.yml`)
+- [x] Add GitHub Actions: `just test-all` + hello-world e2e smoke
+      (`.github/workflows/ci.yml`; originally `make`, migrated to
+      `just` — see Phase 1.6 below)
 - [x] Make `build` fail on all sema errors (expand/resolve/typeck/borrow),
       not just borrow errors (`pynyet/driver.py`) — verified no example
       regressions
