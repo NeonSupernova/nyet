@@ -1,0 +1,3 @@
+(fn widen (x:i32) -> i64 (as x i64))
+(fn to_char (n:i32) -> char (as n char))
+(fn from_char (c:char) -> i32 (as c i32))

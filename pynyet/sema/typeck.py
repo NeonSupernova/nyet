@@ -15,9 +15,9 @@ from __future__ import annotations
 from pynyet.ast import nodes as N
 from pynyet.diagnostic import Diagnostic, Severity
 from pynyet.sema.types import (
-    NyetType, IntType, FloatType, BoolType, StringType, UnitType,
+    NyetType, IntType, FloatType, BoolType, CharType, StringType, UnitType,
     FnSig, ArrayType, TupleType, StructType, SumType, ErrorType,
-    I32, I64, F64, BOOL, STRING, UNIT, ERROR, PRIM_TYPES,
+    I32, I64, F64, BOOL, CHAR, STRING, UNIT, ERROR, PRIM_TYPES,
 )
 
 
@@ -148,7 +148,8 @@ class TypeChecker:
                 val_ty = self._infer(node.value)
                 declared = self._resolve_type_node(node.type) if node.type else None
                 if declared and declared is not ERROR:
-                    if not self._compatible(declared, val_ty):
+                    is_bare_int_lit = isinstance(node.value, N.IntLit)
+                    if not self._compatible(declared, val_ty, is_bare_int_lit):
                         self.errors.append(Diagnostic(
                             Severity.ERROR,
                             f"type mismatch: expected {declared}, got {val_ty}",
@@ -328,6 +329,25 @@ class TypeChecker:
             self._infer(node.value)
             return ERROR
 
+        if isinstance(node, N.Cast):
+            src_ty = self._infer(node.value)
+            dst_ty = self._resolve_type_node(node.target_type)
+            _castable = (IntType, FloatType, CharType)
+            if dst_ty is not ERROR and src_ty is not ERROR:
+                if not isinstance(src_ty, _castable):
+                    self.errors.append(Diagnostic(
+                        Severity.ERROR,
+                        f"cannot cast from non-primitive type {src_ty}",
+                        node.span,
+                    ))
+                elif not isinstance(dst_ty, _castable):
+                    self.errors.append(Diagnostic(
+                        Severity.ERROR,
+                        f"cannot cast to non-primitive type {dst_ty}",
+                        node.span,
+                    ))
+            return dst_ty
+
         if isinstance(node, N.Quote):
             # Quote is consumed by the macro expander; if one survives here,
             # it had no enclosing macro — fall back to its inner expression.
@@ -345,12 +365,23 @@ class TypeChecker:
 
         return ERROR
 
-    def _compatible(self, expected: NyetType, actual: NyetType) -> bool:
-        """Check if actual is compatible with expected."""
+    def _compatible(
+        self, expected: NyetType, actual: NyetType, is_bare_int_lit: bool = False
+    ) -> bool:
+        """Check if actual is compatible with expected.
+
+        `is_bare_int_lit` is set when `actual` came directly from an
+        unsuffixed integer literal (which always infers as I32 — see
+        `_infer`). Such literals have no fixed width/signedness of their
+        own, so they may satisfy any integer or char annotation, e.g.
+        `(let d:u64 100000)` or `(let ch:char 65)`.
+        """
         if expected is ERROR or actual is ERROR:
             return True  # don't cascade errors
         if isinstance(expected, FloatType) and isinstance(actual, IntType):
             return True  # integer literals can be assigned to float bindings
+        if is_bare_int_lit and isinstance(expected, (IntType, CharType)):
+            return True
         return expected == actual
 
 

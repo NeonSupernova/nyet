@@ -57,7 +57,7 @@ BUILTINS = {"out", "in", "err", "fmt", "str", "len", "push", "pop",
 # Primitive type names valid in expression position (e.g. `(in i32)`)
 PRIM_TYPE_NAMES = {
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize",
-    "f32", "f64", "bool", "string", "unit",
+    "f32", "f64", "bool", "char", "string", "unit",
 }
 
 
@@ -240,6 +240,12 @@ class NameResolver:
 
         elif isinstance(node, N.Try):
             self._resolve_node(node.value, scope)
+
+        elif isinstance(node, N.Cast):
+            # Resolve the expression being cast; target_type is a TypeNode,
+            # not a name reference, so it doesn't need scope resolution.
+            if node.value is not None:
+                self._resolve_node(node.value, scope)
 
         elif isinstance(node, N.Splice):
             self._resolve_node(node.value, scope)

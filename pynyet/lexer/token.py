@@ -111,6 +111,10 @@ class TokenKind(Enum):
     BOOL_T = auto()
     STRING_T = auto()
     UNIT_T = auto()
+    CHAR_T = auto()
+
+    # Cast keyword
+    AS = auto()
 
     # Trivia (preserved for autodocs)
     COMMENT_INLINE = auto()
@@ -174,8 +178,11 @@ KEYWORDS: dict[str, TokenKind] = {
     "f32": TokenKind.F32,
     "f64": TokenKind.F64,
     "bool": TokenKind.BOOL_T,
+    "char": TokenKind.CHAR_T,
     "string": TokenKind.STRING_T,
     "unit": TokenKind.UNIT_T,
+    # Cast special form
+    "as": TokenKind.AS,
 }
 
 

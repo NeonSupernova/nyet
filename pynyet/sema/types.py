@@ -40,6 +40,12 @@ class BoolType(NyetType):
 
 
 @dataclass(frozen=True)
+class CharType(NyetType):
+    def __str__(self) -> str:
+        return "char"
+
+
+@dataclass(frozen=True)
 class StringType(NyetType):
     def __str__(self) -> str:
         return "string"
@@ -134,6 +140,7 @@ USIZE = IntType(64, False)  # platform-width, treat as u64
 F32 = FloatType(32)
 F64 = FloatType(64)
 BOOL = BoolType()
+CHAR = CharType()
 STRING = StringType()
 UNIT = UnitType()
 ERROR = ErrorType()
@@ -144,5 +151,5 @@ PRIM_TYPES: dict[str, NyetType] = {
     "u8": U8, "u16": U16, "u32": U32, "u64": U64,
     "usize": USIZE,
     "f32": F32, "f64": F64,
-    "bool": BOOL, "string": STRING, "unit": UNIT,
+    "bool": BOOL, "char": CHAR, "string": STRING, "unit": UNIT,
 }

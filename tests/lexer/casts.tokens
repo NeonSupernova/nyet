@@ -1,0 +1,30 @@
+LPAREN           2:1     
+LET              2:2     
+IDENT            2:6      value='ch'
+COLON            2:8     
+CHAR_T           2:9     
+INT_LIT          2:14     value=65
+RPAREN           2:16    
+LPAREN           3:1     
+LET              3:2     
+IDENT            3:6      value='n'
+COLON            3:7     
+I32              3:8     
+LPAREN           3:12    
+AS               3:13    
+IDENT            3:16     value='ch'
+I32              3:19    
+RPAREN           3:22    
+RPAREN           3:23    
+LPAREN           4:1     
+LET              4:2     
+IDENT            4:6      value='d'
+COLON            4:7     
+F64              4:8     
+LPAREN           4:12    
+AS               4:13    
+IDENT            4:16     value='n'
+F64              4:18    
+RPAREN           4:21    
+RPAREN           4:22    
+EOF              5:1     

@@ -1,0 +1,39 @@
+;; (as expr type) — numeric widen/narrow and char <-> int conversions.
+;; Expected:
+;;   i32->i64: 42
+;;   i64->i32: 42
+;;   i32->f64: 42
+;;   f64->i32: 42
+;;   char->i32: 65
+;;   int->char->int: 97
+
+(fn test_numeric () -> unit
+  (do
+    (let a:i32 42)
+    (let b:i64 (as a i64))
+    (let c:i32 (as b i32))
+    (let d:f64 (as a f64))
+    (let e:i32 (as d i32))
+    (out (fmt "i32->i64: {}\n" b))
+    (out (fmt "i64->i32: {}\n" c))
+    (out (fmt "i32->f64: {}\n" d))
+    (out (fmt "f64->i32: {}\n" e))))
+
+(fn test_char () -> unit
+  (do
+    (let ch:char 65)
+    (let n:i32 (as ch i32))
+    (out (fmt "char->i32: {}\n" n))))
+
+(fn test_int_to_char () -> unit
+  (do
+    (let code:i32 97)
+    (let ch:char (as code char))
+    (let back:i32 (as ch i32))
+    (out (fmt "int->char->int: {}\n" back))))
+
+(fn main () -> unit
+  (do
+    (test_numeric)
+    (test_char)
+    (test_int_to_char)))

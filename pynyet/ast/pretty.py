@@ -220,6 +220,10 @@ def _h_try(n):
     return f"(try {pretty(n.value)})"
 
 
+def _h_cast(n):
+    return f"(as {pretty(n.value)} {pretty_type(n.target_type)})"
+
+
 def _h_keyword_arg(n):
     return f"{n.name}:{pretty(n.value)}"
 
@@ -346,6 +350,7 @@ _HANDLERS: dict[str, Any] = {
     "Quote": _h_quote,
     "Splice": _h_splice,
     "Try": _h_try,
+    "Cast": _h_cast,
     "KeywordArg": _h_keyword_arg,
     # Declarations
     "LetDecl": _h_let,

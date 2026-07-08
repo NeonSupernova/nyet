@@ -62,6 +62,10 @@ class Emitter:
         # `(= (arr i) v)` to indexed load/store instead of a function call.
         self._env_array_elem: dict[str, str] = {}
 
+        # Char bindings — names of variables whose Nyet type is `char`.
+        # Used by _emit_cast to detect char→int conversions at the call site.
+        self._env_char_names: set[str] = set()
+
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
         # (fn_name, type_args_tuple) → mangled_name — already-monomorphized
@@ -413,6 +417,8 @@ class Emitter:
             return "float"
         if name == "bool":
             return "i1"
+        if name == "char":
+            return "i32"
         if name == "string":
             return "ptr"
         if name in self._structs or name in self._sum_types:
@@ -770,6 +776,8 @@ class Emitter:
                 return "i8"
             if name in ("i16", "u16"):
                 return "i16"
+            if name == "char":
+                return "i32"  # Unicode scalar value stored as i32
             # Struct or sum type — pass by pointer
             if name in self._structs or name in self._sum_types:
                 return "ptr"
@@ -881,6 +889,7 @@ class Emitter:
             "env": dict(self._env),
             "env_struct_name": dict(self._env_struct_name),
             "env_array_elem": dict(self._env_array_elem),
+            "env_char_names": set(self._env_char_names),
             "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
@@ -895,6 +904,7 @@ class Emitter:
         self._env_struct_name.clear()
         self._env_struct_name.update(saved["env_struct_name"])
         self._env_array_elem = saved["env_array_elem"]
+        self._env_char_names = saved["env_char_names"]
         self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
@@ -982,6 +992,9 @@ class Emitter:
                     ptr = self._emit_alloca(t)
                     self._emit_line(f"store {t} %{n}, ptr {ptr}")
                     self._env[n] = (ptr, t)
+                # Track char-typed params for _emit_cast.
+                if p.type is not None and self._nyet_type_name(p.type) == "char":
+                    self._env_char_names.add(n)
 
             if node.body is not None:
                 result = self._emit_expr(node.body)
@@ -1045,6 +1058,8 @@ class Emitter:
             return "ptr"
         if isinstance(node, N.ArrayLit):
             return "ptr"
+        if isinstance(node, N.Cast):
+            return self._llvm_type(node.target_type)
         if isinstance(node, N.Ident) and node.name in self._env:
             return self._env[node.name][1]
         # v0.6: a bare reference to a top-level fn yields its function pointer.
@@ -1204,6 +1219,9 @@ class Emitter:
 
         if isinstance(node, N.Try):
             return self._emit_try(node)
+
+        if isinstance(node, N.Cast):
+            return self._emit_cast(node.value, node.target_type)
 
         if isinstance(node, N.Do):
             return self._emit_do(node)
@@ -1931,6 +1949,141 @@ class Emitter:
             f"{tmp} = {'and' if op == '&&' else 'or'} i1 {lhs}, {rhs}"
         )
         return tmp
+
+    # ------------------------------------------------------------------
+    # Cast — (as expr type)
+    # ------------------------------------------------------------------
+
+    def _emit_cast(self, value: N.Node, target_tn: N.TypeNode) -> str | None:
+        """Emit an explicit primitive cast, including char ↔ int.
+
+        LLVM instruction selection:
+          int  → float   : sitofp
+          float → int    : fptosi (truncate toward zero)
+          float → float  : fpext (widen) / fptrunc (narrow)
+          int  → int     : sext (widen) / trunc (narrow)
+          char → int     : sext/trunc on i32 value
+          int  → char    : coerce to i32 + Unicode bounds-check panic
+        """
+        src = self._emit_expr(value)
+        if src is None:
+            return None
+
+        src_ty = self._infer_llvm_type(value)
+        dst_ty = self._llvm_type(target_tn)
+
+        target_is_char = (
+            isinstance(target_tn, (N.PrimType, N.NamedType))
+            and target_tn.name == "char"
+        )
+        source_is_char = self._node_is_char(value)
+
+        if src_ty == dst_ty and not target_is_char and not source_is_char:
+            return src  # no-op
+
+        tmp = self._fresh_tmp()
+
+        # float conversions
+        if self._is_float(dst_ty) and not self._is_float(src_ty):
+            self._emit_line(f"{tmp} = sitofp {src_ty} {src} to {dst_ty}")
+            return tmp
+        if not self._is_float(dst_ty) and self._is_float(src_ty):
+            self._emit_line(f"{tmp} = fptosi {src_ty} {src} to {dst_ty}")
+            return tmp
+        if self._is_float(dst_ty) and self._is_float(src_ty):
+            src_bits = self._sizeof(src_ty) * 8
+            dst_bits = self._sizeof(dst_ty) * 8
+            if dst_bits > src_bits:
+                self._emit_line(f"{tmp} = fpext {src_ty} {src} to {dst_ty}")
+            else:
+                self._emit_line(f"{tmp} = fptrunc {src_ty} {src} to {dst_ty}")
+            return tmp
+
+        # int / char conversions
+        src_bits = self._sizeof(src_ty) * 8
+        dst_bits = self._sizeof(dst_ty) * 8
+
+        if target_is_char:
+            # Coerce source to i32 first
+            coerced = src
+            if src_bits < 32:
+                coerced = self._fresh_tmp()
+                self._emit_line(f"{coerced} = sext {src_ty} {src} to i32")
+            elif src_bits > 32:
+                coerced = self._fresh_tmp()
+                self._emit_line(f"{coerced} = trunc {src_ty} {src} to i32")
+
+            # Unicode scalar value bounds check:
+            # valid: 0x000000–0xD7FF and 0xE000–0x10FFFF
+            self._declare_printf()
+            self._declare_extern("declare void @exit(i32)")
+            ok_label = self._fresh_label("cast_char_ok")
+            surr_label = self._fresh_label("cast_char_surr")
+            hi_label = self._fresh_label("cast_char_hi")
+            panic_label = self._fresh_label("cast_char_panic")
+
+            lo_ok = self._fresh_tmp()
+            self._emit_line(f"{lo_ok} = icmp sge i32 {coerced}, 0")
+            self._emit_line(
+                f"br i1 {lo_ok}, label %{surr_label}, label %{panic_label}"
+            )
+
+            self._emit_label(surr_label)
+            surr_lo = self._fresh_tmp()
+            surr_hi = self._fresh_tmp()
+            not_surr = self._fresh_tmp()
+            self._emit_line(f"{surr_lo} = icmp slt i32 {coerced}, 55296")
+            self._emit_line(f"{surr_hi} = icmp sgt i32 {coerced}, 57343")
+            self._emit_line(f"{not_surr} = or i1 {surr_lo}, {surr_hi}")
+            self._emit_line(
+                f"br i1 {not_surr}, label %{hi_label}, label %{panic_label}"
+            )
+
+            self._emit_label(hi_label)
+            hi_ok = self._fresh_tmp()
+            self._emit_line(f"{hi_ok} = icmp sle i32 {coerced}, 1114111")
+            self._emit_line(
+                f"br i1 {hi_ok}, label %{ok_label}, label %{panic_label}"
+            )
+
+            self._emit_label(panic_label)
+            msg_name, _ = self._get_string(
+                "cast error: integer is not a valid Unicode scalar value\n"
+            )
+            panic_tmp = self._fresh_tmp()
+            self._emit_line(
+                f"{panic_tmp} = call i32 (ptr, ...) @printf(ptr {msg_name})"
+            )
+            self._emit_line("call void @exit(i32 1)")
+            self._emit_line("unreachable")
+
+            self._emit_label(ok_label)
+            return coerced
+
+        if source_is_char:
+            # char → int: i32 value to dst width
+            if dst_bits > 32:
+                self._emit_line(f"{tmp} = sext i32 {src} to {dst_ty}")
+            elif dst_bits < 32:
+                self._emit_line(f"{tmp} = trunc i32 {src} to {dst_ty}")
+            else:
+                return src  # same width
+            return tmp
+
+        # plain int → int
+        if dst_bits > src_bits:
+            self._emit_line(f"{tmp} = sext {src_ty} {src} to {dst_ty}")
+        elif dst_bits < src_bits:
+            self._emit_line(f"{tmp} = trunc {src_ty} {src} to {dst_ty}")
+        else:
+            return src
+        return tmp
+
+    def _node_is_char(self, node: N.Node) -> bool:
+        """Return True if node resolves to a char-typed binding."""
+        if isinstance(node, N.Ident):
+            return node.name in self._env_char_names
+        return False
 
     # ------------------------------------------------------------------
     # Struct construction
@@ -2701,8 +2854,21 @@ class Emitter:
                         conv = self._fresh_tmp()
                         self._emit_line(f"{conv} = sitofp {val_ty} {val} to {ty}")
                         val = conv
+                    elif not self._is_float(ty) and not self._is_float(val_ty) and val_ty != ty:
+                        # Integer width mismatch — coerce to match declared type
+                        src_bits = self._sizeof(val_ty) * 8
+                        dst_bits = self._sizeof(ty) * 8
+                        conv = self._fresh_tmp()
+                        if dst_bits > src_bits:
+                            self._emit_line(f"{conv} = sext {val_ty} {val} to {ty}")
+                        else:
+                            self._emit_line(f"{conv} = trunc {val_ty} {val} to {ty}")
+                        val = conv
                     self._emit_line(f"store {ty} {val}, ptr {ptr}")
             self._env[node.name] = (ptr, ty)
+            # Track char bindings so _emit_cast can detect char→int conversions.
+            if node.type is not None and self._nyet_type_name(node.type) == "char":
+                self._env_char_names.add(node.name)
 
         if isinstance(node.value, N.StringLit):
             self._str_lits[node.name] = node.value.value

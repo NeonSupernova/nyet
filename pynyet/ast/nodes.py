@@ -381,6 +381,18 @@ class Try(Expr):
 
 
 @dataclass
+class Cast(Expr):
+    """Type cast: (as expr type).
+
+    Explicit, primitive-only coercion — numeric widening/narrowing and
+    char ↔ int conversions. Does not trigger implicit coercions.
+    """
+
+    value: Optional[Expr] = None
+    target_type: Optional[TypeNode] = None
+
+
+@dataclass
 class KeywordArg(Expr):
     """Keyword argument in a call: ``name:value``."""
 

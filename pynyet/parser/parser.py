@@ -38,6 +38,7 @@ _PRIM_TYPE_TOKENS: dict[TokenKind, str] = {
     TokenKind.F32: "f32",
     TokenKind.F64: "f64",
     TokenKind.BOOL_T: "bool",
+    TokenKind.CHAR_T: "char",
     TokenKind.STRING_T: "string",
     TokenKind.UNIT_T: "unit",
 }
@@ -918,6 +919,14 @@ class Parser:
         self._expect(TokenKind.RPAREN)
         return N.Call(self._span_from(lparen), head, args)
 
+    def _parse_as(self, lparen: Token) -> N.Cast:
+        """(as expr type) — explicit primitive type cast."""
+        self._advance()  # consume 'as'
+        value = self.parse_expr()
+        target_type = self._parse_type()
+        self._expect(TokenKind.RPAREN)
+        return N.Cast(self._span_from(lparen), value, target_type)
+
 
 # -------------------------------------------------------------------
 # Operator token → identifier name mapping
@@ -989,6 +998,7 @@ _SPECIAL_FORMS: dict[TokenKind, any] = {
     TokenKind.OUT: Parser._parse_builtin_call,
     TokenKind.IN: Parser._parse_builtin_call,
     TokenKind.ERR: Parser._parse_builtin_call,
+    TokenKind.AS: Parser._parse_as,
 }
 
 

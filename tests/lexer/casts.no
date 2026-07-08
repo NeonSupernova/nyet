@@ -1,0 +1,4 @@
+;; char type and the `as` cast keyword.
+(let ch:char 65)
+(let n:i32 (as ch i32))
+(let d:f64 (as n f64))
