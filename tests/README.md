@@ -16,18 +16,23 @@ representation for each fixture and diffs it against the stored golden.
 ## Directory layout
 
 - `tests/lexer/` — lexing. Goldens use the `.tokens` extension.
-- `tests/parser/` — parsing (v0.2). Goldens use `.golden`.
-- `tests/sema/` — name resolution, type checking, and borrow checking
-  (v0.3). Goldens use `.golden`.
-- `tests/codegen/` — end-to-end IR / binary behaviour (v0.4). Goldens
-  use `.golden`.
+- `tests/parser/` — parsing. Goldens use the `.ast` extension; also
+  smoke-parses `main.no` (no golden compare, just pass/fail).
+- `tests/sema/` — macro expansion, name resolution, type checking, and
+  borrow checking. Goldens use `.golden`; dump is either `ok` or the
+  formatted diagnostics.
+- `tests/codegen/` — end-to-end: builds the fixture, runs the binary,
+  captures stdout (and any in-process build-stderr, e.g. exhaustiveness
+  warnings). Goldens use `.golden`.
 
-Only the lexer harness has real fixtures today; the other runners print
-`no cases yet` and exit 0 until their respective milestones land.
+All four harnesses have real fixtures and pass. Codegen fixtures should
+not require stdin — programs that read `(in ...)` belong in `examples/`
+or `scripts/` instead, run manually.
 
 `tests/func.no` and `tests/if.no` at the top of `tests/` are legacy
-loose fixtures left over from the earlier prototype. They are not part
-of any current harness and can be ignored.
+loose fixtures left over from the earlier prototype (`func.no` uses
+pre-v0.1 syntax and no longer parses). They are not part of any current
+harness and can be ignored.
 
 ## Updating goldens after an intentional change
 

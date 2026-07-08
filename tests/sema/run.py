@@ -24,9 +24,33 @@ sys.path.insert(0, str(ROOT))
 
 
 def dump_sema_output(path: Path) -> str:
-    raise NotImplementedError(
-        "sema harness awaits v0.3 — no sema implementation yet"
+    from pynyet.diagnostic import NyetError
+    from pynyet.lexer.scanner import lex
+    from pynyet.parser.parser import parse
+    from pynyet.sema.borrow import check_borrows
+    from pynyet.sema.expand import expand_macros
+    from pynyet.sema.resolve import resolve_names
+    from pynyet.sema.typeck import check_types
+    from pynyet.source import SourceFile
+
+    rel_path = path.resolve().relative_to(ROOT)
+    sf = SourceFile(str(rel_path), path.read_text())
+    try:
+        tokens = lex(sf)
+        program = parse(tokens)
+    except NyetError as e:
+        return "".join(d.format() + "\n" for d in e.diagnostics)
+
+    program, expand_errors = expand_macros(program)
+    errors = (
+        expand_errors
+        + resolve_names(program)
+        + check_types(program)
+        + check_borrows(program)
     )
+    if not errors:
+        return "ok\n"
+    return "".join(d.format() + "\n" for d in errors)
 
 
 def main() -> int:

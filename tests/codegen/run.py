@@ -24,9 +24,62 @@ sys.path.insert(0, str(ROOT))
 
 
 def dump_codegen_output(path: Path) -> str:
-    raise NotImplementedError(
-        "codegen harness awaits v0.4 — no codegen implementation yet"
-    )
+    import contextlib
+    import io
+    import subprocess
+    import tempfile
+
+    from pynyet.diagnostic import NyetError
+    from pynyet.lexer.scanner import lex
+    from pynyet.parser.parser import parse
+    from pynyet.sema.expand import expand_macros
+    from pynyet.sema.resolve import resolve_names
+    from pynyet.sema.typeck import check_types
+    from pynyet.codegen.emit import emit_ir
+    from pynyet.source import SourceFile
+
+    build_stderr = io.StringIO()
+    with contextlib.redirect_stderr(build_stderr):
+        rel_path = path.resolve().relative_to(ROOT)
+        sf = SourceFile(str(rel_path), path.read_text())
+        try:
+            tokens = lex(sf)
+            program = parse(tokens)
+        except NyetError as e:
+            return "".join(d.format() + "\n" for d in e.diagnostics)
+
+        program, expand_errors = expand_macros(program)
+        errors = expand_errors + resolve_names(program) + check_types(program)
+        for d in errors:
+            print(d.format(), file=build_stderr)
+
+        ir_text = emit_ir(program)
+
+    parts: list[str] = []
+    if build_stderr.getvalue():
+        parts.append("=== build stderr ===")
+        parts.append(build_stderr.getvalue().rstrip("\n"))
+
+    with tempfile.TemporaryDirectory() as td:
+        ll_path = Path(td) / "out.ll"
+        bin_path = Path(td) / "out"
+        ll_path.write_text(ir_text)
+        clang = subprocess.run(
+            ["clang", "-o", str(bin_path), str(ll_path)],
+            capture_output=True, text=True,
+        )
+        if clang.returncode != 0:
+            parts.append("=== clang error ===")
+            parts.append(clang.stderr.rstrip("\n"))
+            return "\n".join(parts) + "\n"
+
+        run = subprocess.run([str(bin_path)], capture_output=True, text=True)
+        parts.append("=== stdout ===")
+        parts.append(run.stdout.rstrip("\n"))
+        if run.returncode != 0:
+            parts.append(f"=== exit code {run.returncode} ===")
+
+    return "\n".join(parts) + "\n"
 
 
 def main() -> int:

@@ -1,0 +1,31 @@
+;;;; isbn.no
+
+;;; Euler's pentagonal recurrence in Nyet.
+;;; Uses an Array[i32] memo table with indexed reads and writes.
+
+(macro log (level label value)  
+    (out (fmt "[{}] {} = {}\n" level label value)))
+
+(fn is_isbn_valid (isbn:string) -> bool
+    (do
+        (var sum:i32 0)
+        (var i:i32 0)
+        (loop
+            (if (>= i 10)
+                (break (== (% sum 11) 0))
+                pass)
+            (let digit:i32 (char_to_digit ( isbn i)))
+            (= sum (+ sum (* digit (- 10 i))))
+            (= i (+ i 1)))
+    )
+
+
+
+
+
+
+(fn main () -> unit
+    (do
+        (out "Pentagonal partition example\n")
+        (log "INFO" "p(100)" (p_pentagonal 100))
+        (log "INFO" "p(1000)" (p_pentagonal 1000))))

@@ -1,0 +1,42 @@
+;;; Euler's pentagonal recurrence in Nyet.
+;;; Uses an Array[i32] memo table with indexed reads and writes.
+
+(macro log (level label value)  
+    (out (fmt "[{}] {} = {}\n" level label value)))
+
+
+(fn p_pentagonal (n:i32) -> i32
+    (do
+        (var p:Array[i32] [0 0 0 0 0 0 0 0 0 0
+                           0 0 0 0 0 0 0 0 0 0
+                           0 0 0 0 0 0 0 0 0 0
+                           0 0 0 0 0 0 0 0 0 0
+                           0])
+        (= (p 0) 1)
+        (var i:i32 1)
+        (loop
+            (if (> i n)
+                (break (p n))
+                pass)
+            (var total:i32 0)
+            (var k:i32 1)
+            (loop
+                (let pent1 (/ (* k (- (* 3 k) 1)) 2))
+                (let pent2 (/ (* k (+ (* 3 k) 1)) 2))
+                (if (> pent1 i)
+                    (break pass)
+                    pass)
+                (let sign (if (== (% k 2) 1) 1 (- 0 1)))
+                (= total (+ total (* sign (p (- i pent1)))))
+                (if (<= pent2 i)
+                    (= total (+ total (* sign (p (- i pent2)))))
+                    pass)
+                (= k (+ k 1)))
+            (= (p i) total)
+            (= i (+ i 1)))))
+
+(fn main () -> unit
+    (do
+        (out "Pentagonal partition example\n")
+        (log "INFO" "p(100)" (p_pentagonal 100))
+        (log "INFO" "p(1000)" (p_pentagonal 1000))))

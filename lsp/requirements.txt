@@ -1,2 +1,2 @@
-pygls>=1.3.0
+pygls>=1.3,<2
 lsprotocol>=2023.0.0

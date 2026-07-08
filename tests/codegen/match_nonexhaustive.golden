@@ -1,0 +1,4 @@
+=== build stderr ===
+warning: non-exhaustive match on Sign; missing variants: Neg
+=== stdout ===
+pos 5

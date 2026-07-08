@@ -36,8 +36,10 @@ if _PROJECT_ROOT not in sys.path:
 
 _PYNYET_AVAILABLE = False
 try:
-    from pynyet.lexer.lexer import Lexer as NyetLexer
-    from pynyet.parser.parser import get_parser as get_nyet_parser
+    from pynyet.diagnostic import NyetError
+    from pynyet.lexer.scanner import lex as nyet_lex
+    from pynyet.parser.parser import parse as nyet_parse
+    from pynyet.source import SourceFile
     _PYNYET_AVAILABLE = True
 except Exception:
     pass
@@ -207,36 +209,45 @@ def extract_document_symbols(
     return symbols
 
 
-def parse_error_position(msg: str) -> tuple[int, int]:
-    """Try to extract (line, col) from an rply or generic error message."""
-    # rply: "Unexpected `X` at (line N, col M)"
-    m = re.search(r'line\s+(\d+),\s*col(?:umn)?\s+(\d+)', msg, re.IGNORECASE)
-    if m:
-        return int(m.group(1)) - 1, int(m.group(2)) - 1
-    # "line N" alone
-    m = re.search(r'line\s+(\d+)', msg, re.IGNORECASE)
-    if m:
-        return int(m.group(1)) - 1, 0
-    return 0, 0
-
-
-def get_diagnostics(text: str) -> list[lsp.Diagnostic]:
+def get_diagnostics(text: str, uri: str = "<document>") -> list[lsp.Diagnostic]:
     if not _PYNYET_AVAILABLE:
         return []
     try:
-        lexer = NyetLexer().get_lexer()
-        tokens = lexer.lex(text)
-        parser = get_nyet_parser()
-        parser.parse(tokens)
+        sf = SourceFile(uri, text)
+        tokens = nyet_lex(sf)
+        nyet_parse(tokens)
         return []
+    except NyetError as e:
+        diags = []
+        for d in e.diagnostics:
+            if d.span is not None:
+                line, col = d.span.start_line_col()
+                line -= 1
+                col -= 1
+                width = max(1, d.span.end - d.span.start)
+            else:
+                line, col, width = 0, 0, 1
+            start = lsp.Position(line=max(line, 0), character=max(col, 0))
+            end = lsp.Position(line=max(line, 0), character=max(col, 0) + width)
+            severity = (
+                lsp.DiagnosticSeverity.Warning
+                if d.severity.value == "warning"
+                else lsp.DiagnosticSeverity.Error
+            )
+            diags.append(lsp.Diagnostic(
+                range=lsp.Range(start=start, end=end),
+                message=d.message,
+                severity=severity,
+                source="nyet",
+            ))
+        return diags
     except Exception as exc:
-        msg = str(exc)
-        line, col = parse_error_position(msg)
-        start = lsp.Position(line=line, character=col)
-        end = lsp.Position(line=line, character=max(col + 1, col))
         return [lsp.Diagnostic(
-            range=lsp.Range(start=start, end=end),
-            message=msg,
+            range=lsp.Range(
+                start=lsp.Position(line=0, character=0),
+                end=lsp.Position(line=0, character=1),
+            ),
+            message=str(exc),
             severity=lsp.DiagnosticSeverity.Error,
             source="nyet",
         )]
@@ -253,7 +264,7 @@ _documents: dict[str, str] = {}
 
 def _publish(ls: LanguageServer, uri: str) -> None:
     text = _documents.get(uri, "")
-    diags = get_diagnostics(text)
+    diags = get_diagnostics(text, uri)
     ls.publish_diagnostics(uri, diags)
 
 

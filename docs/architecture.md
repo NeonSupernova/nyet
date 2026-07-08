@@ -3,67 +3,83 @@
 ## Overview
 
 Nyet is an S-expression language with Rust-inspired ownership. The
-primary implementation is a Python compiler (`pynyet/`) that targets
-native code by emitting LLVM IR via `llvmlite` and linking against a
-small C runtime. The pipeline is the conventional one:
+implementation is a Python compiler (`pynyet/`) that targets native
+code by emitting LLVM IR **as text directly** (no `llvmlite`) and
+linking with `clang`. The pipeline is the conventional one:
 
 ```
-source → lexer → parser → AST → sema → IR → codegen → LLVM IR → clang → binary
+source → lexer → parser → AST → sema → codegen (LLVM IR text) → clang → binary
 ```
 
-See [PLAN.md](../PLAN.md) for the authoritative design document and
-[main.no](../main.no) for the language spec.
+See [PLAN.md](../PLAN.md) for the original design document,
+[CONTINUATION_PLAN.md](../CONTINUATION_PLAN.md) for current status and
+what's left, and [main.no](../main.no) for the language spec (note:
+the spec documents features well beyond what's implemented — see
+below).
 
 ## Current status
 
-Nyet is at milestone **v0.1**: the lexer scaffolding (source tracking,
-diagnostics, token kinds, and a hand-written scanner) is complete and
-covered by golden tests. The parser, AST, sema, IR lowering, and codegen
-phases are all planned but not yet implemented. The legacy `rply`-based
-pipeline under `pynyet/lexer/lexer.py`, `pynyet/parser/parser.py`,
-`pynyet/ast/ast.py`, and `pynyet/codegen/codegen.py` is retained as
-reference material only — it is not part of the new path.
+Nyet is at milestone **v1.0** (PLAN.md §10). Lexer, parser, AST, four
+sema passes, and codegen are implemented and covered by golden tests
+in `tests/{lexer,parser,sema,codegen}/`.
 
-See PLAN.md §10 for the milestone roadmap.
+Not yet implemented: `dyn` trait objects/vtables, tuple codegen,
+Map/Set, stdlib higher-order functions (`map`/`filter`/`fold`/...),
+drop insertion (values currently leak), pattern exhaustiveness as a
+first-class diagnostic pass (a warning is emitted ad hoc from
+codegen's match lowering, not through the sema diagnostic pipeline),
+and v1.1 async/await/spawn. `main.no`'s own claim "This file is valid
+Nyet source. It compiles." is parse-true but not check-true — `driver
+check main.no` still reports errors (undefined stdlib names,
+free-floating snippet variables, and a couple of real type-checker
+bugs). Treat `main.no` as the aspirational spec, and
+`examples/`/`tests/` as what's actually verified.
+
+Three files under `pynyet/` are dead legacy from the original
+`rply`/`llvmlite` prototype and are slated for deletion — nothing in
+the live pipeline imports them: `pynyet/lexer/lexer.py`,
+`pynyet/ast/ast.py`, `pynyet/codegen/codegen.py`.
 
 ## Module layout
 
-The target layout is described in PLAN.md §1. A check mark means the
-module exists today; a cross means it is planned.
-
 ```
 pynyet/
-  source.py            ✓ SourceFile and Span (byte-range spans)
-  diagnostic.py        ✓ Diagnostic, Severity, NyetError reporting
+  source.py            SourceFile and Span (byte-range spans)
+  diagnostic.py        Diagnostic, Severity, NyetError reporting
+  driver.py            CLI entry point (lex/parse/check/build/run)
+  __main__.py          `python -m pynyet` entry point
   lexer/
-    token.py           ✓ TokenKind enum, Token dataclass, keyword table
-    scanner.py         ✓ Hand-written scanner, lex() entry point
-    lexer.py           (legacy rply lexer — reference only)
-  parser/              ✗ planned v0.2 — recursive-descent parser
-  ast/                 ✗ planned v0.2 — nodes, visitor, pretty printer
-  sema/                ✗ planned v0.3 — resolve, typeck, traits, borrow
-  ir/                  ✗ planned v0.4 — typed mid-level IR and lowering
-  codegen/             ✗ planned v0.4 — llvmlite-based LLVM IR emission
-  interp/              ✗ planned — tree-walk interpreter for fast iteration
-  driver.py            ✗ planned — CLI entry point
+    token.py           TokenKind enum, Token dataclass, keyword table
+    scanner.py         Hand-written scanner, lex() entry point
+    lexer.py           (dead legacy rply lexer)
+  parser/
+    parser.py          Recursive-descent parser
+  ast/
+    nodes.py           AST node dataclasses
+    pretty.py          AST -> S-expression pretty printer
+    ast.py             (dead legacy rply/eval-based AST)
+  sema/
+    expand.py          Macro expansion (hygienic, variadic)
+    resolve.py         Name resolution, trait/impl registration
+    typeck.py          Type checking (annotation-driven, not full inference)
+    borrow.py          Move/borrow checking
+  codegen/
+    emit.py            LLVM-IR-as-text emitter (class Emitter)
+    codegen.py         (dead legacy llvmlite-based codegen)
+  ir/                  unused stub — PLAN.md §6 typed IR, never built
+  interp/              unused stub — tree-walk interpreter, never built
 
-runtime/               ✗ planned — C runtime (alloc, string, io, async)
+runtime/               C runtime sources; compiles via `make runtime`
+                        but is not linked by the driver/codegen yet
 
 tests/
-  lexer/               ✓ golden token dumps, run.py harness
-  parser/              ✗ planned
-  sema/                ✗ planned
-  codegen/             ✗ planned
+  lexer/               golden token dumps
+  parser/              golden AST dumps + main.no smoke parse
+  sema/                golden diagnostic dumps (`ok` or formatted errors)
+  codegen/             golden build+run stdout dumps (+ build stderr)
 ```
 
-`nyet_compiler/` still contains the old C++/Bison/Flex reference
-implementation. It is untouched and documents the previous approach;
-see CLAUDE.md for context.
-
 ## Pipeline walkthrough
-
-A `.no` file becomes a binary in roughly these steps. Only the first two
-exist today:
 
 1. **Load source.** `pynyet.source.SourceFile` wraps the path and text.
    Every later stage attaches `Span` values back to this `SourceFile`
@@ -74,35 +90,36 @@ exist today:
    (`std/math/sqrt`), `!`/`?` identifier suffixes, keyword literals
    (`:foo`), multi-tier comments, and string escapes. Trivia tokens
    (comments) can optionally be preserved for autodocs.
-3. **Parse.** *(planned v0.2)* A recursive-descent parser consumes the
-   token stream and produces an AST. S-expressions make the outer shape
+3. **Parse.** `pynyet.parser.parser.parse(tokens)` consumes the token
+   stream and produces an AST. S-expressions make the outer shape
    trivial; a dispatch table handles special forms like `let`, `fn`,
-   `if`, `match`, `struct`, and so on.
-4. **Sema.** *(planned v0.3)* Seven passes annotate the AST in place:
-   macro expansion, name resolution, type inference, trait resolution,
-   borrow checking, pattern exhaustiveness, and effect checking.
-5. **IR lowering.** *(planned v0.4)* A typed mid-level IR desugars
-   pattern matching, closures, `?`, pipes, and string interpolation;
-   monomorphizes generics; and inserts explicit drops.
-6. **Codegen.** *(planned v0.4)* `llvmlite` walks the IR and emits LLVM
-   IR. Each monomorphized function becomes one LLVM function; runtime
-   calls go through externs declared in `runtime_decls.py`.
-7. **Link.** *(planned)* `clang` links the emitted object file against
-   the compiled C runtime to produce a native executable.
-
-During development, a tree-walk interpreter in `pynyet/interp/` will
-serve as a fast iteration target for features that do not yet have
-codegen support (see PLAN.md §9).
+   `if`, `match`, `struct`, `trait`, `impl`, `macro`, `module`, and so on.
+4. **Sema.** Four passes run in order, each returning a list of
+   `Diagnostic`s, wired together by `driver.py`:
+   - `expand.py` — macro expansion (hygienic, variadic)
+   - `resolve.py` — name resolution, trait/impl registration
+   - `typeck.py` — type checking (annotation-driven)
+   - `borrow.py` — move/borrow checking; the only pass whose errors
+     block `build` today (other sema errors are reported but don't
+     yet gate compilation)
+5. **Codegen.** `pynyet.codegen.emit.emit_ir(program)` walks the
+   checked AST directly and emits LLVM IR as text — generics are
+   monomorphized, closures are lambda-lifted, structs/sum
+   types/matches/arrays/trait dispatch are lowered inline. There is no
+   separate typed IR layer; `pynyet/ir/` is an unused stub.
+6. **Link.** `clang` compiles the emitted `.ll` to a native binary.
+   `runtime/` (C sources for alloc/string/io) is not currently linked
+   in — codegen calls libc (`printf`, `fgets`, `exit`, ...) directly.
 
 ## Key design decisions
 
 ### Hand-written scanner
 
-The v0.1 lexer is hand-written rather than generated by `rply`. Nyet has
-several constructs that fight LR-style lexers: numeric suffixes attached
-to literals, path identifiers containing `/`, comment tiers keyed off the
-number of leading `;`, and the `#(` tuple prefix. A straightforward
-character-at-a-time scanner — roughly 300 lines — handles all of these
+The lexer is hand-written rather than generated by `rply`. Nyet has
+several constructs that fight LR-style lexers: numeric suffixes
+attached to literals, path identifiers containing `/`, comment tiers
+keyed off the number of leading `;`, and the `#(` tuple prefix. A
+straightforward character-at-a-time scanner handles all of these
 cleanly and produces precise spans for diagnostics. PLAN.md §2 walks
 through the motivation.
 
@@ -120,19 +137,27 @@ another, with no custom parser extensions needed.
 Like Rust, Nyet distinguishes owned values, shared borrows (`&T`), and
 exclusive borrows (`&!T`). Unlike Rust, borrow information at call sites
 is inferred from the callee's signature rather than written explicitly
-at every call. This keeps the surface syntax quiet while still giving
-the borrow checker enough information to enforce one-owner-per-value,
-no-use-after-move, and no-aliasing-of-exclusive-borrows rules.
+at every call. `pynyet/sema/borrow.py` implements one-owner-per-value,
+no-use-after-move, and no-aliasing-of-exclusive-borrows checks as
+dataflow analysis; violations are hard errors.
+
+### Codegen skipped the planned IR layer
+
+PLAN.md §6 called for a typed mid-level IR between sema and codegen
+(desugaring pattern matching, closures, `?`, and inserting explicit
+drops before LLVM emission). In practice `pynyet/codegen/emit.py`
+lowers directly from the checked AST to LLVM IR text — simpler to get
+working, but it means monomorphization, lambda lifting, and match
+lowering all live inside one 2000+ line `Emitter` class instead of
+being separable passes. This is worth revisiting before v1.1
+(async/await), which wants state-machine lowering — see
+CONTINUATION_PLAN.md Phase 3.
 
 ## Pointers
 
-- [PLAN.md §1](../PLAN.md) — project layout
-- [PLAN.md §2](../PLAN.md) — lexer design
-- [PLAN.md §3](../PLAN.md) — parser design
-- [PLAN.md §4](../PLAN.md) — AST shape
-- [PLAN.md §5](../PLAN.md) — semantic analysis passes
-- [PLAN.md §6](../PLAN.md) — IR lowering
-- [PLAN.md §7](../PLAN.md) — codegen and LLVM type mapping
-- [PLAN.md §8](../PLAN.md) — runtime library
-- [PLAN.md §10](../PLAN.md) — milestone roadmap
-- [main.no](../main.no) — the language specification
+- [PLAN.md](../PLAN.md) — the original implementation blueprint
+- [CONTINUATION_PLAN.md](../CONTINUATION_PLAN.md) — current status,
+  known gaps, and phased next steps
+- [main.no](../main.no) — the language specification (aspirational in
+  places — see "Current status" above)
+- [tests/README.md](../tests/README.md) — golden-file test harness

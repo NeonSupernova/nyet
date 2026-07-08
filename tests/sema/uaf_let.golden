@@ -1,0 +1,3 @@
+tests/sema/uaf_let.no:11:12: error: use of moved value 'p'
+      (use_one p))
+               ^

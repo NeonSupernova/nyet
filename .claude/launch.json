@@ -2,15 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "nyet-compiler",
+      "name": "nyet-run-hello",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["app.py"],
+      "runtimeArgs": ["-m", "pynyet.driver", "run", "examples/hello.no"],
       "port": 0
     },
     {
-      "name": "nyet-build-full",
+      "name": "nyet-test-all",
       "runtimeExecutable": "make",
-      "runtimeArgs": ["all"],
+      "runtimeArgs": ["test-all"],
       "port": 0
     }
   ]

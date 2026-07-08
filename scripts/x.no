@@ -1,0 +1,10 @@
+;;;; x.no
+
+(if (< 1 2) (out "1 is greater than 2") (out "1 is less than 2"))
+
+#|
+(class MyClass
+    (fn new (arg1, arg2, arg3) (return (MyClass arg1 arg2 arg3)))
+    (fn myMethod (arg1, arg2, arg3) (return (+ arg1 arg2 arg3)))
+)
+|#

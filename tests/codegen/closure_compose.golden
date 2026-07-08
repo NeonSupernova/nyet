@@ -1,0 +1,4 @@
+=== stdout ===
+inc(5) = 6
+apply_twice(inc, 5) = 7
+apply_twice(square, 3) = 81

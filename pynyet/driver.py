@@ -164,14 +164,14 @@ def _cmd_build(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    # Borrow errors are hard errors (v0.5 milestone). Other sema errors
-    # are reported but don't block — they're still being filled in.
-    errors = expand_errors + resolve_names(program) + check_types(program)
-    borrow_errs = check_borrows(program)
-    for d in errors:
-        print(d.format(), file=sys.stderr)
-    if borrow_errs:
-        for d in borrow_errs:
+    errors = (
+        expand_errors
+        + resolve_names(program)
+        + check_types(program)
+        + check_borrows(program)
+    )
+    if errors:
+        for d in errors:
             print(d.format(), file=sys.stderr)
         return 1
 

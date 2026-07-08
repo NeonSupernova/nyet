@@ -2,17 +2,18 @@
 # Run `make help` to see available targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help test-lexer test-parser test-sema test-codegen test-all lex check build run runtime clean
+.PHONY: help test-lexer test-parser test-sema test-codegen test-all lex parse check build run runtime clean
 
 help:
 	@echo "Nyet dev targets:"
 	@echo "  make help            show this message"
 	@echo "  make test-lexer      run the lexer golden tests"
 	@echo "  make test-parser     run the parser golden tests"
-	@echo "  make test-sema       run the sema golden tests (no cases yet)"
-	@echo "  make test-codegen    run the codegen golden tests (no cases yet)"
+	@echo "  make test-sema       run the sema golden tests"
+	@echo "  make test-codegen    run the codegen golden tests"
 	@echo "  make test-all        run every test harness"
 	@echo "  make lex FILE=...    lex a .no file and print its tokens"
+	@echo "  make parse FILE=...  parse a .no file and print its AST"
 	@echo "  make check FILE=...  type-check a .no file"
 	@echo "  make build FILE=...  compile a .no file to a native binary"
 	@echo "  make run FILE=...    compile and run a .no file"
@@ -30,18 +31,10 @@ test-parser:
 	fi
 
 test-sema:
-	@if [ -f tests/sema/run.py ]; then \
-		python3 tests/sema/run.py; \
-	else \
-		echo "test-sema: tests/sema/run.py not present yet"; \
-	fi
+	python3 tests/sema/run.py
 
 test-codegen:
-	@if [ -f tests/codegen/run.py ]; then \
-		python3 tests/codegen/run.py; \
-	else \
-		echo "test-codegen: tests/codegen/run.py not present yet"; \
-	fi
+	python3 tests/codegen/run.py
 
 test-all: test-lexer test-parser test-sema test-codegen
 
@@ -51,6 +44,13 @@ lex:
 		exit 1; \
 	fi
 	python3 -m pynyet.driver lex $(FILE)
+
+parse:
+	@if [ -z "$(FILE)" ]; then \
+		echo "usage: make parse FILE=<path>"; \
+		exit 1; \
+	fi
+	python3 -m pynyet.driver parse $(FILE)
 
 check:
 	@if [ -z "$(FILE)" ]; then \

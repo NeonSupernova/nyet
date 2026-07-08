@@ -1,0 +1,4 @@
+=== stdout ===
+inner = 42
+inner = none
+outer = none

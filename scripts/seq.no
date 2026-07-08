@@ -1,0 +1,23 @@
+;;;; seq.no
+#|
+   Functions as a way to complete
+   sequencing math homework via adjusting
+   the sequence function n.
+   Gerrit Wielenga 04/15/2026
+|#
+
+
+
+;;; Sequencer Function
+
+(fn se (x:i32) -> i32
+    (* x (* x x)))
+
+;;; Program
+
+(var l:i32  1) ; Set initial value
+(const STOP:i32 9)
+
+(loop
+    (out (fmt "Num is {}\n" (se l)))
+    (if (== l STOP) (break l) (= l (+ l 1))))
