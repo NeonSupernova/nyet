@@ -197,7 +197,13 @@ HEAD was independently verified clean.
       constructor claim `Expr`
 - [ ] Check whether `pynyet/ast/visitor.py` is dead code (0% coverage,
       Phase 1.6) — delete or start using it
-- [ ] Tuple codegen (parses today, zero codegen)
+- [x] Tuple codegen (2026-07-09) — construction, `(t i)` indexing
+      matching main.no's own documented call-syntax, `#(T1 T2)`
+      annotations on lets/params/returns. Gaps: destructuring
+      `(let #(a b) expr)` still just binds a dummy `_destructure` name
+      (parser discards the pattern -- separate feature); generic
+      functions returning a tuple built from type params (`#(B A)`)
+      don't substitute correctly in typeck's generic instantiation.
 - [ ] Map/Set runtime + codegen
 - [ ] stdlib HOFs: map/filter/fold/any/all/zip/...
 - [ ] `dyn` trait objects + vtables
