@@ -22,6 +22,10 @@ class Emitter:
         self._triple = target_triple
         self._lines: list[str] = []
         self._strings: dict[str, tuple[str, int, bytes]] = {}
+        # Keyword literals (`:name`) intern to a small integer ID, assigned
+        # on first use — allocation-free, compared by identity via plain
+        # i32 equality.
+        self._keyword_ids: dict[str, int] = {}
         self._fmt_i32: str | None = None
         self._fmt_f64: str | None = None
         self._tmp = 0
@@ -408,6 +412,8 @@ class Emitter:
             return "i1"
         if name == "char":
             return "i32"
+        if name == "Keyword":
+            return "i32"
         if name == "string":
             return "ptr"
         if name in self._structs or name in self._sum_types:
@@ -711,6 +717,12 @@ class Emitter:
         self._strings[key] = (name, len(raw), raw)
         return name
 
+    def _keyword_id(self, name: str) -> int:
+        """Intern a keyword literal's name to a stable small integer ID."""
+        if name not in self._keyword_ids:
+            self._keyword_ids[name] = len(self._keyword_ids)
+        return self._keyword_ids[name]
+
     def _declare_printf(self) -> None:
         self._declared_externs.add("declare i32 @printf(ptr, ...)")
 
@@ -767,6 +779,8 @@ class Emitter:
                 return "i16"
             if name == "char":
                 return "i32"  # Unicode scalar value stored as i32
+            if name == "Keyword":
+                return "i32"  # interned symbol ID
             # Struct or sum type — pass by pointer
             if name in self._structs or name in self._sum_types:
                 return "ptr"
@@ -1041,6 +1055,8 @@ class Emitter:
             return "i1"
         if isinstance(node, N.StringLit):
             return "ptr"
+        if isinstance(node, N.KeywordLit):
+            return "i32"
         if isinstance(node, N.ArrayLit):
             return "ptr"
         if isinstance(node, N.Cast):
@@ -1064,6 +1080,12 @@ class Emitter:
                         mangled = self._method_impls[(sn, op)]
                         if mangled in self._fn_sigs:
                             return self._fn_sigs[mangled][1]
+                if (
+                    op == "+"
+                    and node.args
+                    and all(self._infer_llvm_type(a) == "ptr" for a in node.args)
+                ):
+                    return "ptr"
                 has_double = False
                 has_float = False
                 for a in node.args:
@@ -1177,6 +1199,9 @@ class Emitter:
         if isinstance(node, N.StringLit):
             name, _ = self._get_string(node.value)
             return name
+
+        if isinstance(node, N.KeywordLit):
+            return str(self._keyword_id(node.name))
 
         if isinstance(node, N.UnitLit):
             return None
@@ -1785,6 +1810,9 @@ class Emitter:
         lty = self._infer_llvm_type(args[0])
         rty = self._infer_llvm_type(args[1])
 
+        if op == "+" and lty == "ptr" and rty == "ptr":
+            return self._emit_string_concat(lhs, rhs)
+
         if self._is_float(lty) or self._is_float(rty):
             # Use double if either operand is double, else float
             fty = "double" if "double" in (lty, rty) else "float"
@@ -1813,6 +1841,34 @@ class Emitter:
             iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
             self._emit_line(f"{tmp} = {iops[op]} i32 {lhs}, {rhs}")
             return tmp
+
+    def _emit_string_concat(self, lhs: str, rhs: str) -> str:
+        """`(+ a b)` on two strings -> malloc + strcpy + strcat.
+
+        Strings are plain null-terminated C strings (ptr), not a
+        length-prefixed fat pointer, so libc's string functions apply
+        directly.
+        """
+        self._declare_extern("declare i64 @strlen(ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        self._declare_extern("declare ptr @strcpy(ptr, ptr)")
+        self._declare_extern("declare ptr @strcat(ptr, ptr)")
+
+        la = self._fresh_tmp()
+        self._emit_line(f"{la} = call i64 @strlen(ptr {lhs})")
+        lb = self._fresh_tmp()
+        self._emit_line(f"{lb} = call i64 @strlen(ptr {rhs})")
+        total_pre = self._fresh_tmp()
+        self._emit_line(f"{total_pre} = add i64 {la}, {lb}")
+        total = self._fresh_tmp()
+        self._emit_line(f"{total} = add i64 {total_pre}, 1")
+        buf = self._fresh_tmp()
+        self._emit_line(f"{buf} = call ptr @malloc(i64 {total})")
+        copy_tmp = self._fresh_tmp()
+        self._emit_line(f"{copy_tmp} = call ptr @strcpy(ptr {buf}, ptr {lhs})")
+        cat_tmp = self._fresh_tmp()
+        self._emit_line(f"{cat_tmp} = call ptr @strcat(ptr {buf}, ptr {rhs})")
+        return buf
 
     # ------------------------------------------------------------------
     # Comparisons (type-aware)
@@ -2121,8 +2177,8 @@ class Emitter:
     # Field access
     # ------------------------------------------------------------------
 
-    def _emit_field_access(self, node: N.FieldAccess) -> str | None:
-        """Emit `.field target` → GEP + load."""
+    def _emit_field_ptr(self, node: N.FieldAccess) -> tuple[str, str] | None:
+        """Compute the address of a struct field (GEP only, no load)."""
         target_val = self._emit_expr(node.target)
         if target_val is None:
             return None
@@ -2139,10 +2195,18 @@ class Emitter:
                     f"{fptr} = getelementptr inbounds %{struct_name}, "
                     f"ptr {target_val}, i32 0, i32 {i}"
                 )
-                result = self._fresh_tmp()
-                self._emit_line(f"{result} = load {ftype}, ptr {fptr}")
-                return result
+                return fptr, ftype
         return None
+
+    def _emit_field_access(self, node: N.FieldAccess) -> str | None:
+        """Emit `.field target` → GEP + load."""
+        ptr_and_ty = self._emit_field_ptr(node)
+        if ptr_and_ty is None:
+            return None
+        fptr, ftype = ptr_and_ty
+        result = self._fresh_tmp()
+        self._emit_line(f"{result} = load {ftype}, ptr {fptr}")
+        return result
 
     # ------------------------------------------------------------------
     # Match expression
@@ -2811,6 +2875,15 @@ class Emitter:
             and len(target.args) == 1
         ):
             return self._emit_array_assign(target.head.name, target.args[0], node.value)
+        # Field assignment: `(= (. p x) v)`.
+        if isinstance(target, N.FieldAccess):
+            ptr_and_ty = self._emit_field_ptr(target)
+            if ptr_and_ty is not None:
+                fptr, ftype = ptr_and_ty
+                val = self._emit_expr(node.value)
+                if val is not None:
+                    self._emit_line(f"store {ftype} {val}, ptr {fptr}")
+            return None
         if isinstance(target, N.Ident) and target.name in self._env:
             ptr, ty = self._env[target.name]
             val = self._emit_expr(node.value)

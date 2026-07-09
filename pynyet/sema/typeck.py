@@ -19,6 +19,7 @@ from pynyet.sema.types import (
     ERROR,
     F64,
     I32,
+    KEYWORD,
     PRIM_TYPES,
     STRING,
     UNIT,
@@ -41,6 +42,10 @@ class TypeChecker:
         self.errors: list[Diagnostic] = []
         # name → NyetType for functions and bindings
         self.env: dict[str, NyetType] = {}
+        # name → whether the binding was declared `var` (mutable). Only
+        # `let`/`var` locals are tracked; names absent here (fn params,
+        # etc.) are treated as unconstrained, not immutable.
+        self.mutable: dict[str, bool] = {}
         # Struct/type declarations
         self.type_decls: dict[str, NyetType] = {}
 
@@ -144,11 +149,16 @@ class TypeChecker:
         if isinstance(node, N.FnDecl):
             # Save outer env, create inner for params
             saved = dict(self.env)
+            saved_mutable = dict(self.mutable)
             for p in node.params:
                 self.env[p.name] = self._resolve_type_node(p.type) if p.type else ERROR
+                # Params shadow any outer let/var of the same name -- don't
+                # let a stale immutability entry leak in from another scope.
+                self.mutable.pop(p.name, None)
             if node.body is not None:
                 self._infer(node.body)
             self.env = saved
+            self.mutable = saved_mutable
 
         elif isinstance(node, N.LetDecl):
             if node.value is not None:
@@ -167,6 +177,7 @@ class TypeChecker:
                     self.env[node.name] = declared
                 else:
                     self.env[node.name] = val_ty
+                self.mutable[node.name] = node.mutable
 
         elif isinstance(node, N.ImplDecl):
             for item in node.items:
@@ -191,7 +202,7 @@ class TypeChecker:
         if isinstance(node, N.UnitLit):
             return UNIT
         if isinstance(node, N.KeywordLit):
-            return STRING  # keyword lits are symbol-like
+            return KEYWORD
         if isinstance(node, N.Pass):
             return UNIT
 
@@ -296,6 +307,14 @@ class TypeChecker:
 
         if isinstance(node, N.Assign):
             self._infer(node.target)
+            if isinstance(node.target, N.Ident) and self.mutable.get(node.target.name) is False:
+                self.errors.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f"cannot assign to '{node.target.name}': declared with `let`, not `var`",
+                        node.span,
+                    )
+                )
             return self._infer(node.value)
 
         if isinstance(node, N.FieldAccess):

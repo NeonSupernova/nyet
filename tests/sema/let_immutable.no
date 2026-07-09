@@ -1,0 +1,6 @@
+;; Should be rejected: `x` is declared with `let`, not `var`.
+
+(fn main () -> unit
+  (let x:i32 1)
+  (= x 2)
+  (out x))

@@ -1,0 +1,13 @@
+;; String concatenation via `(+ a b)`.
+;; Expected:
+;;   ab
+;;   hello world
+;;   x = ab
+
+(fn main () -> unit
+  (out (+ "a" "b")) (out "\n")
+  (let a:string "hello ")
+  (let b:string "world")
+  (out (+ a b)) (out "\n")
+  (let x (+ "a" "b"))
+  (out "x = ") (out x) (out "\n"))

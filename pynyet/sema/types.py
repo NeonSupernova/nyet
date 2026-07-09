@@ -51,6 +51,14 @@ class StringType(NyetType):
 
 
 @dataclass(frozen=True)
+class KeywordType(NyetType):
+    """`:name` — an interned symbol, compared by identity, allocation-free."""
+
+    def __str__(self) -> str:
+        return "Keyword"
+
+
+@dataclass(frozen=True)
 class UnitType(NyetType):
     def __str__(self) -> str:
         return "unit"
@@ -142,6 +150,7 @@ F64 = FloatType(64)
 BOOL = BoolType()
 CHAR = CharType()
 STRING = StringType()
+KEYWORD = KeywordType()
 UNIT = UnitType()
 ERROR = ErrorType()
 
@@ -161,5 +170,6 @@ PRIM_TYPES: dict[str, NyetType] = {
     "bool": BOOL,
     "char": CHAR,
     "string": STRING,
+    "Keyword": KEYWORD,
     "unit": UNIT,
 }

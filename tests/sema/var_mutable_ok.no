@@ -1,0 +1,6 @@
+;; Should be accepted: `x` is declared with `var`, reassignment is fine.
+
+(fn main () -> unit
+  (var x:i32 1)
+  (= x 2)
+  (out x))

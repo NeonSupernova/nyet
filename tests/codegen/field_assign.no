@@ -1,0 +1,12 @@
+;; Field assignment via `(= (. p x) v)` must actually update the field.
+;; Expected:
+;;   before: 1
+;;   after: 9
+
+(struct Point x:i32 y:i32)
+
+(fn main () -> unit
+  (var p (Point x:1 y:2))
+  (out "before: ") (out (. p x)) (out "\n")
+  (= (. p x) 9)
+  (out "after: ") (out (. p x)) (out "\n"))
