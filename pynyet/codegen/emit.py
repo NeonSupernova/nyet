@@ -13,6 +13,7 @@ from __future__ import annotations
 import struct as _struct
 
 from pynyet.ast import nodes as N
+from pynyet.sema.borrow import compute_drop_names
 
 
 class Emitter:
@@ -22,6 +23,16 @@ class Emitter:
         self._triple = target_triple
         self._lines: list[str] = []
         self._strings: dict[str, tuple[str, int, bytes]] = {}
+        # fn name -> local struct-typed binding names to `free` at the
+        # function's natural end-of-body fallthrough (drop insertion;
+        # see compute_drop_names). Deliberately NOT inserted at explicit
+        # `return`/`?`-operator early-exit points: a binding declared
+        # later in the body wouldn't be initialized yet at an earlier
+        # return, and this pass doesn't do position-aware liveness
+        # analysis -- only "reached the natural end, so everything
+        # unconditionally declared at the top level definitely ran".
+        self._drop_names: dict[str, list[str]] = {}
+        self._current_fn_name: str | None = None
         # Keyword literals (`:name`) intern to a small integer ID, assigned
         # on first use — allocation-free, compared by identity via plain
         # i32 equality.
@@ -258,6 +269,12 @@ class Emitter:
     # ==================================================================
 
     def emit(self, program: list[N.Node]) -> str:
+        # Drop insertion (struct-only, see compute_drop_names' docstring):
+        # computed against the same pre-lift program driver.py's own
+        # check_borrows call already analyzed, so this sees exactly what
+        # the borrow checker saw.
+        self._drop_names = compute_drop_names(program)
+
         # v0.6: lambda-lift `(fn ...)` literals into auto-named top-level
         # functions. The pre-pass mutates the program list in place by
         # appending the lifted decls and substituting Ident references for
@@ -1014,12 +1031,26 @@ class Emitter:
         if any(t is not None for t in dyn_traits):
             self._fn_param_dyn_traits[node.name] = dyn_traits
 
+    def _emit_drops(self) -> None:
+        """Free this function's dropped struct locals (see _drop_names'
+        docstring) -- call only at the natural end-of-body fallthrough,
+        never at an early return."""
+        for name in self._drop_names.get(self._current_fn_name or "", []):
+            if name not in self._env:
+                continue
+            ptr_slot, _ = self._env[name]
+            val = self._fresh_tmp()
+            self._emit_line(f"{val} = load ptr, ptr {ptr_slot}")
+            self._declare_extern("declare void @free(ptr)")
+            self._emit_line(f"call void @free(ptr {val})")
+
     def _emit_fn(self, node: N.FnDecl) -> None:
         saved = self._save_fn_state()
         self._tmp = 0
         self._label = 0
         self._fn_lines = []
         self._fn_alloca_lines = []
+        self._current_fn_name = node.name
 
         # Emit into a local buffer, then flush to self._lines at end.
         body_lines: list[str] = []
@@ -1029,6 +1060,7 @@ class Emitter:
             self._emit_label("entry")
             if node.body is not None:
                 self._emit_expr(node.body)
+            self._emit_drops()
             self._emit_line("ret i32 0")
         else:
             param_types = []
@@ -1110,6 +1142,7 @@ class Emitter:
 
             if node.body is not None:
                 result = self._emit_expr(node.body)
+                self._emit_drops()
                 if ret_type == "void":
                     self._emit_line("ret void")
                 elif result is not None:
@@ -1117,6 +1150,7 @@ class Emitter:
                 else:
                     self._emit_line(f"ret {ret_type} 0")
             else:
+                self._emit_drops()
                 self._emit_line("ret void" if ret_type == "void" else f"ret {ret_type} 0")
 
         # Splice this fn's body into body_lines, then append all at once

@@ -241,7 +241,38 @@ HEAD was independently verified clean.
       `(log_value &42)` example) aren't attempted. `Self`/`&Self` in a
       trait method's signature is treated as `ptr`, matching how every
       impl actually passes structs regardless of ownership.
-- [ ] Drop insertion (everything currently leaks)
+- [x] Drop insertion (2026-07-09) -- narrowly and deliberately scoped
+      given the correctness stakes (a wrong drop is a use-after-free or
+      double-free, strictly worse than the leak-everything status quo
+      it replaces). Struct-typed locals only (arrays/tuples/sum
+      types/dyn objects/closures still leak); only bindings declared
+      unconditionally at a function's own top level (not inside an
+      if/match/loop branch); only freed at the function's natural
+      end-of-body fallthrough, never at an explicit `return` or the
+      `?` operator's early-return (a binding declared later in the
+      body wouldn't be initialized yet at an earlier exit, and this
+      pass doesn't do position-aware liveness analysis). Reuses the
+      borrow checker's own move-tracking (`compute_drop_names` in
+      pynyet/sema/borrow.py) rather than reimplementing it, via a
+      second BorrowChecker pass kept isolated from the
+      diagnostic-producing path.
+      Caught and fixed a real soundness bug while writing the unit
+      tests: an all-primitive-field struct is legitimately Copy per
+      the borrow checker's language-level semantics, so passing it by
+      value to another function doesn't mark it `moved` -- but codegen
+      always passes structs as an aliased pointer, never a true
+      bitwise copy, regardless of Copy-ness. The first version trusted
+      `_Binding.moved` alone and would have freed a struct the callee
+      still held a live alias to. Fixed with a second, independent
+      check (`_walk_by_value_call_args`) that excludes anything ever
+      passed by value to a non-builtin call, regardless of what the
+      borrow checker's Copy/Move reasoning concluded.
+      Verified two ways: 9 unit tests pin down the exact boundary
+      cases (returned/moved/borrowed/param/builtin-call/non-struct),
+      and an end-to-end run of 20 million allocate-and-drop cycles
+      held peak memory at ~1.3MB (`/usr/bin/time -l`) -- would be
+      300MB+ if leaking, confirming drops actually fire at scale with
+      no accumulation.
 - [x] Decided the fate of the orphaned C runtime (2026-07-09): the
       original runtime/{alloc,string,io}.c used a length-prefixed fat
       `nyet_string` struct that never matched what codegen actually

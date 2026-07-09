@@ -33,7 +33,7 @@ avoiding spurious errors on conditionally-consumed bindings).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 
 from pynyet.ast import nodes as N
 from pynyet.diagnostic import Diagnostic, Severity
@@ -100,6 +100,13 @@ class BorrowChecker:
         self._fn_params: dict[str, list[tuple[str | None, bool]]] = {}
         # Cache of Copy-ness by type name (avoids recomputation/recursion).
         self._copy_cache: dict[str, bool] = {}
+        # fn name -> its top-level scope's final _Binding states, captured
+        # right before the scope is popped. Used by drop-insertion
+        # (pynyet/codegen/emit.py) to find which owned, non-Copy locals
+        # are still alive (not moved) when the function returns -- i.e.
+        # need a `free`. A second pass over the same analysis rather than
+        # touching the diagnostic-producing walk above.
+        self.fn_final_scopes: dict[str, dict[str, _Binding]] = {}
 
     # ------------------------------------------------------------------
     # Public entry
@@ -225,7 +232,21 @@ class BorrowChecker:
         for p in fn.params:
             self._bind(p.name, self._type_name(p.type), self._is_ref(p.type))
         if fn.body is not None:
-            self._check_expr(fn.body)
+            if isinstance(fn.body, N.Do):
+                # Walk the outermost Do's exprs directly rather than via
+                # the generic N.Do case below, which pushes its own scope
+                # and pops it (discarding final state) before _check_fn
+                # gets to see it. This keeps the body's own top-level
+                # `let`s in the *same* frame as the params, so
+                # fn_final_scopes reflects what's actually still alive
+                # when the function returns -- nested do-blocks (inside
+                # if/match/loop branches) still get their own pushed-and-
+                # popped scope as before, unaffected by this.
+                for expr in fn.body.exprs:
+                    self._check_expr(expr)
+            else:
+                self._check_expr(fn.body)
+        self.fn_final_scopes[fn.name] = dict(self.scopes[-1])
         self._pop()
 
     # ------------------------------------------------------------------
@@ -503,3 +524,156 @@ def check_borrows(program: list[N.Node]) -> list[Diagnostic]:
     """Run the borrow checker. Returns diagnostics."""
     bc = BorrowChecker()
     return bc.check(program)
+
+
+# ----------------------------------------------------------------------
+# Drop-insertion support (used by pynyet/codegen/emit.py)
+# ----------------------------------------------------------------------
+
+
+def _walk_by_value_call_args(node: N.Node | None, acc: set[str]) -> None:
+    """Recursively find every identifier passed as a bare (non-&-wrapped)
+    argument to any non-builtin call, anywhere in the tree.
+
+    This is deliberately stricter than the move-tracking above: codegen
+    always passes structs by pointer, never a true bitwise copy, even
+    for structs the borrow checker classifies as Copy (e.g. an
+    all-primitive-field struct) -- so a Copy struct handed to another
+    function is still an *aliased* pointer, not an independent one. For
+    drop-insertion specifically that means "was this name ever passed
+    by value to some other call" has to be treated as unsafe-to-free-
+    later regardless of the language-level Copy/Move distinction that
+    `_Binding.moved` correctly reasons about for its own (different)
+    purpose of use-after-move diagnostics.
+    """
+    if node is None or not is_dataclass(node):
+        return
+    if isinstance(node, N.Call):
+        head_name = node.head.name if isinstance(node.head, N.Ident) else None
+        if head_name not in _BUILTIN_BORROW and head_name not in ("&", "&!"):
+            for arg in node.args:
+                if isinstance(arg, N.Ident):
+                    acc.add(arg.name)
+    for f in fields(node):
+        v = getattr(node, f.name, None)
+        if isinstance(v, N.Node):
+            _walk_by_value_call_args(v, acc)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, N.Node):
+                    _walk_by_value_call_args(item, acc)
+
+
+def _tail_idents(node: N.Node | None) -> set[str]:
+    """Identifiers that could be `node`'s value in tail/return position
+    (i.e. what an implicit or explicit `return` of `node` actually
+    returns) -- recurses through Do/If/Match/Return, the constructs
+    that can appear as a function body's tail expression."""
+    if node is None:
+        return set()
+    if isinstance(node, N.Ident):
+        return {node.name}
+    if isinstance(node, N.Do):
+        return _tail_idents(node.exprs[-1]) if node.exprs else set()
+    if isinstance(node, N.If):
+        return _tail_idents(node.then_branch) | _tail_idents(node.else_branch)
+    if isinstance(node, N.Match):
+        result: set[str] = set()
+        for arm in node.arms:
+            result |= _tail_idents(arm.body)
+        return result
+    if isinstance(node, N.Return):
+        return _tail_idents(node.value)
+    return set()
+
+
+def _walk_returns(node: N.Node | None, acc: set[str]) -> None:
+    """Recursively visit every node in the tree, adding the tail
+    identifiers of every `Return` found anywhere (not just in tail
+    position -- catches early returns inside if/match/loop branches)."""
+    if node is None or not is_dataclass(node):
+        return
+    if isinstance(node, N.Return):
+        acc |= _tail_idents(node.value)
+    for f in fields(node):
+        v = getattr(node, f.name, None)
+        if isinstance(v, N.Node):
+            _walk_returns(v, acc)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, N.Node):
+                    _walk_returns(item, acc)
+
+
+def _returned_idents(fn: N.FnDecl) -> set[str]:
+    """Every identifier that could flow out of `fn` as its return value,
+    via either an implicit tail expression or any explicit `return`."""
+    acc = _tail_idents(fn.body)
+    _walk_returns(fn.body, acc)
+    return acc
+
+
+def compute_drop_names(program: list[N.Node]) -> dict[str, list[str]]:
+    """For each function, the names of local (non-param) struct-typed
+    bindings that are still alive (not moved) and not returned when the
+    function exits -- i.e. need a `free` inserted at codegen time.
+
+    Deliberately conservative: struct-only for now (arrays, tuples, sum
+    types, dyn objects, and closures aren't covered by this pass and
+    continue to leak -- see CONTINUATION_PLAN.md), and params are never
+    included even when owned by value (an owned param *should*
+    theoretically be dropped by the callee if never moved further, but
+    that's excluded here too until it's been exercised more, to keep
+    the blast radius of a wrong drop as small as possible). Also
+    excludes any binding ever passed by value to another call at all
+    (see `_walk_by_value_call_args`) even when the borrow checker
+    doesn't consider it moved -- e.g. an all-primitive-field struct is
+    legitimately Copy at the language level, but codegen still passes
+    it as an aliased pointer, never a true bitwise duplicate, so
+    freeing the original after handing that pointer to another
+    function would be unsound regardless of Copy-ness.
+
+    Runs its own BorrowChecker pass rather than threading state through
+    `check_borrows` -- keeps this additive and isolated from the
+    diagnostic-producing path callers already depend on.
+    """
+    bc = BorrowChecker()
+    bc.check(program)
+
+    result: dict[str, list[str]] = {}
+
+    def collect_fn(fn: N.FnDecl) -> None:
+        final = bc.fn_final_scopes.get(fn.name)
+        if final is None:
+            return
+        returned = _returned_idents(fn)
+        by_value_args: set[str] = set()
+        _walk_by_value_call_args(fn.body, by_value_args)
+        param_names = {p.name for p in fn.params}
+        names = []
+        for name, b in final.items():
+            if name in param_names:
+                continue
+            if b.is_ref:
+                continue
+            if b.moved:
+                continue
+            if name in returned:
+                continue
+            if name in by_value_args:
+                continue
+            if b.type_name is None or b.type_name not in bc._struct_fields:
+                continue
+            names.append(name)
+        if names:
+            result[fn.name] = names
+
+    for node in program:
+        if isinstance(node, N.FnDecl):
+            collect_fn(node)
+        elif isinstance(node, N.ImplDecl):
+            for item in node.items:
+                if isinstance(item, N.FnDecl):
+                    collect_fn(item)
+
+    return result

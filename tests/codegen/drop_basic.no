@@ -1,0 +1,26 @@
+;; Drop insertion: a struct local declared unconditionally at a
+;; function's top level and never returned/moved gets `free`d at the
+;; function's natural end; one that IS returned does not (ownership
+;; transfers to the caller, who gets a live, usable value back).
+;; Expected:
+;;   1
+;;   1
+;;   5 6
+
+(struct Point x:i32 y:i32)
+
+(fn scratch () -> unit
+  (do
+    (let p (Point x:1 y:2))
+    (out (. p x)) (out "\n")))
+
+(fn returns_it () -> Point
+  (do
+    (let p (Point x:5 y:6))
+    p))
+
+(fn main () -> unit
+  (scratch)
+  (scratch)
+  (let q (returns_it))
+  (out (. q x)) (out " ") (out (. q y)) (out "\n"))
