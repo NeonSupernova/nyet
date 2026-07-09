@@ -282,8 +282,27 @@ HEAD was independently verified clean.
       `driver.py`'s build command and the codegen test harness both
       link it into every build now (tiny, unconditional, unused
       symbols cost nothing if a program doesn't touch Map/Set).
-- [ ] Consider introducing the typed IR layer (PLAN.md §6) before
-      attempting v1.1 async/spawn/await
+- [x] Typed IR layer decision (2026-07-09): NOT building one. A full
+      PLAN.md §6 typed IR (desugar pattern matching/closures/`?`,
+      insert drops, then lower to LLVM) is the "correct" architecture
+      for a stackless-coroutine state-machine transform, but it's a
+      rewrite of the codegen boundary, not an incremental step, and
+      the 2300+ line `emit.py` monolith already works and is
+      golden-tested end to end. Chose to implement async pragmatically
+      instead (OS threads for `spawn`, blocking join for `await` — see
+      below) specifically to avoid needing this. Revisit if/when true
+      stackless coroutines (cheap enough to spawn millions of) become
+      a real requirement, not preemptively.
+- [x] `_emit_expr` now raises `NotImplementedError` on an unhandled AST
+      node instead of silently returning `None` (2026-07-09) — closes
+      the silent-miscompile hole flagged all the way back in Phase 1
+      (every one of this session's confirmed-then-fixed miscompiles
+      -- keyword literals, field assignment, string concat -- was
+      exactly this failure mode: an unhandled case falling through to
+      None and emitting nothing). Flipped now that the major gaps
+      (tuples, HOFs, Map/Set, dyn, drops, exhaustiveness) are closed;
+      verified zero regressions across the full golden suite (33
+      cases) and every example/script in the repo.
 - [ ] v1.1 async/spawn/await
 - [x] Pattern exhaustiveness as a proper sema diagnostic pass (2026-07-09)
       — moved the exact same variant-coverage logic from codegen's ad

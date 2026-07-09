@@ -1366,6 +1366,9 @@ class Emitter:
     # ==================================================================
 
     def _emit_expr(self, node: N.Node | None) -> str | None:
+        if node is None:
+            return None
+
         if isinstance(node, N.IntLit):
             return str(node.value)
 
@@ -1447,7 +1450,12 @@ class Emitter:
         if isinstance(node, (N.StructDecl, N.TypeDecl)):
             return None  # already processed in emit()
 
-        return None
+        raise NotImplementedError(
+            f"codegen: no _emit_expr case for {type(node).__name__} "
+            f"(span {getattr(node, 'span', None)}) — was silently returning "
+            f"None (and therefore emitting nothing) before this was flipped "
+            f"to fail loudly; see CONTINUATION_PLAN.md"
+        )
 
     def _emit_ident(self, node: N.Ident) -> str | None:
         if node.name in self._env:
