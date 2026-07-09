@@ -1362,6 +1362,10 @@ class Emitter:
                     if payload_types:
                         return payload_types[0]
             return "ptr"
+        if isinstance(node, N.Spawn):
+            return "ptr"  # opaque Handle, see _emit_spawn
+        if isinstance(node, N.Await):
+            return "ptr"  # scoped to ptr-returning spawned calls
         return "i32"
 
     def _infer_field_type(self, node: N.FieldAccess) -> str:
@@ -1440,6 +1444,12 @@ class Emitter:
 
         if isinstance(node, N.Try):
             return self._emit_try(node)
+
+        if isinstance(node, N.Spawn):
+            return self._emit_spawn(node)
+
+        if isinstance(node, N.Await):
+            return self._emit_await(node)
 
         if isinstance(node, N.Cast):
             return self._emit_cast(node.value, node.target_type)
@@ -2812,6 +2822,50 @@ class Emitter:
     # ------------------------------------------------------------------
     # ? (Try) operator
     # ------------------------------------------------------------------
+
+    def _emit_spawn(self, node: N.Spawn) -> str | None:
+        """`(spawn (fn_name arg))` -- runs fn_name(arg) on a new OS
+        thread (runtime/async.c's nyet_spawn), returning an opaque
+        Handle pointer. Real concurrency, not a stackless coroutine --
+        see CONTINUATION_PLAN.md's typed-IR-layer decision for why.
+
+        Scoped to a single call whose target function's one parameter
+        and return value are both `ptr` (string/struct/sum-type/array/
+        tuple -- i.e. everything except bare scalars): that signature
+        already matches pthread's `void *(*)(void *)` start-routine
+        exactly, so the target function runs directly as the thread
+        body with no trampoline needed on either side.
+        """
+        call = node.value
+        if not (
+            isinstance(call, N.Call) and isinstance(call.head, N.Ident) and len(call.args) == 1
+        ):
+            return None
+        fn_name = call.head.name
+        if fn_name not in self._fn_sigs:
+            return None
+        param_tys, ret_ty = self._fn_sigs[fn_name]
+        if len(param_tys) != 1 or param_tys[0] != "ptr" or ret_ty != "ptr":
+            return None
+        arg_val = self._emit_expr(call.args[0])
+        if arg_val is None:
+            return None
+        self._declare_extern("declare ptr @nyet_spawn(ptr, ptr)")
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call ptr @nyet_spawn(ptr @{fn_name}, ptr {arg_val})")
+        return tmp
+
+    def _emit_await(self, node: N.Await) -> str | None:
+        """`(await handle)` -- joins the spawned thread (nyet_await)
+        and returns its result, which arrives via pthread_join's own
+        retval mechanism (see runtime/async.c)."""
+        handle_val = self._emit_expr(node.value)
+        if handle_val is None:
+            return None
+        self._declare_extern("declare ptr @nyet_await(ptr)")
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call ptr @nyet_await(ptr {handle_val})")
+        return tmp
 
     def _emit_try(self, node: N.Try) -> str | None:
         """(? expr) — Option/Result early-return.

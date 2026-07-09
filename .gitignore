@@ -15,3 +15,5 @@ node_modules/
 .ruff_cache/
 htmlcov/
 *.vsix
+build/
+*.o

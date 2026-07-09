@@ -413,6 +413,17 @@ class TypeChecker:
         if isinstance(node, N.Await):
             return self._infer(node.value)
 
+        if isinstance(node, N.Spawn):
+            # Transparent, matching Await above: `spawn`/`await` are
+            # implemented as a real OS-thread handle at codegen time
+            # (see runtime/async.c), not a distinct Handle[T]/Future[T
+            # E] type -- treating the type as "whatever the wrapped
+            # call would have produced" keeps type inference for e.g.
+            # `(let h (spawn (fetch url))) (let r (await h))` working
+            # without introducing new NyetType variants for something
+            # this scoped-down implementation doesn't actually need.
+            return self._infer(node.value)
+
         if isinstance(node, N.LetDecl):
             self._check_node(node)
             return UNIT

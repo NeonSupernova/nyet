@@ -65,8 +65,9 @@ def dump_codegen_output(path: Path) -> str:
         bin_path = Path(td) / "out"
         ll_path.write_text(ir_text)
         runtime_map_c = ROOT / "runtime" / "map.c"
+        runtime_async_c = ROOT / "runtime" / "async.c"
         clang = subprocess.run(
-            ["clang", "-o", str(bin_path), str(ll_path), str(runtime_map_c)],
+            ["clang", "-o", str(bin_path), str(ll_path), str(runtime_map_c), str(runtime_async_c)],
             capture_output=True,
             text=True,
         )

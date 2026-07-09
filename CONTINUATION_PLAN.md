@@ -303,7 +303,68 @@ HEAD was independently verified clean.
       (tuples, HOFs, Map/Set, dyn, drops, exhaustiveness) are closed;
       verified zero regressions across the full golden suite (33
       cases) and every example/script in the repo.
-- [ ] v1.1 async/spawn/await
+- [x] v1.1 async/spawn/await (2026-07-09) — pragmatic OS-thread
+      implementation per the typed-IR-layer decision above, not
+      stackless coroutines. New `runtime/async.c`: `nyet_spawn`
+      wraps `pthread_create`, `nyet_await` wraps `pthread_join`.
+      Scoped to `(spawn (fn_name arg))` where `fn_name` is a
+      top-level function with exactly one `ptr`-typed param and
+      `ptr`-typed return (covers string/struct/sum-type/array/tuple —
+      everything except bare scalars): that signature matches
+      pthread's own `void *(*)(void *)` start-routine convention
+      exactly, so the target function runs directly as the thread
+      body with no trampoline, and its result comes back through
+      `pthread_join`'s own out-parameter. `_emit_spawn`/`_emit_await`
+      in emit.py, transparent type pass-through in typeck.py
+      (mirrors how `?`/`Try` already worked), linked into both
+      `driver.py`'s build command and the codegen test harness
+      alongside `runtime/map.c`.
+      Verified two ways: a struct-returning spawn/await round-trip,
+      and a 4-way concurrent CPU-bound spawn (`tests/codegen/
+      spawn_await.no` covers the former as a golden test; the
+      latter was a throwaway timing check, not committed as a golden
+      since wall-clock isn't deterministic) — 158% CPU utilization
+      and wall time well under total user time confirmed genuine
+      OS-level parallelism, not synchronous inlining.
+      While building the concurrency test, tripped over a real
+      pre-existing miscompile with i64 arithmetic (see below) —
+      fixed as part of this verification since async's whole point
+      is CPU-bound work, which meant reaching for i64 loop counters
+      for the first time in any golden test.
+- [x] Fixed three width-inference bugs surfaced by testing spawn/await
+      with i64 loop counters (2026-07-09), all in `pynyet/codegen/emit.py`:
+      1. `_emit_arith`'s integer path hardcoded `add/sub/mul/sdiv/srem
+         i32` regardless of operand width — same class of bug `_emit_cmp`
+         was already fixed for (via `_common_cmp_type`/`_coerce_int_to`)
+         but the fix never propagated to arithmetic. Now reuses the same
+         helpers.
+      2. `_emit_out`'s integer branch always printed via `%d`/`i32`,
+         truncating any `i64` argument — added an `i64`/`%lld` path
+         (`_get_fmt_i64`), and narrower ints (bool/char) now go through
+         `_coerce_int_to` up to i32 instead of being passed at their
+         native (potentially sub-32-bit) width.
+      3. The root cause: `_infer_llvm_type`'s `N.IntLit` case
+         unconditionally returned `"i32"` regardless of the literal's
+         actual magnitude (the parser drops any `i64` numeric suffix, so
+         magnitude is the only signal left). This made `_emit_let`/
+         `_emit_arith` coerce large literals via `sext i32 <value> to
+         i64` — LLVM's IR parser parses the literal as a 32-bit constant
+         *first* (silently wrapping values outside i32's range), then
+         sign-extends the already-wrong wrapped result. E.g.
+         `(let x:i64 5000000000i64)` silently became `705032704`. Fixed
+         by inferring `i64` for any literal outside i32's range. The
+         existing `cmp_widths.no` golden test didn't catch this because
+         it only checks equality between two identically-truncated
+         values, never the actual printed magnitude — a real coverage
+         gap, not just a coincidence.
+      New golden test `tests/codegen/arith_widths.no` pins down all
+      three (large i64 literal arithmetic, an i64 accumulator mutated
+      in a loop via `(+ i 1)` — the exact pattern that first exposed
+      this — and an i64 operand paired with a bare int literal).
+      Verified zero regressions: full golden suite (35 cases across
+      lexer/parser/sema/codegen), 33 unit tests, `just fmt`/`lint`/
+      `typecheck` all clean, and every script/example in the repo
+      rebuilds successfully.
 - [x] Pattern exhaustiveness as a proper sema diagnostic pass (2026-07-09)
       — moved the exact same variant-coverage logic from codegen's ad
       hoc stderr print (deleted `_exhaustiveness_warn` in emit.py) into
@@ -316,10 +377,6 @@ HEAD was independently verified clean.
       warnings either way. Verified `driver check` now actually
       surfaces the warning (it never did before) while `check: ok`
       still prints and the exit code stays 0.
-- [ ] `_emit_expr` should raise on unhandled AST nodes instead of
-      silently returning `None` (`pynyet/codegen/emit.py`) — deferred
-      from Phase 1, do this alongside closing the feature gaps above so
-      it doesn't just turn "missing feature" into "crash" for no gain
 - North star progress: `check main.no` errors are down to **44** (was
       68 pre-merge, 61 as of Phase 1.5) — the tuple/HOF/Map/keyword
       work landed this session incidentally fixed a batch of these
