@@ -76,6 +76,14 @@ class Emitter:
         # `char`) instead of a function call, mirroring `_env_array_elem`.
         self._env_string_names: set[str] = set()
 
+        # Tuple bindings — name -> synthesized tuple struct type name
+        # (see `_get_or_register_tuple_type`). Used by `_emit_call` to
+        # dispatch `(t i)` to indexed field load, mirroring
+        # `_env_array_elem`. Distinct tuple element-type signatures each
+        # get their own anonymous struct type, registered on demand.
+        self._env_tuple_types: dict[str, str] = {}
+        self._tuple_types: dict[tuple[str, ...], str] = {}
+
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
         # (fn_name, type_args_tuple) → mangled_name — already-monomorphized
@@ -820,6 +828,9 @@ class Emitter:
         if isinstance(tn, N.FnType):
             # Function pointer.
             return "ptr"
+        if isinstance(tn, N.TupleType):
+            # Heap-allocated, pass-by-pointer like structs.
+            return "ptr"
         if isinstance(tn, N.UnitType):
             return "void"
         return "i32"
@@ -900,6 +911,7 @@ class Emitter:
             "env_array_elem": dict(self._env_array_elem),
             "env_char_names": set(self._env_char_names),
             "env_string_names": set(self._env_string_names),
+            "env_tuple_types": dict(self._env_tuple_types),
             "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
@@ -916,6 +928,7 @@ class Emitter:
         self._env_array_elem = saved["env_array_elem"]
         self._env_char_names = saved["env_char_names"]
         self._env_string_names = saved["env_string_names"]
+        self._env_tuple_types = saved["env_tuple_types"]
         self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
@@ -995,6 +1008,14 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_struct_name[n] = nyet_n
+                elif isinstance(p.type, N.TupleType):
+                    # Tuple params are already ptrs — register their shape
+                    # so `(param i)` lowers to indexed field load.
+                    ptr = self._emit_alloca("ptr")
+                    self._emit_line(f"store ptr %{n}, ptr {ptr}")
+                    self._env[n] = (ptr, "ptr")
+                    tup_elem_tys = [self._llvm_type(et) for et in p.type.elements]
+                    self._env_tuple_types[n] = self._get_or_register_tuple_type(tup_elem_tys)
                 else:
                     ptr = self._emit_alloca(t)
                     self._emit_line(f"store {t} %{n}, ptr {ptr}")
@@ -1072,6 +1093,8 @@ class Emitter:
             return "i32"
         if isinstance(node, N.ArrayLit):
             return "ptr"
+        if isinstance(node, N.TupleLit):
+            return "ptr"
         if isinstance(node, N.Cast):
             return self._llvm_type(node.target_type)
         if isinstance(node, N.Ident) and node.name in self._env:
@@ -1087,6 +1110,17 @@ class Emitter:
             # String indexing yields a char, stored as i32.
             if op in self._env_string_names and len(node.args) == 1:
                 return "i32"
+            # Tuple indexing: `(t 0)` yields the element type at that
+            # position (only known for a literal integer index).
+            if (
+                op in self._env_tuple_types
+                and len(node.args) == 1
+                and isinstance(node.args[0], N.IntLit)
+            ):
+                fields = self._structs[self._env_tuple_types[op]]
+                idx = node.args[0].value
+                if 0 <= idx < len(fields):
+                    return fields[idx][1]
             if op in ("+", "-", "*", "/", "%"):
                 if node.args:
                     sn = self._infer_nyet_type_name(node.args[0])
@@ -1235,6 +1269,9 @@ class Emitter:
         if isinstance(node, N.ArrayLit):
             return self._emit_array_lit(node)
 
+        if isinstance(node, N.TupleLit):
+            return self._emit_tuple_lit(node)
+
         if isinstance(node, N.Call):
             return self._emit_call(node)
 
@@ -1310,6 +1347,9 @@ class Emitter:
             # after arrays so an Array binding always wins, matching scoping.
             if name in self._env_string_names and len(node.args) == 1:
                 return self._emit_string_index(name, node.args[0])
+            # Tuple indexing: `(t i)` where `t` is a local tuple binding.
+            if name in self._env_tuple_types and len(node.args) == 1:
+                return self._emit_tuple_index(name, node.args[0])
             # Builtins
             if name == "out":
                 return self._emit_out(node.args)
@@ -2839,6 +2879,31 @@ class Emitter:
             self._env_array_elem[node.name] = elem_ty
             return None
 
+        # Tuple bindings: store the heap pointer and remember the
+        # synthesized tuple struct type so `(name i)` lowers correctly.
+        # Detected via either an explicit `#(T1 T2)` annotation (needed
+        # when the rhs isn't a literal, e.g. a call returning a tuple)
+        # or a literal `TupleLit` rhs.
+        tuple_elem_tys: list[str] | None = None
+        if isinstance(node.type, N.TupleType):
+            tuple_elem_tys = [self._llvm_type(et) for et in node.type.elements]
+        elif isinstance(node.value, N.TupleLit):
+            tuple_elem_tys = [self._infer_llvm_type(e) for e in node.value.elements]
+        if tuple_elem_tys is not None:
+            tname = self._get_or_register_tuple_type(tuple_elem_tys)
+            ptr = self._emit_alloca("ptr")
+            if node.value is not None:
+                val = self._emit_expr(node.value)
+                if val is not None:
+                    self._emit_line(f"store ptr {val}, ptr {ptr}")
+                else:
+                    self._emit_line(f"store ptr null, ptr {ptr}")
+            else:
+                self._emit_line(f"store ptr null, ptr {ptr}")
+            self._env[node.name] = (ptr, "ptr")
+            self._env_tuple_types[node.name] = tname
+            return None
+
         # For struct/sum-type bindings, the value is already a ptr (from construction)
         is_aggregate = nyet_name is not None and (
             nyet_name in self._structs or nyet_name in self._sum_types
@@ -3113,6 +3178,64 @@ class Emitter:
         ch = self._fresh_tmp()
         self._emit_line(f"{ch} = zext i8 {byte} to i32")
         return ch
+
+    def _get_or_register_tuple_type(self, elem_tys: list[str]) -> str:
+        """Return the synthesized struct type name for a tuple shape,
+        registering (and emitting a `%name = type {...}` line for) it on
+        first use. Fields are named "0", "1", ... so the existing
+        struct-field GEP machinery applies unchanged."""
+        key = tuple(elem_tys)
+        if key in self._tuple_types:
+            return self._tuple_types[key]
+        name = f"tuple.{len(self._tuple_types)}"
+        self._structs[name] = [(str(i), ty) for i, ty in enumerate(elem_tys)]
+        llvm_fields = ", ".join(elem_tys)
+        self._struct_type_lines.append(f"%{name} = type {{ {llvm_fields} }}")
+        self._tuple_types[key] = name
+        return name
+
+    def _emit_tuple_lit(self, node: N.TupleLit) -> str | None:
+        """Emit `#(e0 e1 ...)` -> malloc + store each element, mirroring
+        struct construction (heap-allocated so tuples can be returned)."""
+        elem_vals: list[str] = []
+        elem_tys: list[str] = []
+        for e in node.elements:
+            v = self._emit_expr(e)
+            if v is None:
+                return None
+            elem_vals.append(v)
+            elem_tys.append(self._infer_llvm_type(e))
+
+        tname = self._get_or_register_tuple_type(elem_tys)
+        ptr = self._heap_alloc_struct(tname, self._struct_size_bytes(tname))
+        for i, (v, ty) in enumerate(zip(elem_vals, elem_tys, strict=False)):
+            fptr = self._fresh_tmp()
+            self._emit_line(f"{fptr} = getelementptr inbounds %{tname}, ptr {ptr}, i32 0, i32 {i}")
+            self._emit_line(f"store {ty} {v}, ptr {fptr}")
+        return ptr
+
+    def _emit_tuple_index(self, name: str, idx_arg: N.Expr) -> str | None:
+        """Lower `(t i)` where `t` is a tuple binding -> GEP + load. The
+        index must be a literal integer since tuple fields are
+        heterogeneously typed (unlike Array[T])."""
+        if not isinstance(idx_arg, N.IntLit):
+            return None
+        tname = self._env_tuple_types[name]
+        fields = self._structs[tname]
+        if not (0 <= idx_arg.value < len(fields)):
+            return None
+        _, ftype = fields[idx_arg.value]
+
+        ptr_slot, _ = self._env[name]
+        tup_ptr = self._fresh_tmp()
+        self._emit_line(f"{tup_ptr} = load ptr, ptr {ptr_slot}")
+        fptr = self._fresh_tmp()
+        self._emit_line(
+            f"{fptr} = getelementptr inbounds %{tname}, ptr {tup_ptr}, i32 0, i32 {idx_arg.value}"
+        )
+        result = self._fresh_tmp()
+        self._emit_line(f"{result} = load {ftype}, ptr {fptr}")
+        return result
 
     def _emit_array_assign(self, name: str, idx_arg: N.Expr, value: N.Expr | None) -> str | None:
         ptr_slot, _ = self._env[name]

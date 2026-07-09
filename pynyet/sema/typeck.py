@@ -252,6 +252,16 @@ class TypeChecker:
             # `(arr i)` — array indexing yields the element type.
             if isinstance(head_ty, ArrayType) and len(node.args) == 1:
                 return head_ty.element
+            # `(t i)` — tuple indexing with a literal int yields that
+            # position's type. Heterogeneous, so the index must be known
+            # at compile time (unlike Array[T] indexing).
+            if (
+                isinstance(head_ty, TupleType)
+                and len(node.args) == 1
+                and isinstance(node.args[0], N.IntLit)
+                and 0 <= node.args[0].value < len(head_ty.elements)
+            ):
+                return head_ty.elements[node.args[0].value]
             # `(str i)` — indexing a string by byte position yields a char
             # (the UTF-8 byte at that offset). The index must be an integer.
             if (
