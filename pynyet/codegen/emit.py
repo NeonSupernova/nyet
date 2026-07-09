@@ -38,6 +38,7 @@ class Emitter:
         # i32 equality.
         self._keyword_ids: dict[str, int] = {}
         self._fmt_i32: str | None = None
+        self._fmt_i64: str | None = None
         self._fmt_f64: str | None = None
         self._tmp = 0
         self._label = 0
@@ -799,6 +800,11 @@ class Emitter:
             self._fmt_i32 = self._get_format_string("%d", "i32")
         return self._fmt_i32
 
+    def _get_fmt_i64(self) -> str:
+        if self._fmt_i64 is None:
+            self._fmt_i64 = self._get_format_string("%lld", "i64")
+        return self._fmt_i64
+
     def _get_fmt_f64(self) -> str:
         if self._fmt_f64 is None:
             self._fmt_f64 = self._get_format_string("%g", "f64")
@@ -1195,6 +1201,16 @@ class Emitter:
 
     def _infer_llvm_type(self, node: N.Node | None) -> str:
         if isinstance(node, N.IntLit):
+            # The parser drops any `i64` suffix, so magnitude is the only
+            # signal left: a literal outside i32's range must have been
+            # written as (or promoted to) i64. Getting this wrong used to
+            # make `_emit_let`/`_emit_arith` coerce via `sext i32 <value>
+            # to i64`, which parses the literal as a 32-bit constant FIRST
+            # (silently wrapping it) and only then extends the wrapped
+            # result -- a silent-truncation miscompile for any large i64
+            # literal, not just a missing-width cosmetic issue.
+            if node.value > 0x7FFFFFFF or node.value < -0x80000000:
+                return "i64"
             return "i32"
         if isinstance(node, N.FloatLit):
             return "double"
@@ -1256,16 +1272,21 @@ class Emitter:
                     return "ptr"
                 has_double = False
                 has_float = False
+                has_i64 = False
                 for a in node.args:
                     t = self._infer_llvm_type(a)
                     if t == "double":
                         has_double = True
                     elif t == "float":
                         has_float = True
+                    elif t == "i64":
+                        has_i64 = True
                 if has_double:
                     return "double"
                 if has_float:
                     return "float"
+                if has_i64:
+                    return "i64"
                 return "i32"
             if op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||", "!"):
                 return "i1"
@@ -1772,9 +1793,14 @@ class Emitter:
                     self._emit_line(f"{ext} = fpext float {val} to double")
                     val = ext
                 self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})")
+            elif ty == "i64":
+                fmt = self._get_fmt_i64()
+                tmp = self._fresh_tmp()
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
             else:
                 fmt = self._get_fmt_i32()
                 tmp = self._fresh_tmp()
+                val = self._coerce_int_to(val, ty, "i32")
                 self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
         return None
 
@@ -2094,9 +2120,16 @@ class Emitter:
             self._emit_line(f"{tmp} = {fops[op]} {fty} {lhs}, {rhs}")
             return tmp
         else:
+            # Integer arithmetic at a common, correctly-widened type --
+            # mirrors _emit_cmp's cty/_coerce_int_to handling below, since
+            # this path previously hardcoded i32 and miscompiled any
+            # arithmetic on i64 operands (e.g. i64 loop counters).
+            cty = self._common_cmp_type(args[0], args[1], lty, rty)
+            lhs = self._coerce_int_to(lhs, lty, cty)
+            rhs = self._coerce_int_to(rhs, rty, cty)
             tmp = self._fresh_tmp()
             iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
-            self._emit_line(f"{tmp} = {iops[op]} i32 {lhs}, {rhs}")
+            self._emit_line(f"{tmp} = {iops[op]} {cty} {lhs}, {rhs}")
             return tmp
 
     def _emit_string_concat(self, lhs: str, rhs: str) -> str:
