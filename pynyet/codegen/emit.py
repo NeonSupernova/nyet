@@ -70,6 +70,12 @@ class Emitter:
         # Used by _emit_cast to detect char→int conversions at the call site.
         self._env_char_names: set[str] = set()
 
+        # String bindings — names of variables whose Nyet type is `string`.
+        # Set whenever a let/var/param resolves to `string`. Used by
+        # `_emit_call` to dispatch `(str i)` to an indexed byte load (a
+        # `char`) instead of a function call, mirroring `_env_array_elem`.
+        self._env_string_names: set[str] = set()
+
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
         # (fn_name, type_args_tuple) → mangled_name — already-monomorphized
@@ -893,6 +899,7 @@ class Emitter:
             "env_struct_name": dict(self._env_struct_name),
             "env_array_elem": dict(self._env_array_elem),
             "env_char_names": set(self._env_char_names),
+            "env_string_names": set(self._env_string_names),
             "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
@@ -908,6 +915,7 @@ class Emitter:
         self._env_struct_name.update(saved["env_struct_name"])
         self._env_array_elem = saved["env_array_elem"]
         self._env_char_names = saved["env_char_names"]
+        self._env_string_names = saved["env_string_names"]
         self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
@@ -994,6 +1002,11 @@ class Emitter:
                 # Track char-typed params for _emit_cast.
                 if p.type is not None and self._nyet_type_name(p.type) == "char":
                     self._env_char_names.add(n)
+                # Track string-typed params so `(param i)` lowers to a byte
+                # index. Array/struct/fn params were handled above and never
+                # reach here, so this only catches genuine `string` scalars.
+                if p.type is not None and self._nyet_type_name(p.type) == "string":
+                    self._env_string_names.add(n)
 
             if node.body is not None:
                 result = self._emit_expr(node.body)
@@ -1071,6 +1084,9 @@ class Emitter:
             # Array indexing: shadows any same-named function.
             if op in self._env_array_elem and len(node.args) == 1:
                 return self._env_array_elem[op]
+            # String indexing yields a char, stored as i32.
+            if op in self._env_string_names and len(node.args) == 1:
+                return "i32"
             if op in ("+", "-", "*", "/", "%"):
                 if node.args:
                     sn = self._infer_nyet_type_name(node.args[0])
@@ -1148,6 +1164,10 @@ class Emitter:
             return self._infer_field_type(node)
         if isinstance(node, N.If) and node.then_branch:
             return self._infer_llvm_type(node.then_branch)
+        if isinstance(node, N.Match) and node.arms:
+            # A match yields the type of its arm bodies (all arms agree);
+            # mirror `_emit_match`, which sizes its result slot the same way.
+            return self._infer_llvm_type(node.arms[0].body)
         if isinstance(node, N.Do) and node.exprs:
             return self._infer_llvm_type(node.exprs[-1])
         if isinstance(node, N.Try):
@@ -1285,6 +1305,11 @@ class Emitter:
             # A bound name shadows any same-named function, matching scoping.
             if name in self._env_array_elem and len(node.args) == 1:
                 return self._emit_array_index(name, node.args[0])
+            # String indexing: `(str i)` where `str` is a local `string`.
+            # Yields the byte at position `i` as a `char` (i32). Checked
+            # after arrays so an Array binding always wins, matching scoping.
+            if name in self._env_string_names and len(node.args) == 1:
+                return self._emit_string_index(name, node.args[0])
             # Builtins
             if name == "out":
                 return self._emit_out(node.args)
@@ -1562,7 +1587,7 @@ class Emitter:
         tmp = self._fresh_tmp()
         self._emit_line(f"{tmp} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})")
 
-        target_type = "i32"
+        target_type = "ptr"
         if args and isinstance(args[0], N.Ident):
             target_type = self._llvm_type_from_name(args[0].name)
 
@@ -1911,10 +1936,50 @@ class Emitter:
             self._emit_line(f"{tmp} = fcmp {fconds[op]} {fty} {lhs}, {rhs}")
             return tmp
         else:
+            # Integer / bool / char / pointer comparison. Choose a common
+            # operand type and coerce the narrower side up to it, so that
+            # `bool == bool` (i1), `i64 == i64`, and `char == 65` all emit a
+            # well-typed `icmp` instead of assuming i32.
+            cty = self._common_cmp_type(args[0], args[1], lty, rty)
+            lhs = self._coerce_int_to(lhs, lty, cty)
+            rhs = self._coerce_int_to(rhs, rty, cty)
             tmp = self._fresh_tmp()
             iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
-            self._emit_line(f"{tmp} = icmp {iconds[op]} i32 {lhs}, {rhs}")
+            self._emit_line(f"{tmp} = icmp {iconds[op]} {cty} {lhs}, {rhs}")
             return tmp
+
+    def _common_cmp_type(self, a: N.Node, b: N.Node, lty: str, rty: str) -> str:
+        """Pick the LLVM type to compare two integer-ish operands at.
+
+        A bare integer literal (which always infers as i32) yields to the
+        other operand's concrete width; otherwise the wider of the two
+        wins. Pointer operands compare as `ptr`.
+        """
+        if lty == "ptr" or rty == "ptr":
+            return "ptr"
+        a_lit = isinstance(a, N.IntLit)
+        b_lit = isinstance(b, N.IntLit)
+        if a_lit and not b_lit:
+            return rty
+        if b_lit and not a_lit:
+            return lty
+        return lty if self._sizeof(lty) >= self._sizeof(rty) else rty
+
+    def _coerce_int_to(self, val: str, src: str, dst: str) -> str:
+        """Widen/narrow an integer value from `src` to `dst` for comparison.
+        i1 widens via zext (so `true` → 1), other ints via sext."""
+        if src == dst or dst == "ptr" or src == "ptr":
+            return val
+        sb, db = self._sizeof(src), self._sizeof(dst)
+        if sb == db:
+            return val
+        tmp = self._fresh_tmp()
+        if db > sb:
+            opc = "zext" if src == "i1" else "sext"
+            self._emit_line(f"{tmp} = {opc} {src} {val} to {dst}")
+        else:
+            self._emit_line(f"{tmp} = trunc {src} {val} to {dst}")
+        return tmp
 
     # ------------------------------------------------------------------
     # Boolean operators
@@ -2816,6 +2881,16 @@ class Emitter:
             # Track char bindings so _emit_cast can detect char→int conversions.
             if node.type is not None and self._nyet_type_name(node.type) == "char":
                 self._env_char_names.add(node.name)
+            # Track string bindings so `(name i)` lowers to a byte index. A
+            # `:string` annotation is authoritative; otherwise a bare string
+            # literal RHS (`(let z "hi")`) infers the same shape.
+            declared_string = node.type is not None and self._nyet_type_name(node.type) == "string"
+            if declared_string or (node.type is None and isinstance(node.value, N.StringLit)):
+                self._env_string_names.add(node.name)
+            elif node.name in self._env_string_names:
+                # A rebinding to a non-string shadows an earlier string of the
+                # same name — drop the stale entry so `(name i)` isn't misread.
+                self._env_string_names.discard(node.name)
 
         if isinstance(node.value, N.StringLit):
             self._str_lits[node.name] = node.value.value
@@ -2979,6 +3054,31 @@ class Emitter:
         result = self._fresh_tmp()
         self._emit_line(f"{result} = load {elem_ty}, ptr {elem_ptr}")
         return result
+
+    def _emit_string_index(self, name: str, idx_arg: N.Expr) -> str:
+        """Lower `(str i)` to a byte load: index into the null-terminated
+        UTF-8 buffer and zero-extend the byte to `i32` (a `char`).
+
+        This is byte indexing, not codepoint indexing — for ASCII/Latin-1
+        text (digits, identifiers) the two coincide; a multi-byte UTF-8
+        sequence would be read one byte at a time. Bounds are the caller's
+        responsibility, exactly as with array indexing.
+        """
+        ptr_slot, _ = self._env[name]
+        strp = self._fresh_tmp()
+        self._emit_line(f"{strp} = load ptr, ptr {ptr_slot}")
+
+        idx_val = self._emit_expr(idx_arg)
+        idx_ty = self._infer_llvm_type(idx_arg)
+        idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
+
+        elem_ptr = self._fresh_tmp()
+        self._emit_line(f"{elem_ptr} = getelementptr i8, ptr {strp}, i64 {idx64}")
+        byte = self._fresh_tmp()
+        self._emit_line(f"{byte} = load i8, ptr {elem_ptr}")
+        ch = self._fresh_tmp()
+        self._emit_line(f"{ch} = zext i8 {byte} to i32")
+        return ch
 
     def _emit_array_assign(self, name: str, idx_arg: N.Expr, value: N.Expr | None) -> str | None:
         ptr_slot, _ = self._env[name]

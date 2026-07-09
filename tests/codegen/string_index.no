@@ -1,0 +1,32 @@
+;;;; string_index.no
+
+;;; Exercises `(str i)` byte indexing: a byte read out of a `string`
+;;; yields the `char` (i32) at that offset. Covered here from a
+;;; let-bound string literal, through a `string` parameter, and inside
+;;; a loop that sums the digit values of a numeric string.
+
+(fn char_at (s:string i:i32) -> i32
+    (as (s i) i32))
+
+;; Sum the numeric value of each ASCII digit in a 3-char string.
+(fn digit_sum (s:string) -> i32
+    (do
+        (var total:i32 0)
+        (var i:i32 0)
+        (loop
+            (if (>= i 3)
+                (break total)
+                pass)
+            (= total (+ total (- (as (s i) i32) 48)))
+            (= i (+ i 1)))))
+
+(fn main () -> unit
+    (do
+        (let s:string "ABC")
+        ;; Direct indexing of a local string literal -> ASCII codes.
+        (out (fmt "{}\n" (as (s 0) i32)))    ; 65
+        (out (fmt "{}\n" (as (s 1) i32)))    ; 66
+        ;; Indexing through a string parameter.
+        (out (fmt "{}\n" (char_at s 2)))     ; 67
+        ;; Loop-driven indexing with an arithmetic index.
+        (out (fmt "{}\n" (digit_sum "123"))))) ; 6

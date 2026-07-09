@@ -16,6 +16,7 @@ from pynyet.ast import nodes as N
 from pynyet.diagnostic import Diagnostic, Severity
 from pynyet.sema.types import (
     BOOL,
+    CHAR,
     ERROR,
     F64,
     I32,
@@ -29,6 +30,7 @@ from pynyet.sema.types import (
     FnSig,
     IntType,
     NyetType,
+    StringType,
     StructType,
     SumType,
     TupleType,
@@ -250,6 +252,14 @@ class TypeChecker:
             # `(arr i)` — array indexing yields the element type.
             if isinstance(head_ty, ArrayType) and len(node.args) == 1:
                 return head_ty.element
+            # `(str i)` — indexing a string by byte position yields a char
+            # (the UTF-8 byte at that offset). The index must be an integer.
+            if (
+                isinstance(head_ty, StringType)
+                and len(node.args) == 1
+                and isinstance(self._infer(node.args[0]), IntType)
+            ):
+                return CHAR
             if isinstance(head_ty, FnSig):
                 return head_ty.ret
             # Operator calls — infer from first operand

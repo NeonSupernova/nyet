@@ -1,0 +1,6 @@
+=== stdout ===
+bool eq
+i64 eq
+i64 lit eq
+char eq
+match eq
