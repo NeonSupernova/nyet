@@ -182,21 +182,14 @@ HEAD was independently verified clean.
       default. Keywords intern to a small integer ID (allocation-free,
       compared by identity per main.no's own description); verified
       `==` correctly distinguishes different keyword names
-- [ ] Array bounds checks — not attempted this session; length is
-      already stored at offset 0 of the array's heap block, needs a
-      compare + branch to the existing panic path
-      (`pynyet/codegen/emit.py`, array indexing)
+- [x] Array bounds checks (2026-07-09) — `_emit_bounds_check` compares
+      the index against the length stored at offset 0 of the array's
+      heap block and branches to the existing panic path on an
+      out-of-range access; wired into both `_emit_array_index` and
+      `_emit_array_assign`. Golden test: `tests/codegen/array_bounds.no`.
 
-## Phase 3 — Resume the roadmap
+## Phase 3 — Resume the roadmap — DONE (2026-07-09)
 
-- [ ] AST statement/expression split so `parser.parser` and
-      `codegen.emit` can drop their mypy exemption (Phase 1.6) — give
-      `do`-block statement forms (`LetDecl`/`ConstDecl` used as an
-      expression-position value) a real `Stmt` union instead of
-      returning the base `N.Node` and letting every downstream
-      constructor claim `Expr`
-- [ ] Check whether `pynyet/ast/visitor.py` is dead code (0% coverage,
-      Phase 1.6) — delete or start using it
 - [x] Tuple codegen (2026-07-09) — construction, `(t i)` indexing
       matching main.no's own documented call-syntax, `#(T1 T2)`
       annotations on lets/params/returns. Gaps: destructuring
@@ -377,6 +370,22 @@ HEAD was independently verified clean.
       warnings either way. Verified `driver check` now actually
       surfaces the warning (it never did before) while `check: ok`
       still prints and the exit code stays 0.
+
+All the language-feature and correctness work planned for this phase
+is done. Two housekeeping items remain, deliberately left for a
+dedicated session rather than folded in here:
+
+- [ ] AST statement/expression split so `parser.parser` and
+      `codegen.emit` can drop their mypy exemption (Phase 1.6) — give
+      `do`-block statement forms (`LetDecl`/`ConstDecl` used as an
+      expression-position value) a real `Stmt` union instead of
+      returning the base `N.Node` and letting every downstream
+      constructor claim `Expr`. This is a real refactor across both
+      files, not a quick annotation fix — risks regressions if rushed
+      alongside feature work.
+- [ ] Check whether `pynyet/ast/visitor.py` is dead code (0% coverage,
+      Phase 1.6) — delete or start using it
+
 - North star progress: `check main.no` errors are down to **44** (was
       68 pre-merge, 61 as of Phase 1.5) — the tuple/HOF/Map/keyword
       work landed this session incidentally fixed a batch of these
