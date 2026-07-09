@@ -1,0 +1,30 @@
+;; dyn Trait objects: true dynamic dispatch through a vtable. Both
+;; Point2 and Circle route through the same `log_value` function, each
+;; correctly calling its own `display` impl -- not resolved statically.
+;; Expected:
+;;   (3, 4)
+;;   circle r=5
+
+(struct Point2 x:i32 y:i32)
+
+(trait Display
+  (fn display (self:&Self) -> string))
+
+(impl Display Point2
+  (fn display (self:&Point2) -> string
+    (fmt "({}, {})" (. self x) (. self y))))
+
+(struct Circle r:i32)
+
+(impl Display Circle
+  (fn display (self:&Circle) -> string
+    (fmt "circle r={}" (. self r))))
+
+(fn log_value (val:&dyn Display) -> unit
+  (out (display val)) (out "\n"))
+
+(fn main () -> unit
+  (let origin (Point2 x:3 y:4))
+  (let c (Circle r:5))
+  (log_value &origin)
+  (log_value &c))

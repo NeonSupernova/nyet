@@ -222,7 +222,25 @@ HEAD was independently verified clean.
       construction syntax for it at all (no SetLit AST node, no `{...}`
       equivalent) -- not a codegen gap, a language-design gap; skipped
       rather than invent syntax unilaterally.
-- [ ] `dyn` trait objects + vtables
+- [x] `dyn` trait objects + vtables (2026-07-09) — `&dyn Trait` params
+      work with true dynamic dispatch: `dyn Trait` lowers to a 2-word
+      fat pointer `{data, vtable}` (`_get_or_register_dyn_type`); each
+      `(concrete_type, trait)` pair gets a synthesized global vtable
+      constant (`_get_or_register_vtable`) built from `_method_impls`
+      in the trait's declared method order (now tracked via
+      `_traits`, populated from `TraitDecl` -- codegen never needed
+      this for static dispatch before). Verified genuine dynamic
+      dispatch, not accidental static resolution: two different struct
+      types (Point2, Circle) both implementing Display are passed
+      through the *same* function and each calls its own impl.
+      Coercion happens at the call site (`_emit_user_call`, guided by
+      `_fn_param_dyn_traits`) when an argument is passed to a
+      dyn-typed parameter. Scoped to that one pattern -- the only
+      concretely demonstrated one in main.no; local `let x:&dyn Trait`
+      bindings and primitive types implementing a trait (main.no's own
+      `(log_value &42)` example) aren't attempted. `Self`/`&Self` in a
+      trait method's signature is treated as `ptr`, matching how every
+      impl actually passes structs regardless of ownership.
 - [ ] Drop insertion (everything currently leaks)
 - [x] Decided the fate of the orphaned C runtime (2026-07-09): the
       original runtime/{alloc,string,io}.c used a length-prefixed fat

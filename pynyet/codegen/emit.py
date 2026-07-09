@@ -92,6 +92,23 @@ class Emitter:
         # `_env_array_elem`.
         self._env_map_val_ty: dict[str, str] = {}
 
+        # dyn Trait objects: `&dyn Trait` params are a 2-word fat
+        # pointer `{data, vtable}`. `_traits` holds each trait's method
+        # FnDecls in declaration order (the vtable slot layout);
+        # `_vtables` caches one global constant array of function
+        # pointers per (concrete_type, trait) pair; `_dyn_types` caches
+        # the synthesized fat-pointer struct type per trait;
+        # `_env_dyn_trait` tracks which local bindings/params are dyn
+        # (name -> trait name), mirroring `_env_struct_name`;
+        # `_fn_param_dyn_traits` records which of a function's
+        # parameters are dyn so call sites know to coerce their
+        # argument into a fat pointer.
+        self._traits: dict[str, list[N.FnDecl]] = {}
+        self._vtables: dict[tuple[str, str], str] = {}
+        self._dyn_types: dict[str, str] = {}
+        self._env_dyn_trait: dict[str, str] = {}
+        self._fn_param_dyn_traits: dict[str, list[str | None]] = {}
+
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
         # (fn_name, type_args_tuple) → mangled_name — already-monomorphized
@@ -295,6 +312,12 @@ class Emitter:
                             self._fn_templates[item.name] = item
                         else:
                             fns.append(item)
+            elif isinstance(node, N.TraitDecl):
+                # Method order here is the vtable slot layout for `dyn
+                # Trait` dispatch -- see _emit_dyn_call.
+                self._traits[node.name] = [
+                    item for item in node.items if isinstance(item, N.FnDecl)
+                ]
             else:
                 top_level.append(node)
 
@@ -842,6 +865,9 @@ class Emitter:
         if isinstance(tn, N.TupleType):
             # Heap-allocated, pass-by-pointer like structs.
             return "ptr"
+        if isinstance(tn, N.DynType):
+            # Fat pointer {data, vtable} -- see _get_or_register_dyn_type.
+            return "ptr"
         if isinstance(tn, N.UnitType):
             return "void"
         return "i32"
@@ -857,6 +883,18 @@ class Emitter:
             base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
             if base_name == "Array" and tn.args:
                 return self._llvm_type(tn.args[0])
+        return None
+
+    def _dyn_trait_name(self, tn: N.TypeNode | None) -> str | None:
+        """Return the trait name if `tn` is `dyn Trait` (or `&dyn Trait`)."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._dyn_trait_name(tn.inner)
+        if isinstance(tn, N.DynType):
+            trait = tn.trait
+            if isinstance(trait, (N.NamedType, N.PrimType)):
+                return trait.name
         return None
 
     def _map_val_llvm_type(self, tn: N.TypeNode | None) -> str | None:
@@ -937,6 +975,7 @@ class Emitter:
             "env_string_names": set(self._env_string_names),
             "env_tuple_types": dict(self._env_tuple_types),
             "env_map_val_ty": dict(self._env_map_val_ty),
+            "env_dyn_trait": dict(self._env_dyn_trait),
             "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
@@ -955,6 +994,7 @@ class Emitter:
         self._env_string_names = saved["env_string_names"]
         self._env_tuple_types = saved["env_tuple_types"]
         self._env_map_val_ty = saved["env_map_val_ty"]
+        self._env_dyn_trait = saved["env_dyn_trait"]
         self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
@@ -970,6 +1010,9 @@ class Emitter:
         ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
         if ret_nyet:
             self._fn_ret_nyet_names[node.name] = ret_nyet
+        dyn_traits = [self._dyn_trait_name(p.type) for p in node.params]
+        if any(t is not None for t in dyn_traits):
+            self._fn_param_dyn_traits[node.name] = dyn_traits
 
     def _emit_fn(self, node: N.FnDecl) -> None:
         saved = self._save_fn_state()
@@ -1042,6 +1085,16 @@ class Emitter:
                     self._env[n] = (ptr, "ptr")
                     tup_elem_tys = [self._llvm_type(et) for et in p.type.elements]
                     self._env_tuple_types[n] = self._get_or_register_tuple_type(tup_elem_tys)
+                elif self._dyn_trait_name(p.type) is not None:
+                    # `dyn Trait` params arrive as an already-constructed
+                    # fat pointer (the caller coerces -- see
+                    # _emit_user_call). Register the trait so calls like
+                    # `(method param)` inside this body dispatch via
+                    # vtable instead of static lookup.
+                    ptr = self._emit_alloca("ptr")
+                    self._emit_line(f"store ptr %{n}, ptr {ptr}")
+                    self._env[n] = (ptr, "ptr")
+                    self._env_dyn_trait[n] = self._dyn_trait_name(p.type)
                 else:
                     ptr = self._emit_alloca(t)
                     self._emit_line(f"store {t} %{n}, ptr {ptr}")
@@ -1196,6 +1249,15 @@ class Emitter:
                 return "ptr"
             if op in self._fn_sigs:
                 return self._fn_sigs[op][1]
+            # dyn trait object dispatch — same method-return-type lookup
+            # as the static path below, but via the trait declaration
+            # since there's no single concrete struct name to key on.
+            if node.args:
+                probe = self._unwrap_borrow(node.args[0])
+                if isinstance(probe, N.Ident) and probe.name in self._env_dyn_trait:
+                    trait_name = self._env_dyn_trait[probe.name]
+                    _, ret_ty = self._dyn_method_llvm_sig(trait_name, op)
+                    return ret_ty
             # Inherent method dispatch — look up the receiver's struct.
             if node.args:
                 probe = self._unwrap_borrow(node.args[0])
@@ -1483,6 +1545,18 @@ class Emitter:
                 mangled = self._monomorphize_fn_from_args(name, node.args)
                 if mangled:
                     return self._emit_user_call(mangled, node.args)
+            # dyn trait object dispatch: `(method dyn_val ...)` — the
+            # receiver's concrete type is unknown until runtime, so the
+            # method is looked up in its vtable instead of statically.
+            # Checked before the static path below since a dyn binding
+            # has no fixed struct name to look up in `_method_impls`.
+            if node.args:
+                probe = self._unwrap_borrow(node.args[0])
+                if isinstance(probe, N.Ident) and probe.name in self._env_dyn_trait:
+                    trait_name = self._env_dyn_trait[probe.name]
+                    method_names = [m.name for m in self._traits.get(trait_name, [])]
+                    if name in method_names:
+                        return self._emit_dyn_call(probe.name, trait_name, name, node.args)
             # Inherent method dispatch: `(method receiver ...)` —
             # look up the receiver's struct type and try its impl.
             if name not in self._fn_sigs and node.args:
@@ -3768,12 +3842,163 @@ class Emitter:
         return None
 
     # ------------------------------------------------------------------
+    # dyn Trait objects — a 2-word fat pointer {data, vtable}
+    # ------------------------------------------------------------------
+
+    def _get_or_register_dyn_type(self, trait_name: str) -> str:
+        """Return the synthesized fat-pointer struct type name for a
+        trait, registering it (as a plain 2-field struct so the existing
+        GEP machinery applies) on first use."""
+        if trait_name in self._dyn_types:
+            return self._dyn_types[trait_name]
+        name = f"dyn.{trait_name}"
+        self._structs[name] = [("data", "ptr"), ("vtable", "ptr")]
+        self._struct_type_lines.append(f"%{name} = type {{ ptr, ptr }}")
+        self._dyn_types[trait_name] = name
+        return name
+
+    def _get_or_register_vtable(self, concrete_type: str, trait_name: str) -> str | None:
+        """Return the global vtable constant for (concrete_type, trait),
+        synthesizing it on first use from `_method_impls`. Returns None
+        if `concrete_type` doesn't implement every method of the trait."""
+        key = (concrete_type, trait_name)
+        if key in self._vtables:
+            return self._vtables[key]
+        methods = self._traits.get(trait_name, [])
+        fn_ptrs: list[str] = []
+        for m in methods:
+            mangled = self._method_impls.get((concrete_type, m.name))
+            if mangled is None:
+                return None
+            fn_ptrs.append(f"ptr @{mangled}")
+        name = f"@vtable.{concrete_type}.{trait_name}"
+        n = len(fn_ptrs)
+        self._struct_type_lines.append(f"{name} = constant [{n} x ptr] [{', '.join(fn_ptrs)}]")
+        self._vtables[key] = name
+        return name
+
+    def _emit_dyn_coerce(self, arg_node: N.Expr, trait_name: str) -> str | None:
+        """Coerce a concrete value (typically `&some_struct`) into a
+        `dyn Trait` fat pointer for passing to a dyn-typed parameter."""
+        inner = self._unwrap_borrow(arg_node)
+        concrete_val = self._emit_expr(inner)
+        if concrete_val is None:
+            return None
+        concrete_ty = self._infer_nyet_type_name(inner)
+        if concrete_ty is None and isinstance(inner, N.Ident):
+            concrete_ty = self._env_struct_name.get(inner.name)
+        if concrete_ty is None:
+            return None
+        vtable_name = self._get_or_register_vtable(concrete_ty, trait_name)
+        if vtable_name is None:
+            return None
+
+        dyn_struct = self._get_or_register_dyn_type(trait_name)
+        fat_ptr = self._heap_alloc_struct(dyn_struct, 16)
+        data_field = self._fresh_tmp()
+        self._emit_line(
+            f"{data_field} = getelementptr inbounds %{dyn_struct}, ptr {fat_ptr}, i32 0, i32 0"
+        )
+        self._emit_line(f"store ptr {concrete_val}, ptr {data_field}")
+        vt_field = self._fresh_tmp()
+        self._emit_line(
+            f"{vt_field} = getelementptr inbounds %{dyn_struct}, ptr {fat_ptr}, i32 0, i32 1"
+        )
+        self._emit_line(f"store ptr {vtable_name}, ptr {vt_field}")
+        return fat_ptr
+
+    def _dyn_method_llvm_sig(self, trait_name: str, method_name: str) -> tuple[list[str], str]:
+        """LLVM signature for a trait method, treating Self (and &Self)
+        as ptr -- the calling convention every impl actually shares,
+        since structs always pass by pointer regardless of ownership."""
+        for m in self._traits.get(trait_name, []):
+            if m.name != method_name:
+                continue
+            arg_tys = []
+            for p in m.params:
+                inner = p.type.inner if isinstance(p.type, N.RefType) else p.type
+                arg_tys.append("ptr" if isinstance(inner, N.SelfType) else self._llvm_type(p.type))
+            ret = m.return_type
+            ret_ty = "ptr" if isinstance(ret, N.SelfType) else self._llvm_ret_type(ret)
+            return arg_tys, ret_ty
+        return [], "void"
+
+    def _emit_dyn_call(
+        self, dyn_name: str, trait_name: str, method_name: str, args: list[N.Expr]
+    ) -> str | None:
+        """Dispatch a trait method call through a `dyn Trait` binding's
+        vtable: load {data, vtable} from the fat pointer, index the
+        vtable by the method's declared position in the trait, and
+        issue an indirect call passing `data` as the first (self) arg."""
+        methods = self._traits.get(trait_name, [])
+        names = [m.name for m in methods]
+        if method_name not in names:
+            return None
+        method_idx = names.index(method_name)
+
+        dyn_struct = self._get_or_register_dyn_type(trait_name)
+        ptr_slot, _ = self._env[dyn_name]
+        fat_ptr = self._fresh_tmp()
+        self._emit_line(f"{fat_ptr} = load ptr, ptr {ptr_slot}")
+
+        data_field = self._fresh_tmp()
+        self._emit_line(
+            f"{data_field} = getelementptr inbounds %{dyn_struct}, ptr {fat_ptr}, i32 0, i32 0"
+        )
+        data_ptr = self._fresh_tmp()
+        self._emit_line(f"{data_ptr} = load ptr, ptr {data_field}")
+
+        vt_field = self._fresh_tmp()
+        self._emit_line(
+            f"{vt_field} = getelementptr inbounds %{dyn_struct}, ptr {fat_ptr}, i32 0, i32 1"
+        )
+        vt_ptr = self._fresh_tmp()
+        self._emit_line(f"{vt_ptr} = load ptr, ptr {vt_field}")
+
+        n = len(methods)
+        slot_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{slot_ptr} = getelementptr inbounds [{n} x ptr], "
+            f"ptr {vt_ptr}, i32 0, i32 {method_idx}"
+        )
+        fn_ptr = self._fresh_tmp()
+        self._emit_line(f"{fn_ptr} = load ptr, ptr {slot_ptr}")
+
+        arg_tys, ret_ty = self._dyn_method_llvm_sig(trait_name, method_name)
+        # First arg is `self` -- the data pointer, not `args[0]` (which is
+        # the dyn-typed receiver expression itself, e.g. `val` in
+        # `(display val)`; its concrete value lives in the fat pointer).
+        call_arg_tys = ["ptr"]
+        call_arg_vals = [data_ptr]
+        for i, a in enumerate(args[1:], start=1):
+            v = self._emit_expr(a)
+            if v is None:
+                continue
+            call_arg_tys.append(arg_tys[i] if i < len(arg_tys) else self._infer_llvm_type(a))
+            call_arg_vals.append(v)
+
+        args_str = ", ".join(f"{t} {v}" for t, v in zip(call_arg_tys, call_arg_vals, strict=False))
+        if ret_ty == "void":
+            self._emit_line(f"call void {fn_ptr}({args_str})")
+            return None
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call {ret_ty} {fn_ptr}({args_str})")
+        return tmp
+
+    # ------------------------------------------------------------------
     # User-defined function calls
     # ------------------------------------------------------------------
 
     def _emit_user_call(self, name: str, args: list[N.Expr]) -> str | None:
+        dyn_traits = self._fn_param_dyn_traits.get(name)
         arg_vals: list[tuple[str, str]] = []
-        for arg in args:
+        for i, arg in enumerate(args):
+            trait_name = dyn_traits[i] if dyn_traits and i < len(dyn_traits) else None
+            if trait_name is not None:
+                v = self._emit_dyn_coerce(arg, trait_name)
+                if v is not None:
+                    arg_vals.append(("ptr", v))
+                continue
             v = self._emit_expr(arg)
             if v is not None:
                 ty = self._infer_llvm_type(arg)
