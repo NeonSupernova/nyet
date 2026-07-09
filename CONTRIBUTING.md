@@ -20,6 +20,13 @@ fully pass `driver check` yet).
   (see the [justfile](justfile), or `just --list`).
 - **Node/bun** (for `bun install` or `npm install`) is only needed for
   the commit-message git hook — unrelated to the compiler itself.
+- **Dev tooling** (ruff, mypy, pytest, coverage — only needed for
+  `just fmt`/`lint`/`typecheck`/`unit-test`/`coverage`, not for running
+  the compiler itself):
+  ```bash
+  python3 -m venv .venv && source .venv/bin/activate
+  pip install -r requirements-dev.txt
+  ```
 
 ## Running tests
 
@@ -51,12 +58,29 @@ available command.
 To update goldens after an intentional compiler change, run with
 `--update`, inspect the diff, and commit.
 
+## Unit tests
+
+`tests/unit/` (pytest) complements the golden harnesses above: it
+covers individual functions in isolation (e.g. `Span.line_col()`,
+`TypeChecker._compatible()`) rather than full pipeline behavior. Add a
+unit test when you're testing pure logic that doesn't need a full
+`.no` file round-trip; add a golden-file fixture when you're testing
+observable compiler behavior end-to-end.
+
+```bash
+just unit-test          # or: python3 -m pytest tests/unit/
+```
+
 ## Coding conventions
 
 - **Python 3.10+ syntax.** Use `from __future__ import annotations` at the
   top of every module and prefer `list[int]` / `dict[str, T]` over the
   `typing` aliases.
-- **Stdlib only.** No third-party dependencies in the compiler itself.
+- **Stdlib only** in the compiler itself. `ruff`/`mypy`/`pytest` are
+  dev-only tooling (see above), never a runtime dependency.
+- **`just fmt` / `just lint` / `just typecheck`** before committing —
+  the pre-commit hook runs format+lint automatically if ruff is
+  installed (see Development setup), CI always does regardless.
 - **Every token, AST node, and IR node carries a `Span`.** Spans come
   from `pynyet.source` and are half-open byte ranges into a `SourceFile`.
 - **Every error message routes through `pynyet.diagnostic`.** Do not
@@ -68,6 +92,11 @@ To update goldens after an intentional compiler change, run with
   nodes that should stay immutable after construction.
 - Keep modules focused. The layout in `docs/architecture.md` is the
   current shape.
+- **mypy is not yet fully strict everywhere** — `pynyet.parser.parser`
+  and `pynyet.codegen.emit` are exempted in `pyproject.toml`
+  (`[[tool.mypy.overrides]]`) pending an AST redesign to distinguish
+  expression-like and statement-like nodes properly. See
+  CONTINUATION_PLAN.md. Don't add new files to that exemption list.
 
 ## Commit style
 

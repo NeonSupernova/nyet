@@ -21,8 +21,37 @@ jobs:
           sudo apt-get update && sudo apt-get install -y clang
           curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
-      - name: Run golden test suite
+      - name: Install Python dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Format check
+        run: just fmt-check
+
+      - name: Lint
+        run: just lint
+
+      - name: Type check
+        run: just typecheck
+
+      - name: Run golden test suite + unit tests
         run: just test-all
+
+      - name: Coverage (unit tests + golden harnesses combined)
+        run: just coverage
 
       - name: End-to-end smoke test
         run: just run examples/hello.no
+
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm install
+      - uses: wagoid/commitlint-github-action@v6

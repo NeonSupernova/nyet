@@ -1,0 +1,5 @@
+if python3 -c "import ruff" >/dev/null 2>&1; then
+  python3 -m ruff format --check pynyet/ && python3 -m ruff check pynyet/
+else
+  echo "pre-commit: ruff not installed (pip install -r requirements-dev.txt) — skipping format/lint check"
+fi

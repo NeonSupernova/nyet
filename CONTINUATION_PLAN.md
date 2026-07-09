@@ -92,6 +92,65 @@ The stash from before the merge (`git stash list`) is now superseded
 by this work and safe to ignore/drop — every file's net diff against
 HEAD was independently verified clean.
 
+## Phase 1.6 — Dev tooling — DONE (2026-07-08)
+
+- [x] Replaced Makefile with justfile (`just --list`); all docs/CI
+      updated from `make` to `just`
+- [x] Conventional Commits enforced via Husky `commit-msg` hook
+      (commitlint, `.commitlintrc.json`) — verified rejecting a
+      non-conforming message and accepting a conforming one. Also
+      enforced in CI (`wagoid/commitlint-github-action`) so a
+      contributor without the local hook installed can't slip through.
+- [x] Added `ruff` (format + lint), `mypy` (type check), `pytest`
+      (`tests/unit/`, complementing the golden harnesses), and
+      `coverage` (combined across unit tests + all four golden
+      harnesses — the golden harnesses exercise far more of the
+      compiler than the unit tests alone, so `just coverage`
+      accumulates both rather than reporting pytest-only numbers,
+      which would be misleadingly low). Config lives in
+      `pyproject.toml`; dev deps in `requirements-dev.txt`.
+- [x] Fast pre-commit hook (`.husky/pre-commit`) runs `ruff format
+      --check` + `ruff check`, skipping gracefully with a warning if
+      ruff isn't installed rather than blocking every commit.
+- [x] Formatted the whole `pynyet/` tree with `ruff format` (one
+      isolated commit, zero behavior change, verified via full test
+      suite before/after) and fixed every `ruff check` finding by hand
+      (not blind auto-fix) — mostly unused imports, a few genuine
+      `Optional`-typed parameters annotated as required (the functions
+      already null-checked at runtime; only the annotation was wrong),
+      and a couple of mutually-exclusive-branch variable-name reuses
+      that confused mypy's flow analysis. `E702` (semicolon-joined
+      statements) is allow-listed — it's a deliberate compact-dispatch
+      style in the lexer/parser, not worth a rewrite.
+- [x] `mypy` is fully clean on `pynyet.source`, `pynyet.diagnostic`,
+      `pynyet.ast.*`, `pynyet.lexer.*`, `pynyet.sema.*` (including
+      `borrow.py`, `resolve.py`, `typeck.py` — all newly clean this
+      session). `pynyet.parser.parser` and `pynyet.codegen.emit` are
+      exempted (`[[tool.mypy.overrides]]` in pyproject.toml): both hit
+      the same root cause — `parse_expr()` is typed to return the base
+      `N.Node` because it can legitimately yield a `LetDecl`/`ConstDecl`
+      (statement-like forms inside a `do` block) alongside a real
+      `Expr`, but nearly every downstream AST field/constructor
+      declares `Expr`, so ~95 call sites trip a type error. Fixing this
+      properly means giving the AST a real statement/expression
+      distinction (e.g. a `Stmt` union), not a quick annotation tweak —
+      tracked as a Phase 3 candidate below.
+- [x] Combined coverage (unit + golden harnesses): 60% of `pynyet/`.
+      Notably low spots: `pynyet/codegen/emit.py` at 45% (the largest,
+      riskiest file, and where the known miscompiles below live —
+      corroborates that these are real, unexercised paths, not edge
+      cases), `pynyet/driver.py` at 0% (the golden harnesses call
+      compiler passes directly in-process, bypassing the CLI entry
+      point entirely — driver.py itself has no test coverage at all),
+      `pynyet/ast/visitor.py` at 0% (looks unused — worth checking if
+      it's dead code).
+- [x] Evaluated and explicitly skipped (not a fit / not worth it right
+      now, per discussion): structured logging, health endpoints,
+      `.env.example`, OpenAPI generation (no service/API surface in a
+      CLI compiler), Dockerfile, dev container, Renovate/Dependabot,
+      automatic semver releases (conflicts with the existing
+      milestone-based v0.x/v1.x tagging).
+
 ## Phase 2 — Fix surviving miscompiles, revive the LSP
 
 - [x] Pin `lsp/requirements.txt` to `pygls>=1.3,<2` — verified pygls
@@ -114,6 +173,14 @@ HEAD was independently verified clean.
 
 ## Phase 3 — Resume the roadmap
 
+- [ ] AST statement/expression split so `parser.parser` and
+      `codegen.emit` can drop their mypy exemption (Phase 1.6) — give
+      `do`-block statement forms (`LetDecl`/`ConstDecl` used as an
+      expression-position value) a real `Stmt` union instead of
+      returning the base `N.Node` and letting every downstream
+      constructor claim `Expr`
+- [ ] Check whether `pynyet/ast/visitor.py` is dead code (0% coverage,
+      Phase 1.6) — delete or start using it
 - [ ] Tuple codegen (parses today, zero codegen)
 - [ ] Map/Set runtime + codegen
 - [ ] stdlib HOFs: map/filter/fold/any/all/zip/...

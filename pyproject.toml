@@ -1,0 +1,48 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "E702", # multiple statements on one line (semicolon) — used deliberately
+    # for compact dispatch tables in the lexer/parser; not worth a rewrite.
+]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["pynyet"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# pynyet.parser.parser: parse_expr()/_parse_expr_inner() are typed to
+# return the base N.Node because they can legitimately yield a LetDecl
+# or ConstDecl (statement-like forms inside a `do` block), not just an
+# Expr -- but most downstream AST constructors declare their fields as
+# Expr, so almost every call site trips a type error. Fixing this
+# properly means redesigning field types across the AST (e.g. a
+# dedicated Stmt union), not a quick annotation tweak. Tracked in
+# CONTINUATION_PLAN.md.
+[[tool.mypy.overrides]]
+module = "pynyet.parser.parser"
+ignore_errors = true
+
+# pynyet.codegen.emit: shares the same Node-vs-Expr root cause as the
+# parser above, plus a few `LetDecl`-typed loop variables reused across
+# unrelated branches with other node types. Same follow-up as above.
+[[tool.mypy.overrides]]
+module = "pynyet.codegen.emit"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["pynyet"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

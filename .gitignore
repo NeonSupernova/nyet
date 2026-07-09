@@ -10,3 +10,7 @@ __pycache__
 output*
 .idea/
 node_modules/
+.coverage
+.mypy_cache/
+.ruff_cache/
+htmlcov/
