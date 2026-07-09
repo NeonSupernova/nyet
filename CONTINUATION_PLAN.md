@@ -151,7 +151,7 @@ HEAD was independently verified clean.
       automatic semver releases (conflicts with the existing
       milestone-based v0.x/v1.x tagging).
 
-## Phase 2 — Fix surviving miscompiles, revive the LSP
+## Phase 2 — Fix surviving miscompiles, revive the LSP — DONE (2026-07-08)
 
 - [x] Pin `lsp/requirements.txt` to `pygls>=1.3,<2` — verified pygls
       1.3.1 installs and the server starts cleanly on stdio
@@ -161,15 +161,31 @@ HEAD was independently verified clean.
       real spans instead of the regex-based `parse_error_position`
       heuristic; verified against both a malformed and a clean document
 - [x] Unsigned/char literal defaulting fixed as part of Phase 1.5 above
-- [ ] Re-probed post-merge (2026-07-08) — all four confirmed still
-      present, none fixed by the merge: real `Keyword` type (`:read`
-      prints `1`, typechecked as string), field assignment codegen
-      (`(= (. p x) 9)` silently no-ops — verified by reading the field
-      back unchanged), string concat codegen (`(+ "a" "b")` still emits
-      invalid LLVM IR: "global variable reference must have pointer
-      type"), `let` immutability enforcement (`(= x 2)` on a `let`
-      passes `check: ok`). Array bounds checks not re-probed. These are
-      real fixes, not yet attempted this session.
+- [x] `let` immutability enforcement — assigning to a `let` (not `var`)
+      binding is now a check-time error. Caught and fixed a real bug in
+      the first version of this fix: `TypeChecker.mutable` wasn't
+      scoped per-function like `env` already is, so a stale entry from
+      an unrelated `let` elsewhere in the file could leak into a
+      same-named function parameter. Verified by diffing
+      `check main.no`'s exact error list before/after, not just the
+      count — `mutate`'s `x:&!i32` param was a real false positive
+      until the scoping fix landed.
+- [x] Field assignment codegen — `(= (. p x) 9)` previously no-op'd
+      silently; now correctly updates the field
+      (`_emit_field_ptr`/`_emit_assign`)
+- [x] String concat codegen — `(+ "a" "b")` previously emitted invalid
+      LLVM IR; now does malloc+strcpy+strcat (`_emit_string_concat`),
+      with `_infer_llvm_type` also fixed so `(out (+ a b))` and
+      `(let x (+ a b))` pick the right printf/store type
+- [x] Real `Keyword` type distinct from `string` — `:read` no longer
+      typechecks as a string or falls through codegen's silent-None
+      default. Keywords intern to a small integer ID (allocation-free,
+      compared by identity per main.no's own description); verified
+      `==` correctly distinguishes different keyword names
+- [ ] Array bounds checks — not attempted this session; length is
+      already stored at offset 0 of the array's heap block, needs a
+      compare + branch to the existing panic path
+      (`pynyet/codegen/emit.py`, array indexing)
 
 ## Phase 3 — Resume the roadmap
 
