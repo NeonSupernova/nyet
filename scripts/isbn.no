@@ -1,31 +1,142 @@
 ;;;; isbn.no
 
-;;; Euler's pentagonal recurrence in Nyet.
-;;; Uses an Array[i32] memo table with indexed reads and writes.
+#|
+   ISBN Validator
+   This script validates a 10-digit ISBN number using the ISBN-10 checksum formula.
+   The checksum is calculated as follows:
+   1. Each digit is multiplied by its position weight (from 10 to 1).
+   2. The sum of these products is calculated.
+   3. If the sum modulo 11 is 0, the ISBN is valid; otherwise, it is invalid.
+   The final "digit" may be 'X', meaning ten.
 
-(macro log (level label value)  
-    (out (fmt "[{}] {} = {}\n" level label value)))
+   Rewritten as a tour of Nyet — one small program, most of the language:
+     - a generic  Option[T]            (monomorphized)
+     - a sum type Verdict + `match`     (pattern matching / destructuring)
+     - a struct   Isbn with a display   (trait method, auto-used by `out`)
+     - string byte-indexing `(s i)`     (char/int casts over the bytes)
+     - a validation DSL                 (variadic + nested macros, `quote`,
+                                         hygiene, the prelude's do_all/assert)
+   Gerrit Wielenga 07/09/2026
+|#
 
-(fn is_isbn_valid (isbn:string) -> bool
-    (do
-        (var sum:i32 0)
-        (var i:i32 0)
-        (loop
-            (if (>= i 10)
-                (break (== (% sum 11) 0))
-                pass)
-            (let digit:i32 (char_to_digit ( isbn i)))
-            (= sum (+ sum (* digit (- 10 i))))
-            (= i (+ i 1)))
-    )
+;;; --- A generic option, for fallible digit parsing -----------------
+(type Option[T]
+  (Some T)
+  (None))
 
+;;; --- A verdict: the outcome of validating a code ------------------
+(type Verdict
+  (Valid i32)          ; carries the weighted checksum
+  (Invalid string))    ; carries a human-readable reason
 
+;;; --- An ISBN owns its raw text and knows how to print itself ------
+(struct Isbn text:string)
 
+(impl Isbn
+  ;; `(out some_isbn)` dispatches here automatically — the display
+  ;; method is how a struct renders itself.
+  (fn display (self:&Isbn) -> string
+    (. self text)))
 
+;;; --- DSL layer ----------------------------------------------------
 
+;; The weight of a digit at position `pos` counts down 10, 9, ... 1.
+(macro weighted (digit pos)
+  (* digit (- 10 pos)))
+
+;; Accumulate one weighted digit into `sum`. The macro introduces its
+;; own `w` binding; hygiene auto-renames it, so it can never capture a
+;; `w` that happens to exist at the call site.
+(macro add_weight! (sum digit pos)
+  (do
+    (let w:i32 (weighted digit pos))
+    (= sum (+ sum w))))
+
+;; (expect CODE VALID?) — validate CODE, echo its source with `quote`,
+;; and assert the outcome matches expectation. The heart of the DSL.
+(macro expect (code should_be)
+  (do
+    (out "  ") (out (quote code)) (out "  ")
+    (assert (== (render (validate &(Isbn text:code))) should_be))))
+
+;; (suite LABEL cases ...) — a titled, variadic block of expectations.
+(macro suite (label cases ...)
+  (do
+    (out label) (out "\n")
+    (do_all cases ...)))
+
+;;; --- Core logic ---------------------------------------------------
+
+;; Map one ISBN character (as its byte value) to a digit, or nothing.
+;; '0'..'9' -> 0..9 ;  'X'/'x' -> 10 (only legal as the check digit).
+(fn digit_of (ch:i32) -> Option[i32]
+  (if (&& (>= ch 48) (<= ch 57))
+      (Some (- ch 48))
+      (if (|| (== ch 88) (== ch 120))
+          (Some 10)
+          (None))))
+
+;; Validate a 10-character ISBN. Reads each byte out of the string,
+;; folds it into the weighted sum, and reports the first problem found.
+(fn validate (code:&Isbn) -> Verdict
+  (do
+    (let text:string (. code text))
+    (var sum:i32 0)
+    (var i:i32 0)
+    (var failed:bool false)
+    (var reason:string "")
+    (loop
+      (if (|| failed (>= i 10))
+          (break pass)
+          pass)
+      (let ch:i32 (as (text i) i32))
+      (match (digit_of ch)
+        ((Some d)
+          ;; 'X' (10) may only appear in the final position.
+          (if (&& (== d 10) (< i 9))
+              (do (= failed true) (= reason "'X' out of place"))
+              (add_weight! sum d i)))
+        ((None)
+          (do (= failed true) (= reason "not a digit (or too short)"))))
+      (= i (+ i 1)))
+    (if failed
+        (Invalid reason)
+        (if (== (% sum 11) 0)
+            (Valid sum)
+            (Invalid "checksum not divisible by 11")))))
+
+;; Print a verdict and report whether it was valid. A single `match`
+;; both destructures the verdict and drives the output, so the value is
+;; never used after being matched.
+(fn render (v:Verdict) -> bool
+  (match v
+    ((Valid sum)
+      (do
+        (out "valid  (weighted sum ") (out sum) (out ", 0 mod 11)\n")
+        true))
+    ((Invalid why)
+      (do
+        (out "invalid  (") (out why) (out ")\n")
+        false))))
+
+;;; --- Entry point --------------------------------------------------
 
 (fn main () -> unit
-    (do
-        (out "Pentagonal partition example\n")
-        (log "INFO" "p(100)" (p_pentagonal 100))
-        (log "INFO" "p(1000)" (p_pentagonal 1000))))
+  (do
+    ;; A self-test suite written in the validation DSL. `quote` echoes
+    ;; each case's source; `assert` (from the prelude) enforces it.
+    (suite "self-tests:"
+      (expect "0306406152" true)     ; classic valid ISBN-10
+      (expect "080442957X" true)     ; valid, 'X' check digit
+      (expect "0306406153" false)    ; last digit wrong
+      (expect "030640615X" false)    ; misplaced / wrong 'X'
+      (expect "12345" false)         ; too short
+      (expect "12345abcde" false))   ; non-digit bytes
+    (out "all self-tests passed\n\n")
+
+    ;; Then validate one code read from stdin.
+    (out "Enter a 10-char ISBN-10 (digits, trailing 'X' ok): ")
+    (let line:string (in string))
+    (let code (Isbn text:line))
+    (out "  ") (out &code) (out "  ")
+    (let _ok:bool (render (validate &code)))))
