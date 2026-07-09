@@ -285,13 +285,27 @@ HEAD was independently verified clean.
 - [ ] Consider introducing the typed IR layer (PLAN.md §6) before
       attempting v1.1 async/spawn/await
 - [ ] v1.1 async/spawn/await
-- [ ] Pattern exhaustiveness as a proper sema diagnostic pass (currently
-      an ad hoc warning printed from inside codegen's match lowering,
-      not through the diagnostic pipeline — `driver check` never sees it)
+- [x] Pattern exhaustiveness as a proper sema diagnostic pass (2026-07-09)
+      — moved the exact same variant-coverage logic from codegen's ad
+      hoc stderr print (deleted `_exhaustiveness_warn` in emit.py) into
+      `TypeChecker._check_match_exhaustive`, which now appends a real
+      `Diagnostic(Severity.WARNING, ...)`. Required fixing `driver.py`
+      first: `_cmd_check`/`_cmd_build` previously gated on *any*
+      diagnostic (`if errors:`), which would have turned every
+      non-exhaustive match into a hard failure instead of an advisory
+      warning; now gates on `Severity.ERROR` specifically, printing
+      warnings either way. Verified `driver check` now actually
+      surfaces the warning (it never did before) while `check: ok`
+      still prints and the exit code stays 0.
 - [ ] `_emit_expr` should raise on unhandled AST nodes instead of
       silently returning `None` (`pynyet/codegen/emit.py`) — deferred
       from Phase 1, do this alongside closing the feature gaps above so
       it doesn't just turn "missing feature" into "crash" for no gain
-- [ ] North star: `check main.no` reaches zero errors (was 68 pre-merge,
-      61 as of Phase 1.5 — mostly undefined stdlib names and
-      free-floating snippet variables in the spec's example section)
+- North star progress: `check main.no` errors are down to **44** (was
+      68 pre-merge, 61 as of Phase 1.5) — the tuple/HOF/Map/keyword
+      work landed this session incidentally fixed a batch of these
+      (e.g. `map`/`filter`/`fold` were "undefined name" errors in
+      main.no's own HOF examples until they became real builtins).
+      Not yet zero; remaining errors are still mostly undefined stdlib
+      names and free-floating snippet variables in the spec's example
+      sections.

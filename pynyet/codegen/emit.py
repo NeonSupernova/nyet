@@ -2526,8 +2526,6 @@ class Emitter:
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
         result_ptr = self._emit_alloca(result_ty)
 
-        self._exhaustiveness_warn(node, sum_name)
-
         for arm in node.arms:
             next_label = self._fresh_label("match_next")
             pat = arm.pattern
@@ -2714,37 +2712,6 @@ class Emitter:
         self._emit_line(f"br label %{fail_label}")
         dead = self._fresh_label("after_dead")
         self._emit_label(dead)
-
-    def _exhaustiveness_warn(self, node: N.Match, sum_name: str) -> None:
-        """Print a warning if the match doesn't cover every variant of
-        `sum_name` and has no catch-all (Wild/Var/guardless) arm."""
-        if sum_name not in self._sum_types:
-            return
-        variants = self._sum_types[sum_name]
-        all_names = {v[0] for v in variants}
-        covered: set[str] = set()
-        has_catchall = False
-        for arm in node.arms:
-            pat = arm.pattern
-            if isinstance(pat, N.GuardedPat):
-                # A guarded arm is conditional — doesn't guarantee coverage.
-                continue
-            if isinstance(pat, (N.WildPat, N.VarPat)):
-                has_catchall = True
-                break
-            if isinstance(pat, N.VariantPat) and pat.name in all_names:
-                covered.add(pat.name)
-        if has_catchall:
-            return
-        missing = sorted(all_names - covered)
-        if missing:
-            import sys
-
-            print(
-                f"warning: non-exhaustive match on {sum_name}; "
-                f"missing variants: {', '.join(missing)}",
-                file=sys.stderr,
-            )
 
     def _emit_match_simple(self, scrut: str, node: N.Match) -> str | None:
         """Simple value-based match (integers, etc.)."""

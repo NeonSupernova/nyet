@@ -305,10 +305,12 @@ class TypeChecker:
             return ty
 
         if isinstance(node, N.Match):
-            self._infer(node.scrutinee)
+            scrut_ty = self._infer(node.scrutinee)
             ty = UNIT
             for arm in node.arms:
                 ty = self._infer(arm.body)
+            if isinstance(scrut_ty, SumType):
+                self._check_match_exhaustive(node, scrut_ty)
             return ty
 
         if isinstance(node, N.Loop):
@@ -419,6 +421,43 @@ class TypeChecker:
             return ERROR  # paths need module resolution
 
         return ERROR
+
+    def _check_match_exhaustive(self, node: N.Match, sum_ty: SumType) -> None:
+        """Warn (not error — this is advisory, matching Rust's own
+        `#[warn(non_exhaustive)]` treatment) when a match on a sum type
+        covers neither every variant nor has a catch-all arm.
+
+        Previously computed ad hoc inside codegen's match lowering
+        (pynyet/codegen/emit.py's now-removed _exhaustiveness_warn) as a
+        bare stderr print, invisible to `driver check` and to any
+        program whose match target never reached codegen. Same
+        variant-coverage logic, now a real Diagnostic that flows through
+        the normal pipeline.
+        """
+        all_names = {v[0] for v in sum_ty.variants}
+        covered: set[str] = set()
+        has_catchall = False
+        for arm in node.arms:
+            pat = arm.pattern
+            if isinstance(pat, N.GuardedPat):
+                continue  # conditional — doesn't guarantee coverage
+            if isinstance(pat, (N.WildPat, N.VarPat)):
+                has_catchall = True
+                break
+            if isinstance(pat, N.VariantPat) and pat.name in all_names:
+                covered.add(pat.name)
+        if has_catchall:
+            return
+        missing = sorted(all_names - covered)
+        if missing:
+            self.errors.append(
+                Diagnostic(
+                    Severity.WARNING,
+                    f"non-exhaustive match on {sum_ty.name}; "
+                    f"missing variants: {', '.join(missing)}",
+                    node.span,
+                )
+            )
 
     def _compatible(
         self, expected: NyetType, actual: NyetType, is_bare_int_lit: bool = False

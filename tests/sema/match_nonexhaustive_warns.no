@@ -1,0 +1,12 @@
+;; Non-exhaustive match should warn (not error) — check still passes.
+
+(type Sign
+  (Pos i32)
+  (Neg i32))
+
+(fn describe (s:Sign) -> unit
+  (match s
+    ((Pos n) (out n))))
+
+(fn main () -> unit
+  (describe (Pos 5)))

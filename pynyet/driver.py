@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pynyet.ast.nodes as N
-from pynyet.diagnostic import NyetError
+from pynyet.diagnostic import NyetError, Severity
 from pynyet.lexer.scanner import lex
 from pynyet.source import SourceFile
 
@@ -134,10 +134,10 @@ def _cmd_check(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    errors = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
-    if errors:
-        for d in errors:
-            print(d.format(), file=sys.stderr)
+    diags = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
+    for d in diags:
+        print(d.format(), file=sys.stderr)
+    if any(d.severity is Severity.ERROR for d in diags):
         return 1
     print("check: ok")
     return 0
@@ -159,10 +159,10 @@ def _cmd_build(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    errors = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
-    if errors:
-        for d in errors:
-            print(d.format(), file=sys.stderr)
+    diags = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
+    for d in diags:
+        print(d.format(), file=sys.stderr)
+    if any(d.severity is Severity.ERROR for d in diags):
         return 1
 
     # Emit LLVM IR
