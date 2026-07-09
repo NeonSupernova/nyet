@@ -5,12 +5,11 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
 
+import pynyet.ast.nodes as N
 from pynyet.diagnostic import NyetError
 from pynyet.lexer.scanner import lex
 from pynyet.source import SourceFile
-import pynyet.ast.nodes as N
 
 
 def _dump_tokens(sf: SourceFile, keep_trivia: bool) -> str:
@@ -107,8 +106,8 @@ def _cmd_lex(args: argparse.Namespace) -> int:
 
 
 def _cmd_parse(args: argparse.Namespace) -> int:
-    from pynyet.parser.parser import parse
     from pynyet.ast.pretty import pretty
+    from pynyet.parser.parser import parse
 
     sf = _load_source(args.file)
     try:
@@ -123,10 +122,10 @@ def _cmd_parse(args: argparse.Namespace) -> int:
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
+    from pynyet.sema.borrow import check_borrows
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
-    from pynyet.sema.borrow import check_borrows
 
     try:
         program = _load_program_with_deps(args.file)
@@ -135,12 +134,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    errors = (
-        expand_errors
-        + resolve_names(program)
-        + check_types(program)
-        + check_borrows(program)
-    )
+    errors = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
     if errors:
         for d in errors:
             print(d.format(), file=sys.stderr)
@@ -151,11 +145,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 def _cmd_build(args: argparse.Namespace) -> int:
     import subprocess
+
+    from pynyet.codegen.emit import emit_ir
+    from pynyet.sema.borrow import check_borrows
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
-    from pynyet.sema.borrow import check_borrows
-    from pynyet.codegen.emit import emit_ir
 
     try:
         program = _load_program_with_deps(args.file)
@@ -164,12 +159,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    errors = (
-        expand_errors
-        + resolve_names(program)
-        + check_types(program)
-        + check_borrows(program)
-    )
+    errors = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
     if errors:
         for d in errors:
             print(d.format(), file=sys.stderr)
@@ -189,7 +179,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
     try:
         result = subprocess.run(
             ["clang", "-o", str(out_path), str(ll_path)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             print(f"clang error:\n{result.stderr}", file=sys.stderr)
@@ -218,7 +209,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return result.returncode
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pynyet", description="Nyet compiler driver")
     sub = parser.add_subparsers(dest="command", required=True)
 

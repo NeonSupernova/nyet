@@ -39,7 +39,7 @@ class Span:
     start: int
     end: int
 
-    def merge(self, other: "Span") -> "Span":
+    def merge(self, other: Span) -> Span:
         assert self.file is other.file, "cannot merge spans from different files"
         return Span(self.file, min(self.start, other.start), max(self.end, other.end))
 

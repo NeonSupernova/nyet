@@ -42,12 +42,7 @@ def dump_sema_output(path: Path) -> str:
         return "".join(d.format() + "\n" for d in e.diagnostics)
 
     program, expand_errors = expand_macros(program)
-    errors = (
-        expand_errors
-        + resolve_names(program)
-        + check_types(program)
-        + check_borrows(program)
-    )
+    errors = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
     if not errors:
         return "ok\n"
     return "".join(d.format() + "\n" for d in errors)

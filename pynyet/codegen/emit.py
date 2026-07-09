@@ -128,9 +128,7 @@ class Emitter:
             inner_body = self._lift_in(node.body, lifted) if node.body else None
             name = f"__closure_{self._closure_counter}"
             self._closure_counter += 1
-            decl = N.FnDecl(
-                node.span, name, list(node.params), node.return_type, inner_body
-            )
+            decl = N.FnDecl(node.span, name, list(node.params), node.return_type, inner_body)
             lifted.append(decl)
             return N.Ident(node.span, name)
 
@@ -298,12 +296,9 @@ class Emitter:
             out.append("")
 
         # String constants
-        for key, (name, byte_len, raw_bytes) in self._strings.items():
+        for _key, (name, byte_len, raw_bytes) in self._strings.items():
             escaped = self._escape_bytes(raw_bytes)
-            out.append(
-                f'{name} = private unnamed_addr constant '
-                f'[{byte_len} x i8] c"{escaped}"'
-            )
+            out.append(f'{name} = private unnamed_addr constant [{byte_len} x i8] c"{escaped}"')
         if self._strings:
             out.append("")
 
@@ -328,9 +323,7 @@ class Emitter:
             fields.append((p.name, ty))
         self._structs[node.name] = fields
         llvm_fields = ", ".join(ty for _, ty in fields)
-        self._struct_type_lines.append(
-            f"%{node.name} = type {{ {llvm_fields} }}"
-        )
+        self._struct_type_lines.append(f"%{node.name} = type {{ {llvm_fields} }}")
 
     def _register_sum_type(self, node: N.TypeDecl) -> None:
         """Register a sum type.  LLVM layout: { i32 tag, payload... }.
@@ -375,13 +368,9 @@ class Emitter:
 
         if max_payload == 0:
             # Pure enum (all unit variants)
-            self._struct_type_lines.append(
-                f"%{node.name} = type {{ i32 }}"
-            )
+            self._struct_type_lines.append(f"%{node.name} = type {{ i32 }}")
         else:
-            self._struct_type_lines.append(
-                f"%{node.name} = type {{ i32, [{max_payload} x i8] }}"
-            )
+            self._struct_type_lines.append(f"%{node.name} = type {{ i32, [{max_payload} x i8] }}")
 
     # ==================================================================
     # v0.3: Monomorphization
@@ -456,8 +445,13 @@ class Emitter:
     @staticmethod
     def _nyet_from_llvm(ty: str) -> str:
         mapping = {
-            "i32": "i32", "i64": "i64", "double": "f64", "float": "f32",
-            "i1": "bool", "i8": "i8", "i16": "i16",
+            "i32": "i32",
+            "i64": "i64",
+            "double": "f64",
+            "float": "f32",
+            "i1": "bool",
+            "i8": "i8",
+            "i16": "i16",
         }
         if ty in mapping:
             return mapping[ty]
@@ -465,9 +459,7 @@ class Emitter:
             return "string"  # default ptr → string for mangling
         return "i32"
 
-    def _subst_type(
-        self, tn: N.TypeNode | None, env: dict[str, N.TypeNode]
-    ) -> N.TypeNode | None:
+    def _subst_type(self, tn: N.TypeNode | None, env: dict[str, N.TypeNode]) -> N.TypeNode | None:
         """Substitute generic params in a TypeNode using env mapping."""
         if tn is None:
             return None
@@ -558,9 +550,7 @@ class Emitter:
             return n
         return node
 
-    def _monomorphize_fn(
-        self, name: str, type_args: tuple[str, ...]
-    ) -> str | None:
+    def _monomorphize_fn(self, name: str, type_args: tuple[str, ...]) -> str | None:
         """Emit a specialized copy of a generic fn and return the mangled name."""
         key = (name, type_args)
         if key in self._mono_fns:
@@ -576,11 +566,12 @@ class Emitter:
 
         # Build substitution env: generic param name → concrete TypeNode
         env: dict[str, N.TypeNode] = {}
-        for gp, targ in zip(tmpl.generics, type_args):
+        for gp, targ in zip(tmpl.generics, type_args, strict=False):
             env[gp.name] = N.NamedType(tmpl.span, targ)
 
         # Clone the fn decl
         import copy as _copy
+
         clone = _copy.copy(tmpl)
         clone.name = mangled
         clone.generics = []
@@ -597,9 +588,7 @@ class Emitter:
         self._emit_fn(clone)
         return mangled
 
-    def _monomorphize_sum_type(
-        self, name: str, type_args: tuple[str, ...]
-    ) -> str | None:
+    def _monomorphize_sum_type(self, name: str, type_args: tuple[str, ...]) -> str | None:
         """Emit a specialized sum type and register it. Returns mangled name."""
         key = (name, type_args)
         if key in self._mono_types:
@@ -614,10 +603,11 @@ class Emitter:
         self._mono_types[key] = mangled
 
         env: dict[str, N.TypeNode] = {}
-        for gp, targ in zip(tmpl.generics, type_args):
+        for gp, targ in zip(tmpl.generics, type_args, strict=False):
             env[gp.name] = N.NamedType(tmpl.span, targ)
 
         import copy as _copy
+
         clone = _copy.copy(tmpl)
         clone.name = mangled
         clone.generics = []
@@ -629,9 +619,7 @@ class Emitter:
         self._register_sum_type(clone)
         return mangled
 
-    def _monomorphize_struct(
-        self, name: str, type_args: tuple[str, ...]
-    ) -> str | None:
+    def _monomorphize_struct(self, name: str, type_args: tuple[str, ...]) -> str | None:
         key = (name, type_args)
         if key in self._mono_types:
             return self._mono_types[key]
@@ -645,10 +633,11 @@ class Emitter:
         self._mono_types[key] = mangled
 
         env: dict[str, N.TypeNode] = {}
-        for gp, targ in zip(tmpl.generics, type_args):
+        for gp, targ in zip(tmpl.generics, type_args, strict=False):
             env[gp.name] = N.NamedType(tmpl.span, targ)
 
         import copy as _copy
+
         clone = _copy.copy(tmpl)
         clone.name = mangled
         clone.generics = []
@@ -745,7 +734,7 @@ class Emitter:
     def _escape_bytes(data: bytes) -> str:
         result = []
         for b in data:
-            if 32 <= b < 127 and b not in (ord('"'), ord('\\')):
+            if 32 <= b < 127 and b not in (ord('"'), ord("\\")):
                 result.append(chr(b))
             else:
                 result.append(f"\\{b:02X}")
@@ -794,9 +783,7 @@ class Emitter:
                 # their mangled names as a payload field type.
                 for a in tn.args:
                     self._llvm_type(a)
-                type_args = tuple(
-                    self._nyet_type_name_of_node(a) or "unk" for a in tn.args
-                )
+                type_args = tuple(self._nyet_type_name_of_node(a) or "unk" for a in tn.args)
                 if base_name in self._sum_templates:
                     self._monomorphize_sum_type(base_name, type_args)
                     return "ptr"
@@ -850,9 +837,7 @@ class Emitter:
             base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
             if base_name is None:
                 return None
-            type_args = tuple(
-                self._nyet_type_name_of_node(a) or "unk" for a in tn.args
-            )
+            type_args = tuple(self._nyet_type_name_of_node(a) or "unk" for a in tn.args)
             if base_name in self._sum_templates:
                 return self._monomorphize_sum_type(base_name, type_args)
             if base_name in self._struct_templates:
@@ -866,9 +851,13 @@ class Emitter:
     @staticmethod
     def _llvm_type_from_name(name: str) -> str:
         mapping = {
-            "i32": "i32", "int": "i32", "i64": "i64",
-            "f64": "double", "f32": "float",
-            "bool": "i1", "string": "ptr",
+            "i32": "i32",
+            "int": "i32",
+            "i64": "i64",
+            "f64": "double",
+            "f32": "float",
+            "bool": "i1",
+            "string": "ptr",
         }
         return mapping.get(name, "i32")
 
@@ -953,15 +942,13 @@ class Emitter:
                 self._fn_ret_nyet_names[node.name] = ret_nyet
 
             params_str = ", ".join(
-                f"{t} %{n}" for t, n in zip(param_types, param_names)
+                f"{t} %{n}" for t, n in zip(param_types, param_names, strict=False)
             )
-            body_lines.append(
-                f"define {ret_type} @{node.name}({params_str}) {{"
-            )
+            body_lines.append(f"define {ret_type} @{node.name}({params_str}) {{")
             self._emit_label("entry")
 
             for p, t, n, nyet_n in zip(
-                node.params, param_types, param_names, param_nyet_names
+                node.params, param_types, param_names, param_nyet_names, strict=False
             ):
                 arr_elem = self._array_elem_llvm_type(p.type)
                 if arr_elem is not None:
@@ -978,9 +965,7 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     fn_param_tys = [self._llvm_type(pt) for pt in p.type.params]
-                    fn_ret_ty = (
-                        self._llvm_ret_type(p.type.ret) if p.type.ret else "void"
-                    )
+                    fn_ret_ty = self._llvm_ret_type(p.type.ret) if p.type.ret else "void"
                     self._env_fn_sig[n] = (fn_param_tys, fn_ret_ty)
                 elif nyet_n and (nyet_n in self._structs or nyet_n in self._sum_types):
                     # Struct/sum params are already ptrs — register directly
@@ -1047,7 +1032,7 @@ class Emitter:
     # Type inference
     # ==================================================================
 
-    def _infer_llvm_type(self, node: N.Node) -> str:
+    def _infer_llvm_type(self, node: N.Node | None) -> str:
         if isinstance(node, N.IntLit):
             return "i32"
         if isinstance(node, N.FloatLit):
@@ -1128,7 +1113,7 @@ class Emitter:
                         return self._fn_sigs[mangled][1]
                     # Walk return type with substitution
                     env: dict[str, N.TypeNode] = {}
-                    for gp, targ in zip(tmpl.generics, type_args):
+                    for gp, targ in zip(tmpl.generics, type_args, strict=False):
                         env[gp.name] = N.NamedType(tmpl.span, targ)
                     rt = self._subst_type(tmpl.return_type, env)
                     return self._llvm_type(rt)
@@ -1166,7 +1151,7 @@ class Emitter:
                     return ftype
         return "i32"
 
-    def _struct_name_of(self, node: N.Node) -> str | None:
+    def _struct_name_of(self, node: N.Node | None) -> str | None:
         """Try to determine which Nyet struct a node refers to."""
         if isinstance(node, N.Ident) and node.name in self._env:
             # Check if we've recorded the struct name for this binding
@@ -1177,7 +1162,7 @@ class Emitter:
     # Expression emission
     # ==================================================================
 
-    def _emit_expr(self, node: N.Node) -> str | None:
+    def _emit_expr(self, node: N.Node | None) -> str | None:
         if isinstance(node, N.IntLit):
             return str(node.value)
 
@@ -1340,9 +1325,7 @@ class Emitter:
                 if sn is None and isinstance(probe, N.Ident):
                     sn = self._env_struct_name.get(probe.name)
                 if sn is not None and (sn, name) in self._method_impls:
-                    return self._emit_user_call(
-                        self._method_impls[(sn, name)], node.args
-                    )
+                    return self._emit_user_call(self._method_impls[(sn, name)], node.args)
             # v0.6: indirect call through a fn-typed binding (parameter
             # or let bound to a lifted lambda).
             if name in self._env_fn_sig:
@@ -1355,9 +1338,7 @@ class Emitter:
     # v0.3: Generic call inference helpers
     # ------------------------------------------------------------------
 
-    def _monomorphize_fn_from_args(
-        self, name: str, args: list[N.Expr]
-    ) -> str | None:
+    def _monomorphize_fn_from_args(self, name: str, args: list[N.Expr]) -> str | None:
         """Infer type args for a generic fn call and monomorphize."""
         tmpl = self._fn_templates[name]
         type_args = self._infer_type_args_for_fn(tmpl, args)
@@ -1365,9 +1346,7 @@ class Emitter:
             return None
         return self._monomorphize_fn(name, type_args)
 
-    def _monomorphize_struct_from_args(
-        self, name: str, args: list[N.Expr]
-    ) -> str | None:
+    def _monomorphize_struct_from_args(self, name: str, args: list[N.Expr]) -> str | None:
         tmpl = self._struct_templates[name]
         # Try to match field types with generic params
         type_args = self._infer_type_args_for_struct(tmpl, args)
@@ -1375,9 +1354,7 @@ class Emitter:
             return None
         return self._monomorphize_struct(name, type_args)
 
-    def _resolve_generic_variant(
-        self, vname: str, args: list[N.Expr]
-    ) -> str | None:
+    def _resolve_generic_variant(self, vname: str, args: list[N.Expr]) -> str | None:
         """Find the generic sum type this variant belongs to and monomorphize.
 
         Returns the mangled variant ctor name, or None if we can't infer.
@@ -1396,9 +1373,7 @@ class Emitter:
                 if vn == vname:
                     variant_types = vtypes
                     break
-            type_args = self._infer_type_args_for_variant(
-                tmpl, variant_types, args
-            )
+            type_args = self._infer_type_args_for_variant(tmpl, variant_types, args)
             if type_args is None:
                 continue
             mangled_sum = self._monomorphize_sum_type(sum_name, type_args)
@@ -1411,9 +1386,7 @@ class Emitter:
             return self._find_variant_ctor_for(mangled_sum, vname)
         return None
 
-    def _find_variant_ctor_for(
-        self, sum_type_name: str, vname: str
-    ) -> str | None:
+    def _find_variant_ctor_for(self, sum_type_name: str, vname: str) -> str | None:
         """Return the (possibly mangled) variant ctor key in _variant_ctors.
 
         Since _register_sum_type uses the short variant name, collisions
@@ -1429,12 +1402,8 @@ class Emitter:
             return vname
         return None
 
-    def _infer_type_args_for_fn(
-        self, tmpl: N.FnDecl, args: list[N.Expr]
-    ) -> tuple[str, ...] | None:
-        return self._infer_type_args_from_params(
-            tmpl.generics, tmpl.params, args
-        )
+    def _infer_type_args_for_fn(self, tmpl: N.FnDecl, args: list[N.Expr]) -> tuple[str, ...] | None:
+        return self._infer_type_args_from_params(tmpl.generics, tmpl.params, args)
 
     def _infer_type_args_for_struct(
         self, tmpl: N.StructDecl, args: list[N.Expr]
@@ -1444,9 +1413,7 @@ class Emitter:
         for a in args:
             if not isinstance(a, N.KeywordArg):
                 pos_args.append(a)
-        return self._infer_type_args_from_params(
-            tmpl.generics, tmpl.fields, pos_args
-        )
+        return self._infer_type_args_from_params(tmpl.generics, tmpl.fields, pos_args)
 
     def _infer_type_args_for_variant(
         self,
@@ -1455,13 +1422,8 @@ class Emitter:
         args: list[N.Expr],
     ) -> tuple[str, ...] | None:
         # Build fake params with the variant's field types
-        fake_params = [
-            N.Param(tmpl.span, f"_{i}", t)
-            for i, t in enumerate(variant_types)
-        ]
-        return self._infer_type_args_from_params(
-            tmpl.generics, fake_params, args
-        )
+        fake_params = [N.Param(tmpl.span, f"_{i}", t) for i, t in enumerate(variant_types)]
+        return self._infer_type_args_from_params(tmpl.generics, fake_params, args)
 
     def _infer_type_args_from_params(
         self,
@@ -1502,21 +1464,14 @@ class Emitter:
     def _emit_out(self, args: list[N.Expr]) -> str | None:
         for arg in args:
             sn = self._infer_nyet_type_name(self._unwrap_borrow(arg))
-            if (
-                sn is not None
-                and sn in self._structs
-                and (sn, "display") in self._method_impls
-            ):
+            if sn is not None and sn in self._structs and (sn, "display") in self._method_impls:
                 mangled = self._method_impls[(sn, "display")]
                 val = self._emit_user_call(mangled, [arg])
                 if val is not None:
                     self._declare_printf()
                     fmt = self._get_fmt_str()
                     tmp = self._fresh_tmp()
-                    self._emit_line(
-                        f"{tmp} = call i32 (ptr, ...) "
-                        f"@printf(ptr {fmt}, ptr {val})"
-                    )
+                    self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})")
                 continue
             val = self._emit_expr(arg)
             if val is None:
@@ -1526,9 +1481,7 @@ class Emitter:
             if ty == "ptr":
                 fmt = self._get_fmt_str()
                 tmp = self._fresh_tmp()
-                self._emit_line(
-                    f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})"
-                )
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})")
             elif self._is_float(ty):
                 fmt = self._get_fmt_f64()
                 tmp = self._fresh_tmp()
@@ -1536,15 +1489,11 @@ class Emitter:
                     ext = self._fresh_tmp()
                     self._emit_line(f"{ext} = fpext float {val} to double")
                     val = ext
-                self._emit_line(
-                    f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})"
-                )
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})")
             else:
                 fmt = self._get_fmt_i32()
                 tmp = self._fresh_tmp()
-                self._emit_line(
-                    f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})"
-                )
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
         return None
 
     # ------------------------------------------------------------------
@@ -1559,9 +1508,7 @@ class Emitter:
         self._declare_printf()
         nl = self._get_format_string("\n", "panic_nl")
         nl_tmp = self._fresh_tmp()
-        self._emit_line(
-            f"{nl_tmp} = call i32 (ptr, ...) @printf(ptr {nl})"
-        )
+        self._emit_line(f"{nl_tmp} = call i32 (ptr, ...) @printf(ptr {nl})")
         self._declare_extern("declare void @exit(i32)")
         self._emit_line("call void @exit(i32 1)")
         self._emit_line("unreachable")
@@ -1583,18 +1530,12 @@ class Emitter:
 
         buf = self._emit_alloca("[256 x i8]")
         buf_ptr = self._fresh_tmp()
-        self._emit_line(
-            f"{buf_ptr} = getelementptr [256 x i8], ptr {buf}, i32 0, i32 0"
-        )
+        self._emit_line(f"{buf_ptr} = getelementptr [256 x i8], ptr {buf}, i32 0, i32 0")
         mode_name = self._get_format_string("r", "r_mode")
         stdin_fp = self._fresh_tmp()
-        self._emit_line(
-            f"{stdin_fp} = call ptr @fdopen(i32 0, ptr {mode_name})"
-        )
+        self._emit_line(f"{stdin_fp} = call ptr @fdopen(i32 0, ptr {mode_name})")
         tmp = self._fresh_tmp()
-        self._emit_line(
-            f"{tmp} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})"
-        )
+        self._emit_line(f"{tmp} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})")
 
         target_type = "i32"
         if args and isinstance(args[0], N.Ident):
@@ -1610,9 +1551,7 @@ class Emitter:
 
         endptr = self._emit_alloca("ptr")
         val64 = self._fresh_tmp()
-        self._emit_line(
-            f"{val64} = call i64 @strtol(ptr {buf_ptr}, ptr {endptr}, i32 10)"
-        )
+        self._emit_line(f"{val64} = call i64 @strtol(ptr {buf_ptr}, ptr {endptr}, i32 10)")
         end = self._fresh_tmp()
         self._emit_line(f"{end} = load ptr, ptr {endptr}")
         end_char = self._fresh_tmp()
@@ -1637,9 +1576,7 @@ class Emitter:
 
         ok_label = self._fresh_label("in_ok")
         err_label = self._fresh_label("in_err")
-        self._emit_line(
-            f"br i1 {valid}, label %{ok_label}, label %{err_label}"
-        )
+        self._emit_line(f"br i1 {valid}, label %{ok_label}, label %{err_label}")
 
         self._emit_label(err_label)
         err_msg = self._get_format_string(
@@ -1688,9 +1625,7 @@ class Emitter:
         if h is None:
             return None
         seek_rc = self._fresh_tmp()
-        self._emit_line(
-            f"{seek_rc} = call i32 @fseek(ptr {h}, i64 0, i32 2)"
-        )
+        self._emit_line(f"{seek_rc} = call i32 @fseek(ptr {h}, i64 0, i32 2)")
         size = self._fresh_tmp()
         self._emit_line(f"{size} = call i64 @ftell(ptr {h})")
         self._emit_line(f"call void @rewind(ptr {h})")
@@ -1699,9 +1634,7 @@ class Emitter:
         buf = self._fresh_tmp()
         self._emit_line(f"{buf} = call ptr @malloc(i64 {size_p1})")
         nread = self._fresh_tmp()
-        self._emit_line(
-            f"{nread} = call i64 @fread(ptr {buf}, i64 1, i64 {size}, ptr {h})"
-        )
+        self._emit_line(f"{nread} = call i64 @fread(ptr {buf}, i64 1, i64 {size}, ptr {h})")
         end = self._fresh_tmp()
         self._emit_line(f"{end} = getelementptr i8, ptr {buf}, i64 {size}")
         self._emit_line(f"store i8 0, ptr {end}")
@@ -1719,9 +1652,7 @@ class Emitter:
         n = self._fresh_tmp()
         self._emit_line(f"{n} = call i64 @strlen(ptr {text})")
         wrote = self._fresh_tmp()
-        self._emit_line(
-            f"{wrote} = call i64 @fwrite(ptr {text}, i64 1, i64 {n}, ptr {h})"
-        )
+        self._emit_line(f"{wrote} = call i64 @fwrite(ptr {text}, i64 1, i64 {n}, ptr {h})")
         return None
 
     def _emit_file_close(self, args: list[N.Expr]) -> str | None:
@@ -1783,9 +1714,7 @@ class Emitter:
                 llvm_ty = "double"
             snprintf_args += f", {llvm_ty} {val}"
         tmp = self._fresh_tmp()
-        self._emit_line(
-            f"{tmp} = call i32 (ptr, i32, ptr, ...) @snprintf({snprintf_args})"
-        )
+        self._emit_line(f"{tmp} = call i32 (ptr, i32, ptr, ...) @snprintf({snprintf_args})")
         return buf_ptr
 
     # ------------------------------------------------------------------
@@ -1796,9 +1725,20 @@ class Emitter:
     def _op_mangle(struct_name: str, op: str) -> str:
         """Generate a unique LLVM-safe name for an impl method (operator or named)."""
         op_words = {
-            "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod",
-            "==": "eq", "!=": "ne", "<": "lt", "<=": "le", ">": "gt",
-            ">=": "ge", "&&": "and", "||": "or", "!": "not",
+            "+": "add",
+            "-": "sub",
+            "*": "mul",
+            "/": "div",
+            "%": "mod",
+            "==": "eq",
+            "!=": "ne",
+            "<": "lt",
+            "<=": "le",
+            ">": "gt",
+            ">=": "ge",
+            "&&": "and",
+            "||": "or",
+            "!": "not",
         }
         if op in op_words:
             return f"{struct_name}__op__{op_words[op]}"
@@ -1816,9 +1756,7 @@ class Emitter:
             node = node.args[0]
         return node
 
-    def _maybe_dispatch_op_impl(
-        self, op: str, args: list[N.Expr]
-    ) -> str | None:
+    def _maybe_dispatch_op_impl(self, op: str, args: list[N.Expr]) -> str | None:
         """If args[0] is a struct with an op impl, call it and return result."""
         if not args:
             return None
@@ -1867,14 +1805,12 @@ class Emitter:
                 self._emit_line(f"{conv} = fpext float {rhs} to double")
                 rhs = conv
             tmp = self._fresh_tmp()
-            fops = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv",
-                    "%": "frem"}
+            fops = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv", "%": "frem"}
             self._emit_line(f"{tmp} = {fops[op]} {fty} {lhs}, {rhs}")
             return tmp
         else:
             tmp = self._fresh_tmp()
-            iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv",
-                    "%": "srem"}
+            iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
             self._emit_line(f"{tmp} = {iops[op]} i32 {lhs}, {rhs}")
             return tmp
 
@@ -1915,14 +1851,12 @@ class Emitter:
                 self._emit_line(f"{conv} = fpext float {rhs} to double")
                 rhs = conv
             tmp = self._fresh_tmp()
-            fconds = {"==": "oeq", "!=": "one", "<": "olt", ">": "ogt",
-                      "<=": "ole", ">=": "oge"}
+            fconds = {"==": "oeq", "!=": "one", "<": "olt", ">": "ogt", "<=": "ole", ">=": "oge"}
             self._emit_line(f"{tmp} = fcmp {fconds[op]} {fty} {lhs}, {rhs}")
             return tmp
         else:
             tmp = self._fresh_tmp()
-            iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt",
-                      "<=": "sle", ">=": "sge"}
+            iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
             self._emit_line(f"{tmp} = icmp {iconds[op]} i32 {lhs}, {rhs}")
             return tmp
 
@@ -1945,16 +1879,14 @@ class Emitter:
         if lhs is None or rhs is None:
             return None
         tmp = self._fresh_tmp()
-        self._emit_line(
-            f"{tmp} = {'and' if op == '&&' else 'or'} i1 {lhs}, {rhs}"
-        )
+        self._emit_line(f"{tmp} = {'and' if op == '&&' else 'or'} i1 {lhs}, {rhs}")
         return tmp
 
     # ------------------------------------------------------------------
     # Cast — (as expr type)
     # ------------------------------------------------------------------
 
-    def _emit_cast(self, value: N.Node, target_tn: N.TypeNode) -> str | None:
+    def _emit_cast(self, value: N.Node | None, target_tn: N.TypeNode | None) -> str | None:
         """Emit an explicit primitive cast, including char ↔ int.
 
         LLVM instruction selection:
@@ -1973,8 +1905,7 @@ class Emitter:
         dst_ty = self._llvm_type(target_tn)
 
         target_is_char = (
-            isinstance(target_tn, (N.PrimType, N.NamedType))
-            and target_tn.name == "char"
+            isinstance(target_tn, (N.PrimType, N.NamedType)) and target_tn.name == "char"
         )
         source_is_char = self._node_is_char(value)
 
@@ -2024,9 +1955,7 @@ class Emitter:
 
             lo_ok = self._fresh_tmp()
             self._emit_line(f"{lo_ok} = icmp sge i32 {coerced}, 0")
-            self._emit_line(
-                f"br i1 {lo_ok}, label %{surr_label}, label %{panic_label}"
-            )
+            self._emit_line(f"br i1 {lo_ok}, label %{surr_label}, label %{panic_label}")
 
             self._emit_label(surr_label)
             surr_lo = self._fresh_tmp()
@@ -2035,25 +1964,19 @@ class Emitter:
             self._emit_line(f"{surr_lo} = icmp slt i32 {coerced}, 55296")
             self._emit_line(f"{surr_hi} = icmp sgt i32 {coerced}, 57343")
             self._emit_line(f"{not_surr} = or i1 {surr_lo}, {surr_hi}")
-            self._emit_line(
-                f"br i1 {not_surr}, label %{hi_label}, label %{panic_label}"
-            )
+            self._emit_line(f"br i1 {not_surr}, label %{hi_label}, label %{panic_label}")
 
             self._emit_label(hi_label)
             hi_ok = self._fresh_tmp()
             self._emit_line(f"{hi_ok} = icmp sle i32 {coerced}, 1114111")
-            self._emit_line(
-                f"br i1 {hi_ok}, label %{ok_label}, label %{panic_label}"
-            )
+            self._emit_line(f"br i1 {hi_ok}, label %{ok_label}, label %{panic_label}")
 
             self._emit_label(panic_label)
             msg_name, _ = self._get_string(
                 "cast error: integer is not a valid Unicode scalar value\n"
             )
             panic_tmp = self._fresh_tmp()
-            self._emit_line(
-                f"{panic_tmp} = call i32 (ptr, ...) @printf(ptr {msg_name})"
-            )
+            self._emit_line(f"{panic_tmp} = call i32 (ptr, ...) @printf(ptr {msg_name})")
             self._emit_line("call void @exit(i32 1)")
             self._emit_line("unreachable")
 
@@ -2079,7 +2002,7 @@ class Emitter:
             return src
         return tmp
 
-    def _node_is_char(self, node: N.Node) -> bool:
+    def _node_is_char(self, node: N.Node | None) -> bool:
         """Return True if node resolves to a char-typed binding."""
         if isinstance(node, N.Ident):
             return node.name in self._env_char_names
@@ -2143,8 +2066,7 @@ class Emitter:
             if fname in vals:
                 fptr = self._fresh_tmp()
                 self._emit_line(
-                    f"{fptr} = getelementptr inbounds %{name}, ptr {ptr}, "
-                    f"i32 0, i32 {i}"
+                    f"{fptr} = getelementptr inbounds %{name}, ptr {ptr}, i32 0, i32 {i}"
                 )
                 self._emit_line(f"store {ftype} {vals[fname]}, ptr {fptr}")
 
@@ -2167,18 +2089,14 @@ class Emitter:
 
         # Store tag
         tag_ptr = self._fresh_tmp()
-        self._emit_line(
-            f"{tag_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, "
-            f"i32 0, i32 0"
-        )
+        self._emit_line(f"{tag_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 0")
         self._emit_line(f"store i32 {tag_idx}, ptr {tag_ptr}")
 
         # Store payload fields
         if payload_types:
             payload_ptr = self._fresh_tmp()
             self._emit_line(
-                f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, "
-                f"i32 0, i32 1"
+                f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 1"
             )
             offset = 0
             for i, arg in enumerate(args):
@@ -2192,8 +2110,7 @@ class Emitter:
                     else:
                         field_ptr = self._fresh_tmp()
                         self._emit_line(
-                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, "
-                            f"i32 {offset}"
+                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {offset}"
                         )
                     self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
                     offset += self._sizeof(ftype)
@@ -2277,9 +2194,7 @@ class Emitter:
                 guard_val = self._emit_expr(guard)
                 if guard_val is not None:
                     body_label = self._fresh_label("match_body")
-                    self._emit_line(
-                        f"br i1 {guard_val}, label %{body_label}, label %{next_label}"
-                    )
+                    self._emit_line(f"br i1 {guard_val}, label %{body_label}, label %{next_label}")
                     self._emit_label(body_label)
 
             body_val = self._emit_expr(arm.body)
@@ -2326,9 +2241,7 @@ class Emitter:
             # Prefer the composite key so nested-generic sum types pick
             # the right variant.
             composite = f"{sum_name}::{pat.name}"
-            ctor = self._variant_ctors.get(composite) or self._variant_ctors.get(
-                pat.name
-            )
+            ctor = self._variant_ctors.get(composite) or self._variant_ctors.get(pat.name)
             if ctor is None:
                 self._emit_line(f"br label %{fail_label}")
                 dead = self._fresh_label("after_dead")
@@ -2339,17 +2252,14 @@ class Emitter:
 
             tag_ptr = self._fresh_tmp()
             self._emit_line(
-                f"{tag_ptr} = getelementptr inbounds %{actual_sum}, "
-                f"ptr {scrut_val}, i32 0, i32 0"
+                f"{tag_ptr} = getelementptr inbounds %{actual_sum}, ptr {scrut_val}, i32 0, i32 0"
             )
             tag = self._fresh_tmp()
             self._emit_line(f"{tag} = load i32, ptr {tag_ptr}")
             cmp = self._fresh_tmp()
             self._emit_line(f"{cmp} = icmp eq i32 {tag}, {tag_idx}")
             ok_label = self._fresh_label("tag_ok")
-            self._emit_line(
-                f"br i1 {cmp}, label %{ok_label}, label %{fail_label}"
-            )
+            self._emit_line(f"br i1 {cmp}, label %{ok_label}, label %{fail_label}")
             self._emit_label(ok_label)
 
             variants = self._sum_types[actual_sum]
@@ -2370,22 +2280,17 @@ class Emitter:
                     if pi >= len(payload_types):
                         break
                     pty = payload_types[pi]
-                    inner_nyet = (
-                        nyet_names[pi] if pi < len(nyet_names) else None
-                    )
+                    inner_nyet = nyet_names[pi] if pi < len(nyet_names) else None
                     if offset == 0:
                         fld_ptr = payload_ptr
                     else:
                         fld_ptr = self._fresh_tmp()
                         self._emit_line(
-                            f"{fld_ptr} = getelementptr i8, "
-                            f"ptr {payload_ptr}, i32 {offset}"
+                            f"{fld_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {offset}"
                         )
                     val = self._fresh_tmp()
                     self._emit_line(f"{val} = load {pty}, ptr {fld_ptr}")
-                    self._emit_pattern_test_value(
-                        val, pty, inner_nyet, ppat, fail_label
-                    )
+                    self._emit_pattern_test_value(val, pty, inner_nyet, ppat, fail_label)
                     offset += self._sizeof(pty)
             return
         if isinstance(pat, N.LitPat):
@@ -2428,17 +2333,11 @@ class Emitter:
                 return
             cmp = self._fresh_tmp()
             if llvm_ty in ("double", "float"):
-                self._emit_line(
-                    f"{cmp} = fcmp oeq {llvm_ty} {val}, {cmp_val}"
-                )
+                self._emit_line(f"{cmp} = fcmp oeq {llvm_ty} {val}, {cmp_val}")
             else:
-                self._emit_line(
-                    f"{cmp} = icmp eq {llvm_ty} {val}, {cmp_val}"
-                )
+                self._emit_line(f"{cmp} = icmp eq {llvm_ty} {val}, {cmp_val}")
             ok_label = self._fresh_label("lit_ok")
-            self._emit_line(
-                f"br i1 {cmp}, label %{ok_label}, label %{fail_label}"
-            )
+            self._emit_line(f"br i1 {cmp}, label %{ok_label}, label %{fail_label}")
             self._emit_label(ok_label)
             return
         if isinstance(pat, N.VariantPat):
@@ -2487,6 +2386,7 @@ class Emitter:
         missing = sorted(all_names - covered)
         if missing:
             import sys
+
             print(
                 f"warning: non-exhaustive match on {sum_name}; "
                 f"missing variants: {', '.join(missing)}",
@@ -2514,9 +2414,7 @@ class Emitter:
 
                 body_val = self._emit_expr(arm.body)
                 if body_val is not None:
-                    self._emit_line(
-                        f"store {result_ty} {body_val}, ptr {result_ptr}"
-                    )
+                    self._emit_line(f"store {result_ty} {body_val}, ptr {result_ptr}")
                 self._emit_line(f"br label %{end_label}")
 
                 if isinstance(pat, N.VarPat):
@@ -2534,16 +2432,12 @@ class Emitter:
                 else:
                     next_label = self._fresh_label("match_next")
 
-                self._emit_line(
-                    f"br i1 {cmp}, label %{arm_label}, label %{next_label}"
-                )
+                self._emit_line(f"br i1 {cmp}, label %{arm_label}, label %{next_label}")
 
                 self._emit_label(arm_label)
                 body_val = self._emit_expr(arm.body)
                 if body_val is not None:
-                    self._emit_line(
-                        f"store {result_ty} {body_val}, ptr {result_ptr}"
-                    )
+                    self._emit_line(f"store {result_ty} {body_val}, ptr {result_ptr}")
                 self._emit_line(f"br label %{end_label}")
 
                 self._emit_label(next_label)
@@ -2584,8 +2478,7 @@ class Emitter:
         # Load the tag
         tag_ptr = self._fresh_tmp()
         self._emit_line(
-            f"{tag_ptr} = getelementptr inbounds %{sum_name}, "
-            f"ptr {scrut_val}, i32 0, i32 0"
+            f"{tag_ptr} = getelementptr inbounds %{sum_name}, ptr {scrut_val}, i32 0, i32 0"
         )
         tag = self._fresh_tmp()
         self._emit_line(f"{tag} = load i32, ptr {tag_ptr}")
@@ -2596,9 +2489,7 @@ class Emitter:
 
         ok_label = self._fresh_label("try_ok")
         fail_label = self._fresh_label("try_fail")
-        self._emit_line(
-            f"br i1 {is_ok}, label %{ok_label}, label %{fail_label}"
-        )
+        self._emit_line(f"br i1 {is_ok}, label %{ok_label}, label %{fail_label}")
 
         # Failure path: return the scrutinee
         self._emit_label(fail_label)
@@ -2613,15 +2504,14 @@ class Emitter:
 
         payload_ptr = self._fresh_tmp()
         self._emit_line(
-            f"{payload_ptr} = getelementptr inbounds %{sum_name}, "
-            f"ptr {scrut_val}, i32 0, i32 1"
+            f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {scrut_val}, i32 0, i32 1"
         )
         first_type = payload_types[0]
         result = self._fresh_tmp()
         self._emit_line(f"{result} = load {first_type}, ptr {payload_ptr}")
         return result
 
-    def _sum_name_of(self, node: N.Node) -> str | None:
+    def _sum_name_of(self, node: N.Node | None) -> str | None:
         """Return the (possibly mangled) sum type name for a scrutinee."""
         if isinstance(node, N.Ident):
             return self._env_struct_name.get(node.name)
@@ -2681,9 +2571,7 @@ class Emitter:
         else:
             self._emit_line(f"store {result_ty} 0, ptr {result_ptr}")
 
-        self._emit_line(
-            f"br i1 {cond}, label %{then_label}, label %{else_label}"
-        )
+        self._emit_line(f"br i1 {cond}, label %{then_label}, label %{else_label}")
 
         self._emit_label(then_label)
         then_val = self._emit_expr(node.then_branch)
@@ -2695,17 +2583,13 @@ class Emitter:
         if node.else_branch is not None:
             else_val = self._emit_expr(node.else_branch)
             if else_val is not None:
-                self._emit_line(
-                    f"store {result_ty} {else_val}, ptr {result_ptr}"
-                )
+                self._emit_line(f"store {result_ty} {else_val}, ptr {result_ptr}")
         self._emit_line(f"br label %{end_label}")
 
         self._emit_label(end_label)
         if then_val is not None:
             result = self._fresh_tmp()
-            self._emit_line(
-                f"{result} = load {result_ty}, ptr {result_ptr}"
-            )
+            self._emit_line(f"{result} = load {result_ty}, ptr {result_ptr}")
             return result
         return None
 
@@ -2796,7 +2680,7 @@ class Emitter:
         self._emit_label(dead)
         return None
 
-    def _emit_let(self, node: N.LetDecl) -> str | None:
+    def _emit_let(self, node: N.LetDecl | N.ConstDecl) -> str | None:
         if node.type:
             ty = self._llvm_type(node.type)
             nyet_name = self._nyet_type_name(node.type)
@@ -2827,9 +2711,8 @@ class Emitter:
             return None
 
         # For struct/sum-type bindings, the value is already a ptr (from construction)
-        is_aggregate = (
-            nyet_name is not None
-            and (nyet_name in self._structs or nyet_name in self._sum_types)
+        is_aggregate = nyet_name is not None and (
+            nyet_name in self._structs or nyet_name in self._sum_types
         )
 
         if is_aggregate:
@@ -2881,9 +2764,7 @@ class Emitter:
             self._env_fn_sig[node.name] = sig
         return None
 
-    def _fn_sig_of_value(
-        self, value: N.Node | None
-    ) -> tuple[list[str], str] | None:
+    def _fn_sig_of_value(self, value: N.Node | None) -> tuple[list[str], str] | None:
         """If `value` is an Ident referring to a known function, return its
         (param_llvm_types, ret_llvm_type) signature. Otherwise None."""
         if value is None:
@@ -2929,9 +2810,7 @@ class Emitter:
             and target.head.name in self._env_array_elem
             and len(target.args) == 1
         ):
-            return self._emit_array_assign(
-                target.head.name, target.args[0], node.value
-            )
+            return self._emit_array_assign(target.head.name, target.args[0], node.value)
         if isinstance(target, N.Ident) and target.name in self._env:
             ptr, ty = self._env[target.name]
             val = self._emit_expr(node.value)
@@ -2988,9 +2867,7 @@ class Emitter:
     def _emit_array_lit(self, node: N.ArrayLit) -> str:
         """Lower `[e0 e1 ... eN]` to malloc + length + element stores."""
         n = len(node.elements)
-        elem_ty = (
-            self._infer_llvm_type(node.elements[0]) if node.elements else "i32"
-        )
+        elem_ty = self._infer_llvm_type(node.elements[0]) if node.elements else "i32"
         elem_size = self._sizeof(elem_ty)
         total = 8 + n * elem_size
 
@@ -3009,9 +2886,7 @@ class Emitter:
                     slot = base
                 else:
                     slot = self._fresh_tmp()
-                    self._emit_line(
-                        f"{slot} = getelementptr {elem_ty}, ptr {base}, i64 {i}"
-                    )
+                    self._emit_line(f"{slot} = getelementptr {elem_ty}, ptr {base}, i64 {i}")
                 self._emit_line(f"store {elem_ty} {val}, ptr {slot}")
         return arr_ptr
 
@@ -3027,16 +2902,12 @@ class Emitter:
 
         base = self._array_data_base(arr)
         elem_ptr = self._fresh_tmp()
-        self._emit_line(
-            f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}"
-        )
+        self._emit_line(f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}")
         result = self._fresh_tmp()
         self._emit_line(f"{result} = load {elem_ty}, ptr {elem_ptr}")
         return result
 
-    def _emit_array_assign(
-        self, name: str, idx_arg: N.Expr, value: N.Expr | None
-    ) -> str | None:
+    def _emit_array_assign(self, name: str, idx_arg: N.Expr, value: N.Expr | None) -> str | None:
         ptr_slot, _ = self._env[name]
         elem_ty = self._env_array_elem[name]
         arr = self._fresh_tmp()
@@ -3061,9 +2932,7 @@ class Emitter:
 
         base = self._array_data_base(arr)
         elem_ptr = self._fresh_tmp()
-        self._emit_line(
-            f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}"
-        )
+        self._emit_line(f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}")
         self._emit_line(f"store {elem_ty} {val}, ptr {elem_ptr}")
         return None
 

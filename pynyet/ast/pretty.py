@@ -273,10 +273,12 @@ def _h_type_decl(n):
     if n.generics:
         gp = " ".join(g.name for g in n.generics)
         generics = f"[{gp}]"
+
     def _fmt_variant(name, types):
         if types:
             return f"({name} {' '.join(pretty_type(t) for t in types)})"
         return f"({name})"
+
     variants = " ".join(_fmt_variant(name, types) for name, types in n.variants)
     return f"(type {n.name}{generics} {variants})"
 

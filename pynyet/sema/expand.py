@@ -41,13 +41,12 @@ pre-registered before user macros, and can be shadowed by a user
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from dataclasses import dataclass, fields, is_dataclass
-from typing import Callable, Optional, Union
 
 from pynyet.ast import nodes as N
 from pynyet.ast.pretty import pretty
 from pynyet.diagnostic import Diagnostic, Severity
-
 
 MAX_MACRO_DEPTH = 64
 
@@ -73,7 +72,7 @@ PRELUDE_SOURCE = """\
   (do forms ...))
 """
 
-_prelude_macros_cache: Optional[dict[str, N.MacroDecl]] = None
+_prelude_macros_cache: dict[str, N.MacroDecl] | None = None
 
 
 def _load_prelude_macros() -> dict[str, N.MacroDecl]:
@@ -106,7 +105,7 @@ class _SpliceList:
 
 # Substitution binding values: a single node for regular params, or a
 # list of nodes for variadic params.
-_BindingValue = Union[N.Node, list]
+_BindingValue = N.Node | list
 
 
 class MacroExpander:
@@ -126,13 +125,14 @@ class MacroExpander:
     def expand(self, program: list[N.Node]) -> list[N.Node]:
         for node in program:
             if isinstance(node, N.MacroDecl):
-                if (node.name in self.macros
-                        and node.name not in self._prelude_names):
-                    self.errors.append(Diagnostic(
-                        Severity.ERROR,
-                        f"macro '{node.name}' is already defined",
-                        node.span,
-                    ))
+                if node.name in self.macros and node.name not in self._prelude_names:
+                    self.errors.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f"macro '{node.name}' is already defined",
+                            node.span,
+                        )
+                    )
                 else:
                     self._validate_params(node)
                     self.macros[node.name] = node
@@ -151,18 +151,20 @@ class MacroExpander:
         """A variadic param must be the last one in the list."""
         for i, p in enumerate(macro.params):
             if p.variadic and i != len(macro.params) - 1:
-                self.errors.append(Diagnostic(
-                    Severity.ERROR,
-                    f"variadic parameter '{p.name}' must be the last "
-                    f"parameter of macro '{macro.name}'",
-                    p.span,
-                ))
+                self.errors.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f"variadic parameter '{p.name}' must be the last "
+                        f"parameter of macro '{macro.name}'",
+                        p.span,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # core walk
     # ------------------------------------------------------------------
 
-    def _expand_node(self, node: Optional[N.Node], depth: int) -> Optional[N.Node]:
+    def _expand_node(self, node: N.Node | None, depth: int) -> N.Node | None:
         if node is None:
             return None
 
@@ -176,17 +178,21 @@ class MacroExpander:
         # against a non-variadic name. Preserve the inner expr so later
         # passes still see something sensible.
         if isinstance(node, N.Splice):
-            self.errors.append(Diagnostic(
-                Severity.ERROR,
-                "`...` splice can only appear inside a macro body "
-                "referencing a variadic parameter",
-                node.span,
-            ))
+            self.errors.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    "`...` splice can only appear inside a macro body "
+                    "referencing a variadic parameter",
+                    node.span,
+                )
+            )
             return self._expand_node(node.value, depth)
 
-        if (isinstance(node, N.Call)
-                and isinstance(node.head, N.Ident)
-                and node.head.name in self.macros):
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name in self.macros
+        ):
             return self._expand_macro_call(node, depth)
 
         self._walk_children(node, depth)
@@ -194,12 +200,14 @@ class MacroExpander:
 
     def _expand_macro_call(self, call: N.Call, depth: int) -> N.Node:
         if depth >= MAX_MACRO_DEPTH:
-            self.errors.append(Diagnostic(
-                Severity.ERROR,
-                f"macro expansion exceeded depth {MAX_MACRO_DEPTH} "
-                "(possible infinite recursion)",
-                call.span,
-            ))
+            self.errors.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    f"macro expansion exceeded depth {MAX_MACRO_DEPTH} "
+                    "(possible infinite recursion)",
+                    call.span,
+                )
+            )
             return call
 
         assert isinstance(call.head, N.Ident)
@@ -212,21 +220,24 @@ class MacroExpander:
 
         if variadic is not None:
             if len(call.args) < len(fixed):
-                self.errors.append(Diagnostic(
-                    Severity.ERROR,
-                    f"macro '{name}' expects at least {len(fixed)} "
-                    f"argument(s), got {len(call.args)}",
-                    call.span,
-                ))
+                self.errors.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f"macro '{name}' expects at least {len(fixed)} "
+                        f"argument(s), got {len(call.args)}",
+                        call.span,
+                    )
+                )
                 return call
         else:
             if len(call.args) != len(params):
-                self.errors.append(Diagnostic(
-                    Severity.ERROR,
-                    f"macro '{name}' expects {len(params)} argument(s), "
-                    f"got {len(call.args)}",
-                    call.span,
-                ))
+                self.errors.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f"macro '{name}' expects {len(params)} argument(s), got {len(call.args)}",
+                        call.span,
+                    )
+                )
                 return call
 
         # Expand any macros that appear inside the arguments first so the
@@ -240,10 +251,10 @@ class MacroExpander:
             return N.UnitLit(call.span)
 
         bindings: dict[str, _BindingValue] = {}
-        for p, a in zip(fixed, expanded_args[:len(fixed)]):
+        for p, a in zip(fixed, expanded_args[: len(fixed)], strict=False):
             bindings[p.name] = a
         if variadic is not None:
-            bindings[variadic.name] = list(expanded_args[len(fixed):])
+            bindings[variadic.name] = list(expanded_args[len(fixed) :])
         variadic_names = {variadic.name} if variadic is not None else set()
 
         cloned_body = copy.deepcopy(macro.body)
@@ -291,10 +302,10 @@ class MacroExpander:
 
     def _substitute(
         self,
-        node: Optional[N.Node],
+        node: N.Node | None,
         bindings: dict[str, _BindingValue],
         variadic_names: set[str],
-    ) -> Optional[Union[N.Node, _SpliceList]]:
+    ) -> N.Node | _SpliceList | None:
         if node is None:
             return None
 
@@ -313,28 +324,33 @@ class MacroExpander:
         # where `name` is a variadic parameter.
         if isinstance(node, N.Splice):
             inner = node.value
-            if (isinstance(inner, N.Ident)
-                    and inner.name in variadic_names
-                    and inner.name in bindings):
+            if (
+                isinstance(inner, N.Ident)
+                and inner.name in variadic_names
+                and inner.name in bindings
+            ):
                 items = bindings[inner.name]
                 assert isinstance(items, list)
                 return _SpliceList([copy.deepcopy(it) for it in items])
-            self.errors.append(Diagnostic(
-                Severity.ERROR,
-                "`...` splice must reference a variadic macro parameter",
-                node.span,
-            ))
+            self.errors.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    "`...` splice must reference a variadic macro parameter",
+                    node.span,
+                )
+            )
             return self._substitute(inner, bindings, variadic_names)
 
         # Reference to a macro parameter.
         if isinstance(node, N.Ident) and node.name in bindings:
             if node.name in variadic_names:
-                self.errors.append(Diagnostic(
-                    Severity.ERROR,
-                    f"variadic parameter '{node.name}' must be spliced "
-                    "with `...`",
-                    node.span,
-                ))
+                self.errors.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f"variadic parameter '{node.name}' must be spliced with `...`",
+                        node.span,
+                    )
+                )
                 return node
             value = bindings[node.name]
             assert isinstance(value, N.Node)
@@ -394,7 +410,7 @@ class MacroExpander:
 # ----------------------------------------------------------------------
 
 
-def _walk_value(value, fn: Callable[[N.Node], Optional[N.Node]]):
+def _walk_value(value, fn: Callable[[N.Node], N.Node | None]):
     """Recurse into containers. Apply ``fn`` to every Node encountered."""
     if isinstance(value, list):
         new_list: list = []
@@ -413,7 +429,7 @@ def _walk_value(value, fn: Callable[[N.Node], Optional[N.Node]]):
     return value
 
 
-def _collect_local_bindings(node: Optional[N.Node], exclude: set[str]) -> set[str]:
+def _collect_local_bindings(node: N.Node | None, exclude: set[str]) -> set[str]:
     """Collect names of `let`/`var` bindings inside ``node`` whose names
     are not in ``exclude`` (typically the macro's own parameter names).
 
@@ -421,7 +437,7 @@ def _collect_local_bindings(node: Optional[N.Node], exclude: set[str]) -> set[st
     """
     found: set[str] = set()
 
-    def walk(n: Optional[N.Node]) -> None:
+    def walk(n: N.Node | None) -> None:
         if n is None:
             return
         if isinstance(n, N.LetDecl) and n.name not in exclude:
@@ -449,7 +465,7 @@ def _walk_collect(value, walk_fn) -> None:
         walk_fn(value)
 
 
-def _apply_rename(node: Optional[N.Node], rename_map: dict[str, str]) -> None:
+def _apply_rename(node: N.Node | None, rename_map: dict[str, str]) -> None:
     """Rename Ident references and LetDecl declarations in-place.
 
     Both the binding site (LetDecl.name) and every Ident referencing the

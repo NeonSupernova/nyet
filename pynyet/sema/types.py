@@ -7,7 +7,6 @@ AST TypeNode → NyetType happens during type resolution.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -113,6 +112,7 @@ class RefType(NyetType):
 @dataclass(frozen=True)
 class TypeVar(NyetType):
     """Unresolved type variable for inference."""
+
     id: int = 0
 
     def __str__(self) -> str:
@@ -147,9 +147,19 @@ ERROR = ErrorType()
 
 # Map from type name strings to canonical types
 PRIM_TYPES: dict[str, NyetType] = {
-    "i8": I8, "i16": I16, "i32": I32, "i64": I64,
-    "u8": U8, "u16": U16, "u32": U32, "u64": U64,
+    "i8": I8,
+    "i16": I16,
+    "i32": I32,
+    "i64": I64,
+    "u8": U8,
+    "u16": U16,
+    "u32": U32,
+    "u64": U64,
     "usize": USIZE,
-    "f32": F32, "f64": F64,
-    "bool": BOOL, "char": CHAR, "string": STRING, "unit": UNIT,
+    "f32": F32,
+    "f64": F64,
+    "bool": BOOL,
+    "char": CHAR,
+    "string": STRING,
+    "unit": UNIT,
 }

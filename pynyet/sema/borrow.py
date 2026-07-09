@@ -33,33 +33,57 @@ avoiding spurious errors on conditionally-consumed bindings).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from pynyet.ast import nodes as N
 from pynyet.diagnostic import Diagnostic, Severity
 
-
 # Names of pseudo-functions whose args are borrowed, never moved.
 _BUILTIN_BORROW = {
-    "out", "err", "fmt", "panic", "in", "print", "type",
-    "+", "-", "*", "/", "%",
-    "==", "!=", "<", "<=", ">", ">=",
-    "&&", "||", "!",
-    "&", "&!",
-    "len", "push", "pop", "append", "str",
-    "file_open", "file_read_all", "file_write", "file_close",
+    "out",
+    "err",
+    "fmt",
+    "panic",
+    "in",
+    "print",
+    "type",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "==",
+    "!=",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "&&",
+    "||",
+    "!",
+    "&",
+    "&!",
+    "len",
+    "push",
+    "pop",
+    "append",
+    "str",
+    "file_open",
+    "file_read_all",
+    "file_write",
+    "file_close",
 }
 
 
 @dataclass
 class _Binding:
     """An entry in a borrow-checker scope."""
+
     name: str
-    type_name: Optional[str]  # Nyet type name or None (unknown)
-    is_ref: bool              # True if the binding is `&T` / `&!T`
+    type_name: str | None  # Nyet type name or None (unknown)
+    is_ref: bool  # True if the binding is `&T` / `&!T`
     moved: bool = False
-    moved_at: Optional[N.Node] = None
+    moved_at: N.Node | None = None
 
 
 class BorrowChecker:
@@ -70,10 +94,10 @@ class BorrowChecker:
         # Stack of scope dicts: name → _Binding.
         self.scopes: list[dict[str, _Binding]] = [{}]
         # Struct field-type lookup so we can decide Copy-ness.
-        self._struct_fields: dict[str, list[tuple[str, N.TypeNode]]] = {}
+        self._struct_fields: dict[str, list[tuple[str, N.TypeNode | None]]] = {}
         # Function param info for move detection at call sites.
         # name → list[(param_type_name, is_ref)]
-        self._fn_params: dict[str, list[tuple[Optional[str], bool]]] = {}
+        self._fn_params: dict[str, list[tuple[str | None, bool]]] = {}
         # Cache of Copy-ness by type name (avoids recomputation/recursion).
         self._copy_cache: dict[str, bool] = {}
 
@@ -94,24 +118,20 @@ class BorrowChecker:
 
     def _register_decl(self, node: N.Node) -> None:
         if isinstance(node, N.StructDecl):
-            self._struct_fields[node.name] = [
-                (f.name, f.type) for f in node.fields
-            ]
+            self._struct_fields[node.name] = [(f.name, f.type) for f in node.fields]
         elif isinstance(node, N.FnDecl):
             self._fn_params[node.name] = [
-                (self._type_name(p.type), self._is_ref(p.type))
-                for p in node.params
+                (self._type_name(p.type), self._is_ref(p.type)) for p in node.params
             ]
         elif isinstance(node, N.ImplDecl):
             for item in node.items:
                 if isinstance(item, N.FnDecl):
                     self._fn_params[item.name] = [
-                        (self._type_name(p.type), self._is_ref(p.type))
-                        for p in item.params
+                        (self._type_name(p.type), self._is_ref(p.type)) for p in item.params
                     ]
 
     @staticmethod
-    def _type_name(tn: Optional[N.TypeNode]) -> Optional[str]:
+    def _type_name(tn: N.TypeNode | None) -> str | None:
         if tn is None:
             return None
         if isinstance(tn, N.RefType):
@@ -123,7 +143,7 @@ class BorrowChecker:
         return None
 
     @staticmethod
-    def _is_ref(tn: Optional[N.TypeNode]) -> bool:
+    def _is_ref(tn: N.TypeNode | None) -> bool:
         return isinstance(tn, N.RefType)
 
     # ------------------------------------------------------------------
@@ -131,12 +151,22 @@ class BorrowChecker:
     # ------------------------------------------------------------------
 
     _PRIM_COPY = {
-        "i8", "i16", "i32", "i64",
-        "u8", "u16", "u32", "u64", "usize",
-        "f32", "f64", "bool", "unit",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "usize",
+        "f32",
+        "f64",
+        "bool",
+        "unit",
     }
 
-    def _is_copy_type(self, name: Optional[str]) -> bool:
+    def _is_copy_type(self, name: str | None) -> bool:
         if name is None:
             # Unknown — be conservative and say Copy so we don't fire
             # spurious errors on types we don't model yet.
@@ -150,10 +180,7 @@ class BorrowChecker:
         # Avoid infinite recursion on self-referential structs.
         self._copy_cache[name] = False
         if name in self._struct_fields:
-            ok = all(
-                self._is_copy_type(self._type_name(t))
-                for _, t in self._struct_fields[name]
-            )
+            ok = all(self._is_copy_type(self._type_name(t)) for _, t in self._struct_fields[name])
             self._copy_cache[name] = ok
             return ok
         # Unknown / sum / array / tuple — non-Copy by default.
@@ -169,10 +196,10 @@ class BorrowChecker:
     def _pop(self) -> None:
         self.scopes.pop()
 
-    def _bind(self, name: str, type_name: Optional[str], is_ref: bool) -> None:
+    def _bind(self, name: str, type_name: str | None, is_ref: bool) -> None:
         self.scopes[-1][name] = _Binding(name, type_name, is_ref)
 
-    def _lookup(self, name: str) -> Optional[_Binding]:
+    def _lookup(self, name: str) -> _Binding | None:
         for sc in reversed(self.scopes):
             if name in sc:
                 return sc[name]
@@ -205,7 +232,7 @@ class BorrowChecker:
     # Expression walking
     # ------------------------------------------------------------------
 
-    def _check_expr(self, node: Optional[N.Node]) -> None:
+    def _check_expr(self, node: N.Node | None) -> None:
         if node is None:
             return
 
@@ -325,7 +352,7 @@ class BorrowChecker:
         head = node.head
         # Determine whether this is a builtin / borrow-only call.
         is_borrow_only = False
-        callee_params: Optional[list[tuple[Optional[str], bool]]] = None
+        callee_params: list[tuple[str | None, bool]] | None = None
         if isinstance(head, N.Ident):
             if head.name in _BUILTIN_BORROW:
                 is_borrow_only = True
@@ -372,11 +399,13 @@ class BorrowChecker:
         if b is None:
             return
         if b.moved:
-            self.errors.append(Diagnostic(
-                Severity.ERROR,
-                f"use of moved value '{node.name}'",
-                node.span,
-            ))
+            self.errors.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    f"use of moved value '{node.name}'",
+                    node.span,
+                )
+            )
             return
         if consuming and not b.is_ref and not self._is_copy_type(b.type_name):
             b.moved = True
@@ -386,18 +415,18 @@ class BorrowChecker:
     # Bindings
     # ------------------------------------------------------------------
 
-    def _bind_let(self, node: N.Decl) -> None:
+    def _bind_let(self, node: N.LetDecl | N.ConstDecl) -> None:
         # If the rhs was an Ident of a non-Copy binding without `&`,
         # the rhs is consumed. We approximate by inspecting the rhs
         # Ident directly here (anywhere else has already been walked).
-        type_name: Optional[str] = self._type_name(getattr(node, "type", None))
+        type_name: str | None = self._type_name(getattr(node, "type", None))
         is_ref = self._is_ref(getattr(node, "type", None))
         if type_name is None and getattr(node, "value", None) is not None:
             type_name = self._infer_value_type(node.value)
         # Re-binding the same name shadows the old binding.
         self.scopes[-1][node.name] = _Binding(node.name, type_name, is_ref)
 
-    def _infer_value_type(self, node: N.Node) -> Optional[str]:
+    def _infer_value_type(self, node: N.Node | None) -> str | None:
         if isinstance(node, N.IntLit):
             return "i32"
         if isinstance(node, N.FloatLit):
@@ -418,7 +447,7 @@ class BorrowChecker:
     # Branch merging
     # ------------------------------------------------------------------
 
-    def _check_branches(self, *branches: Optional[N.Node]) -> None:
+    def _check_branches(self, *branches: N.Node | None) -> None:
         """Walk each branch with an isolated scope, then merge moves.
 
         A binding is considered moved post-merge only if every branch
@@ -454,7 +483,7 @@ class BorrowChecker:
         ]
 
     def _restore(self, snap: list[dict[str, _Binding]]) -> None:
-        for sc, snap_sc in zip(self.scopes, snap):
+        for sc, snap_sc in zip(self.scopes, snap, strict=False):
             for name, sb in snap_sc.items():
                 if name in sc:
                     sc[name].moved = sb.moved
@@ -462,7 +491,7 @@ class BorrowChecker:
 
     def _moves_against(self, snap: list[dict[str, _Binding]]) -> set[str]:
         moved_now: set[str] = set()
-        for sc, snap_sc in zip(self.scopes, snap):
+        for sc, snap_sc in zip(self.scopes, snap, strict=False):
             for name, b in sc.items():
                 prev = snap_sc.get(name)
                 if b.moved and (prev is None or not prev.moved):

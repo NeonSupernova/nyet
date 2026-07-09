@@ -15,9 +15,22 @@ from __future__ import annotations
 from pynyet.ast import nodes as N
 from pynyet.diagnostic import Diagnostic, Severity
 from pynyet.sema.types import (
-    NyetType, IntType, FloatType, BoolType, CharType, StringType, UnitType,
-    FnSig, ArrayType, TupleType, StructType, SumType, ErrorType,
-    I32, I64, F64, BOOL, CHAR, STRING, UNIT, ERROR, PRIM_TYPES,
+    BOOL,
+    ERROR,
+    F64,
+    I32,
+    PRIM_TYPES,
+    STRING,
+    UNIT,
+    ArrayType,
+    CharType,
+    FloatType,
+    FnSig,
+    IntType,
+    NyetType,
+    StructType,
+    SumType,
+    TupleType,
 )
 
 
@@ -58,6 +71,7 @@ class TypeChecker:
         if isinstance(tn, N.RefType):
             inner = self._resolve_type_node(tn.inner)
             from pynyet.sema.types import RefType
+
             return RefType(inner, tn.mutable)
         if isinstance(tn, N.FnType):
             params = tuple(self._resolve_type_node(p) for p in tn.params)
@@ -70,9 +84,7 @@ class TypeChecker:
             return ERROR  # resolved during trait checking
         if isinstance(tn, N.GenericType):
             base = tn.base
-            base_name = base.name if isinstance(
-                base, (N.NamedType, N.PrimType)
-            ) else None
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
             if base_name == "Array" and tn.args:
                 return ArrayType(self._resolve_type_node(tn.args[0]))
             # For now, just return the base type name
@@ -83,17 +95,12 @@ class TypeChecker:
 
     def _register_decl(self, node: N.Node) -> None:
         if isinstance(node, N.FnDecl):
-            param_types = tuple(
-                self._resolve_type_node(p.type) for p in node.params
-            )
+            param_types = tuple(self._resolve_type_node(p.type) for p in node.params)
             ret = self._resolve_type_node(node.return_type) if node.return_type else UNIT
             self.env[node.name] = FnSig(param_types, ret)
 
         elif isinstance(node, N.StructDecl):
-            fields = tuple(
-                (f.name, self._resolve_type_node(f.type))
-                for f in node.fields
-            )
+            fields = tuple((f.name, self._resolve_type_node(f.type)) for f in node.fields)
             st = StructType(node.name, fields)
             self.type_decls[node.name] = st
             # Also register as a callable (constructor)
@@ -105,11 +112,11 @@ class TypeChecker:
                 (name, tuple(self._resolve_type_node(t) for t in types))
                 for name, types in node.variants
             )
-            st = SumType(node.name, variants)
-            self.type_decls[node.name] = st
+            sum_ty = SumType(node.name, variants)
+            self.type_decls[node.name] = sum_ty
             # Register variant constructors
             for vname, vtypes in variants:
-                self.env[vname] = FnSig(vtypes, st)
+                self.env[vname] = FnSig(vtypes, sum_ty)
 
         elif isinstance(node, N.ConstDecl):
             ty = self._resolve_type_node(node.type) if node.type else ERROR
@@ -150,11 +157,13 @@ class TypeChecker:
                 if declared and declared is not ERROR:
                     is_bare_int_lit = isinstance(node.value, N.IntLit)
                     if not self._compatible(declared, val_ty, is_bare_int_lit):
-                        self.errors.append(Diagnostic(
-                            Severity.ERROR,
-                            f"type mismatch: expected {declared}, got {val_ty}",
-                            node.span,
-                        ))
+                        self.errors.append(
+                            Diagnostic(
+                                Severity.ERROR,
+                                f"type mismatch: expected {declared}, got {val_ty}",
+                                node.span,
+                            )
+                        )
                     self.env[node.name] = declared
                 else:
                     self.env[node.name] = val_ty
@@ -166,7 +175,7 @@ class TypeChecker:
             for item in node.items:
                 self._check_node(item)
 
-    def _infer(self, node: N.Node) -> NyetType:
+    def _infer(self, node: N.Node | None) -> NyetType:
         """Infer the type of an expression node."""
         if node is None:
             return UNIT
@@ -219,10 +228,13 @@ class TypeChecker:
             for arg in node.args:
                 self._infer(arg)
             # `(in type)` — return the specified type
-            if (isinstance(node.head, N.Ident) and node.head.name == "in"
-                    and node.args
-                    and isinstance(node.args[0], N.Ident)
-                    and node.args[0].name in PRIM_TYPES):
+            if (
+                isinstance(node.head, N.Ident)
+                and node.head.name == "in"
+                and node.args
+                and isinstance(node.args[0], N.Ident)
+                and node.args[0].name in PRIM_TYPES
+            ):
                 return PRIM_TYPES[node.args[0].name]
             # `(arr i)` — array indexing yields the element type.
             if isinstance(head_ty, ArrayType) and len(node.args) == 1:
@@ -335,17 +347,21 @@ class TypeChecker:
             _castable = (IntType, FloatType, CharType)
             if dst_ty is not ERROR and src_ty is not ERROR:
                 if not isinstance(src_ty, _castable):
-                    self.errors.append(Diagnostic(
-                        Severity.ERROR,
-                        f"cannot cast from non-primitive type {src_ty}",
-                        node.span,
-                    ))
+                    self.errors.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f"cannot cast from non-primitive type {src_ty}",
+                            node.span,
+                        )
+                    )
                 elif not isinstance(dst_ty, _castable):
-                    self.errors.append(Diagnostic(
-                        Severity.ERROR,
-                        f"cannot cast to non-primitive type {dst_ty}",
-                        node.span,
-                    ))
+                    self.errors.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f"cannot cast to non-primitive type {dst_ty}",
+                            node.span,
+                        )
+                    )
             return dst_ty
 
         if isinstance(node, N.Quote):

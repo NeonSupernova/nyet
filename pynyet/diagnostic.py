@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 from .source import Span
 
@@ -19,14 +18,15 @@ class Severity(Enum):
 class Diagnostic:
     severity: Severity
     message: str
-    span: Optional[Span] = None
-    hint: Optional[str] = None
+    span: Span | None = None
+    hint: str | None = None
 
     def format(self) -> str:
         parts: list[str] = []
         if self.span is not None:
             line, col = self.span.start_line_col()
-            parts.append(f"{self.span.file.path}:{line}:{col}: {self.severity.value}: {self.message}")
+            loc = f"{self.span.file.path}:{line}:{col}"
+            parts.append(f"{loc}: {self.severity.value}: {self.message}")
             source_line = self.span.file.line_text(line)
             if source_line:
                 parts.append(f"    {source_line}")
@@ -43,7 +43,7 @@ class Diagnostic:
 class NyetError(Exception):
     """Raised when the compiler hits one or more fatal diagnostics."""
 
-    def __init__(self, diagnostic_or_list: "Diagnostic | list[Diagnostic]") -> None:
+    def __init__(self, diagnostic_or_list: Diagnostic | list[Diagnostic]) -> None:
         if isinstance(diagnostic_or_list, Diagnostic):
             self.diagnostics: list[Diagnostic] = [diagnostic_or_list]
         else:
@@ -62,12 +62,12 @@ class DiagnosticSink:
 
     diagnostics: list[Diagnostic] = field(default_factory=list)
 
-    def error(self, message: str, span: Optional[Span] = None, hint: Optional[str] = None) -> Diagnostic:
+    def error(self, message: str, span: Span | None = None, hint: str | None = None) -> Diagnostic:
         d = Diagnostic(Severity.ERROR, message, span, hint)
         self.diagnostics.append(d)
         return d
 
-    def warn(self, message: str, span: Optional[Span] = None, hint: Optional[str] = None) -> Diagnostic:
+    def warn(self, message: str, span: Span | None = None, hint: str | None = None) -> Diagnostic:
         d = Diagnostic(Severity.WARNING, message, span, hint)
         self.diagnostics.append(d)
         return d

@@ -66,7 +66,8 @@ def dump_codegen_output(path: Path) -> str:
         ll_path.write_text(ir_text)
         clang = subprocess.run(
             ["clang", "-o", str(bin_path), str(ll_path)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if clang.returncode != 0:
             parts.append("=== clang error ===")

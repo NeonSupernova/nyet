@@ -85,6 +85,7 @@ def main() -> int:
             failures += 1
             print(f"[ERROR]  {src.name}: {e}")
             import traceback
+
             traceback.print_exc()
             continue
         if args.update or not golden.exists():

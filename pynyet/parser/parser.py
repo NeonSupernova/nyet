@@ -16,13 +16,10 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pynyet.ast import nodes as N
 from pynyet.diagnostic import Diagnostic, NyetError, Severity
 from pynyet.lexer.token import Token, TokenKind
 from pynyet.source import Span
-
 
 # Primitive type keyword tokens → their string names.
 _PRIM_TYPE_TOKENS: dict[TokenKind, str] = {
@@ -252,14 +249,15 @@ class Parser:
         args: list[N.Expr] = []
         while not self._at(TokenKind.RPAREN):
             # Keyword argument: name:value (e.g. x:0.0 in struct constructors)
-            if (self._at(TokenKind.IDENT)
-                    and self.pos + 1 < len(self.tokens)
-                    and self.tokens[self.pos + 1].kind is TokenKind.COLON):
+            if (
+                self._at(TokenKind.IDENT)
+                and self.pos + 1 < len(self.tokens)
+                and self.tokens[self.pos + 1].kind is TokenKind.COLON
+            ):
                 name_tok = self._advance()  # consume ident
                 self._advance()  # consume colon
                 value = self.parse_expr()
-                args.append(N.KeywordArg(
-                    name_tok.span.merge(value.span), name_tok.value, value))
+                args.append(N.KeywordArg(name_tok.span.merge(value.span), name_tok.value, value))
             else:
                 args.append(self.parse_expr())
         self._expect(TokenKind.RPAREN)
@@ -313,11 +311,13 @@ class Parser:
         if self._peek().kind in _OPERATOR_TOKENS:
             return self._parse_fn_decl_op(lparen)
         # () as function name: call operator (e.g. in Index trait)
-        if (self._at(TokenKind.LPAREN)
-                and self.pos + 1 < len(self.tokens)
-                and self.tokens[self.pos + 1].kind is TokenKind.RPAREN
-                and self.pos + 2 < len(self.tokens)
-                and self.tokens[self.pos + 2].kind is TokenKind.LPAREN):
+        if (
+            self._at(TokenKind.LPAREN)
+            and self.pos + 1 < len(self.tokens)
+            and self.tokens[self.pos + 1].kind is TokenKind.RPAREN
+            and self.pos + 2 < len(self.tokens)
+            and self.tokens[self.pos + 2].kind is TokenKind.LPAREN
+        ):
             self._advance()  # consume (
             self._advance()  # consume )
             return self._parse_fn_decl_named(lparen, "()")
@@ -573,9 +573,11 @@ class Parser:
         fields: list[N.TypeNode] = []
         while not self._at(TokenKind.RPAREN):
             # Variant fields: name:Type or bare Type
-            if (self._at(TokenKind.IDENT)
-                    and self.pos + 1 < len(self.tokens)
-                    and self.tokens[self.pos + 1].kind is TokenKind.COLON):
+            if (
+                self._at(TokenKind.IDENT)
+                and self.pos + 1 < len(self.tokens)
+                and self.tokens[self.pos + 1].kind is TokenKind.COLON
+            ):
                 self._advance()  # skip field name
                 self._advance()  # skip colon
             fields.append(self._parse_type())
@@ -796,9 +798,7 @@ class Parser:
             self._advance()
             inner = self._parse_type()
             self._expect(TokenKind.RBRACKET)
-            return N.GenericType(
-                self._span_from(tok), N.NamedType(tok.span, "Array"), [inner]
-            )
+            return N.GenericType(self._span_from(tok), N.NamedType(tok.span, "Array"), [inner])
 
         raise self._error(f"unexpected token in type: {tok.kind.name}", tok.span)
 
@@ -806,7 +806,7 @@ class Parser:
     # helpers: params, generics, name:type
     # ---------------------------------------------------------------
 
-    def _parse_name_maybe_type(self) -> tuple[str, Optional[N.TypeNode]]:
+    def _parse_name_maybe_type(self) -> tuple[str, N.TypeNode | None]:
         tok = self._peek()
         if tok.kind is TokenKind.IDENT:
             name = self._advance().value
@@ -864,7 +864,7 @@ class Parser:
         nxt = self.tokens[self.pos + 1]
         return nxt.kind in (TokenKind.COLON, TokenKind.RBRACKET)
 
-    def _parse_optional_return_type(self) -> Optional[N.TypeNode]:
+    def _parse_optional_return_type(self) -> N.TypeNode | None:
         if self._at(TokenKind.ARROW):
             self._advance()
             return self._parse_type()
@@ -906,14 +906,15 @@ class Parser:
         args: list[N.Expr] = []
         while not self._at(TokenKind.RPAREN):
             # Keyword argument: name:value
-            if (self._at(TokenKind.IDENT)
-                    and self.pos + 1 < len(self.tokens)
-                    and self.tokens[self.pos + 1].kind is TokenKind.COLON):
+            if (
+                self._at(TokenKind.IDENT)
+                and self.pos + 1 < len(self.tokens)
+                and self.tokens[self.pos + 1].kind is TokenKind.COLON
+            ):
                 name_tok = self._advance()
                 self._advance()  # colon
                 value = self.parse_expr()
-                args.append(N.KeywordArg(
-                    name_tok.span.merge(value.span), name_tok.value, value))
+                args.append(N.KeywordArg(name_tok.span.merge(value.span), name_tok.value, value))
             else:
                 args.append(self.parse_expr())
         self._expect(TokenKind.RPAREN)

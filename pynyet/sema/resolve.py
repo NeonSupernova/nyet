@@ -13,16 +13,16 @@ For v0.1 we support:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from pynyet.ast import nodes as N
-from pynyet.diagnostic import Diagnostic, NyetError, Severity
+from pynyet.diagnostic import Diagnostic, Severity
 
 
 @dataclass
 class Symbol:
     """An entry in a scope — a resolved name."""
+
     name: str
     node: N.Node
     def_id: int
@@ -31,7 +31,7 @@ class Symbol:
 class Scope:
     """A lexical scope mapping names to Symbols."""
 
-    def __init__(self, parent: Optional[Scope] = None) -> None:
+    def __init__(self, parent: Scope | None = None) -> None:
         self.parent = parent
         self.symbols: dict[str, Symbol] = {}
 
@@ -40,7 +40,7 @@ class Scope:
         self.symbols[name] = sym
         return sym
 
-    def lookup(self, name: str) -> Optional[Symbol]:
+    def lookup(self, name: str) -> Symbol | None:
         if name in self.symbols:
             return self.symbols[name]
         if self.parent is not None:
@@ -49,15 +49,46 @@ class Scope:
 
 
 # Built-in names that don't require declaration
-BUILTINS = {"out", "in", "err", "fmt", "str", "len", "push", "pop",
-            "append", "type", "print", "gensym", "parse", "panic",
-            "http/get", "io/on",
-            "file_open", "file_read_all", "file_write", "file_close"}
+BUILTINS = {
+    "out",
+    "in",
+    "err",
+    "fmt",
+    "str",
+    "len",
+    "push",
+    "pop",
+    "append",
+    "type",
+    "print",
+    "gensym",
+    "parse",
+    "panic",
+    "http/get",
+    "io/on",
+    "file_open",
+    "file_read_all",
+    "file_write",
+    "file_close",
+}
 
 # Primitive type names valid in expression position (e.g. `(in i32)`)
 PRIM_TYPE_NAMES = {
-    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize",
-    "f32", "f64", "bool", "char", "string", "unit",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "usize",
+    "f32",
+    "f64",
+    "bool",
+    "char",
+    "string",
+    "unit",
 }
 
 
@@ -118,7 +149,7 @@ class NameResolver:
                     sym = scope.define(item.name, item, did)
                     self.symbols[did] = sym
 
-    def _resolve_node(self, node: N.Node, scope: Scope) -> None:
+    def _resolve_node(self, node: N.Node | None, scope: Scope) -> None:
         if node is None:
             return
 
@@ -146,25 +177,27 @@ class NameResolver:
 
         elif isinstance(node, N.Ident):
             name = node.name
-            sym = scope.lookup(name)
-            if sym is not None:
-                node.resolved_def_id = sym.def_id
+            found_sym = scope.lookup(name)
+            if found_sym is not None:
+                node.resolved_def_id = found_sym.def_id
             elif name not in BUILTINS and name not in PRIM_TYPE_NAMES and not name[0:1].isupper():
                 # Upper-case names might be type constructors (Ok, Some, etc.)
                 # Operators (+, -, etc.) are also fine
                 if name.isidentifier() and name not in {"self", "Self", "_"}:
-                    self.errors.append(Diagnostic(
-                        Severity.ERROR,
-                        f"undefined name '{name}'",
-                        node.span,
-                    ))
+                    self.errors.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f"undefined name '{name}'",
+                            node.span,
+                        )
+                    )
 
         elif isinstance(node, N.Path):
             # Path like std/io — resolve first segment
             full = "/".join(node.segments)
-            sym = scope.lookup(full)
-            if sym is not None:
-                node.resolved_def_id = sym.def_id
+            found_sym = scope.lookup(full)
+            if found_sym is not None:
+                node.resolved_def_id = found_sym.def_id
 
         elif isinstance(node, N.Call):
             self._resolve_node(node.head, scope)

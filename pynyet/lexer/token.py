@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any
 
 from ..source import Span
 
@@ -197,7 +197,7 @@ class Token:
     span: Span
     value: Any = None
     # For numeric literals: the explicit suffix (e.g. "i64") or None.
-    suffix: Optional[str] = None
+    suffix: str | None = None
 
     @property
     def text(self) -> str:

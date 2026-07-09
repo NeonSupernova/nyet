@@ -7,12 +7,9 @@ set to lex the full main.no spec, with trivia preserved for autodocs.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from ..diagnostic import Diagnostic, NyetError, Severity
 from ..source import SourceFile, Span
 from .token import BOOL_LITERALS, KEYWORDS, Token, TokenKind
-
 
 # Characters that can appear inside an identifier body (after the leading char).
 _IDENT_BODY = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
@@ -24,10 +21,17 @@ _OCT_DIGIT = set("01234567")
 
 # Valid numeric suffixes.
 _NUMERIC_SUFFIXES = {
-    "i8", "i16", "i32", "i64",
-    "u8", "u16", "u32", "u64",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
     "usize",
-    "f32", "f64",
+    "f32",
+    "f64",
 }
 
 
@@ -64,10 +68,10 @@ class Lexer:
     def _span(self, start: int) -> Span:
         return Span(self.file, start, self.pos)
 
-    def _emit(self, kind: TokenKind, start: int, value=None, suffix: Optional[str] = None) -> None:
+    def _emit(self, kind: TokenKind, start: int, value=None, suffix: str | None = None) -> None:
         self.tokens.append(Token(kind, self._span(start), value, suffix))
 
-    def _error(self, message: str, start: int, hint: Optional[str] = None) -> NyetError:
+    def _error(self, message: str, start: int, hint: str | None = None) -> NyetError:
         span = self._span(max(start, start + 1) if start == self.pos else start)
         return NyetError(Diagnostic(Severity.ERROR, message, span, hint))
 
@@ -84,19 +88,33 @@ class Lexer:
                 continue
             start = self.pos
             if ch == "(":
-                self._advance(); self._emit(TokenKind.LPAREN, start); continue
+                self._advance()
+                self._emit(TokenKind.LPAREN, start)
+                continue
             if ch == ")":
-                self._advance(); self._emit(TokenKind.RPAREN, start); continue
+                self._advance()
+                self._emit(TokenKind.RPAREN, start)
+                continue
             if ch == "[":
-                self._advance(); self._emit(TokenKind.LBRACKET, start); continue
+                self._advance()
+                self._emit(TokenKind.LBRACKET, start)
+                continue
             if ch == "]":
-                self._advance(); self._emit(TokenKind.RBRACKET, start); continue
+                self._advance()
+                self._emit(TokenKind.RBRACKET, start)
+                continue
             if ch == "{":
-                self._advance(); self._emit(TokenKind.LBRACE, start); continue
+                self._advance()
+                self._emit(TokenKind.LBRACE, start)
+                continue
             if ch == "}":
-                self._advance(); self._emit(TokenKind.RBRACE, start); continue
+                self._advance()
+                self._emit(TokenKind.RBRACE, start)
+                continue
             if ch == ",":
-                self._advance(); self._emit(TokenKind.COMMA, start); continue
+                self._advance()
+                self._emit(TokenKind.COMMA, start)
+                continue
             if ch == "#":
                 if self._peek(1) == "(":
                     self.pos += 2
@@ -117,7 +135,8 @@ class Lexer:
                     continue
                 raise self._error("unexpected '#' — expected '#(' for tuple", start)
             if ch == '"':
-                self._lex_string(start); continue
+                self._lex_string(start)
+                continue
             if ch == ":":
                 # Disambiguation:
                 #   `x:i32`  — type annotation: ':' is adjacent to the preceding ident/digit.
@@ -125,7 +144,8 @@ class Lexer:
                 # The rule: keyword literal only when the char immediately before ':'
                 # is whitespace, paren/bracket/brace, or the start of input.
                 prev_ch = self.src[start - 1] if start > 0 else ""
-                attached_left = prev_ch in _IDENT_BODY  # ident body covers letters, digits, underscore
+                # ident body covers letters, digits, underscore
+                attached_left = prev_ch in _IDENT_BODY
                 next_ch = self._peek(1)
                 if next_ch in _IDENT_START and not attached_left:
                     self._lex_keyword_literal(start)
@@ -153,17 +173,29 @@ class Lexer:
                 self._emit(TokenKind.MINUS, start)
                 continue
             if ch == "+":
-                self._advance(); self._emit(TokenKind.PLUS, start); continue
+                self._advance()
+                self._emit(TokenKind.PLUS, start)
+                continue
             if ch == "*":
-                self._advance(); self._emit(TokenKind.STAR, start); continue
+                self._advance()
+                self._emit(TokenKind.STAR, start)
+                continue
             if ch == "%":
-                self._advance(); self._emit(TokenKind.PERCENT, start); continue
+                self._advance()
+                self._emit(TokenKind.PERCENT, start)
+                continue
             if ch == "^":
-                self._advance(); self._emit(TokenKind.CARET, start); continue
+                self._advance()
+                self._emit(TokenKind.CARET, start)
+                continue
             if ch == "~":
-                self._advance(); self._emit(TokenKind.TILDE, start); continue
+                self._advance()
+                self._emit(TokenKind.TILDE, start)
+                continue
             if ch == "?":
-                self._advance(); self._emit(TokenKind.QUESTION, start); continue
+                self._advance()
+                self._emit(TokenKind.QUESTION, start)
+                continue
             if ch == "=":
                 if self._peek(1) == "=":
                     self.pos += 2
@@ -183,38 +215,50 @@ class Lexer:
             if ch == "<":
                 nxt = self._peek(1)
                 if nxt == "=":
-                    self.pos += 2; self._emit(TokenKind.LT_EQ, start)
+                    self.pos += 2
+                    self._emit(TokenKind.LT_EQ, start)
                 elif nxt == "<":
-                    self.pos += 2; self._emit(TokenKind.LT_LT, start)
+                    self.pos += 2
+                    self._emit(TokenKind.LT_LT, start)
                 else:
-                    self._advance(); self._emit(TokenKind.LT, start)
+                    self._advance()
+                    self._emit(TokenKind.LT, start)
                 continue
             if ch == ">":
                 nxt = self._peek(1)
                 if nxt == "=":
-                    self.pos += 2; self._emit(TokenKind.GT_EQ, start)
+                    self.pos += 2
+                    self._emit(TokenKind.GT_EQ, start)
                 elif nxt == ">":
-                    self.pos += 2; self._emit(TokenKind.GT_GT, start)
+                    self.pos += 2
+                    self._emit(TokenKind.GT_GT, start)
                 else:
-                    self._advance(); self._emit(TokenKind.GT, start)
+                    self._advance()
+                    self._emit(TokenKind.GT, start)
                 continue
             if ch == "&":
                 nxt = self._peek(1)
                 if nxt == "&":
-                    self.pos += 2; self._emit(TokenKind.AND_AND, start)
+                    self.pos += 2
+                    self._emit(TokenKind.AND_AND, start)
                 elif nxt == "!":
-                    self.pos += 2; self._emit(TokenKind.AMP_BANG, start)
+                    self.pos += 2
+                    self._emit(TokenKind.AMP_BANG, start)
                 else:
-                    self._advance(); self._emit(TokenKind.AMP, start)
+                    self._advance()
+                    self._emit(TokenKind.AMP, start)
                 continue
             if ch == "|":
                 nxt = self._peek(1)
                 if nxt == "|":
-                    self.pos += 2; self._emit(TokenKind.OR_OR, start)
+                    self.pos += 2
+                    self._emit(TokenKind.OR_OR, start)
                 elif nxt == ">":
-                    self.pos += 2; self._emit(TokenKind.PIPE_ARROW, start)
+                    self.pos += 2
+                    self._emit(TokenKind.PIPE_ARROW, start)
                 else:
-                    self._advance(); self._emit(TokenKind.BAR, start)
+                    self._advance()
+                    self._emit(TokenKind.BAR, start)
                 continue
             if ch == "/":
                 # A bare `/` with no identifier char on either side is the SLASH
@@ -224,9 +268,11 @@ class Lexer:
                 self._emit(TokenKind.SLASH, start)
                 continue
             if ch in _DIGIT:
-                self._lex_number(start); continue
+                self._lex_number(start)
+                continue
             if ch in _IDENT_START:
-                self._lex_ident(start); continue
+                self._lex_ident(start)
+                continue
 
             raise self._error(f"unexpected character {ch!r}", start)
 
@@ -355,7 +401,7 @@ class Lexer:
         else:
             self._emit(TokenKind.INT_LIT, start, value=int(raw), suffix=suffix)
 
-    def _lex_numeric_suffix(self, start: int) -> Optional[str]:
+    def _lex_numeric_suffix(self, start: int) -> str | None:
         if self._eof() or self._peek() not in _IDENT_START:
             return None
         save = self.pos
