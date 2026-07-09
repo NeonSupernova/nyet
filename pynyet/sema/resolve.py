@@ -76,6 +76,7 @@ BUILTINS = {
     "any",
     "all",
     "zip",
+    "drop_while",
 }
 
 # Primitive type names valid in expression position (e.g. `(in i32)`)

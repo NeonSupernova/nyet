@@ -1290,6 +1290,26 @@ class Emitter:
                 return "i32"
             if op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||", "!"):
                 return "i1"
+            # HOF builtins over Array[T] (see _emit_call's dispatch table
+            # a few hundred lines down) -- these aren't in `_fn_sigs`
+            # since they're handled specially rather than as real
+            # top-level functions, so without an explicit case here they
+            # fell through every branch below to the final "i32" default.
+            # That's silently wrong for map/filter/zip/drop_while (all
+            # return a heap Array[T], i.e. `ptr`) whenever the call is
+            # used inline (e.g. `(print_array (map f arr))`) rather than
+            # through a `let` with an explicit type annotation, which has
+            # its own separate, correct type-driven path.
+            if op in ("map", "filter", "zip", "drop_while"):
+                return "ptr"
+            if op in ("any", "all"):
+                return "i1"
+            if op == "fold" and node.args and isinstance(node.args[0], N.Ident):
+                fname = node.args[0].name
+                if fname in self._fn_sigs:
+                    return self._fn_sigs[fname][1]
+                if fname in self._env_fn_sig:
+                    return self._env_fn_sig[fname][1]
             if op in ("&", "&!") and len(node.args) == 1:
                 return self._infer_llvm_type(node.args[0])
             if op == "fmt":
@@ -1580,6 +1600,13 @@ class Emitter:
                 and node.args[1].name in self._env_array_elem
             ):
                 return self._emit_hof_zip(node.args[0].name, node.args[1].name)
+            if (
+                name == "drop_while"
+                and len(node.args) == 2
+                and isinstance(node.args[1], N.Ident)
+                and node.args[1].name in self._env_array_elem
+            ):
+                return self._emit_hof_drop_while(node.args[0], node.args[1].name)
             # Operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -3785,6 +3812,78 @@ class Emitter:
         final = self._fresh_tmp()
         self._emit_line(f"{final} = load i1, ptr {result_slot}")
         return final
+
+    def _emit_hof_drop_while(self, f_arg: N.Expr, arr_name: str) -> str | None:
+        """`(drop_while pred arr)` -- scan from the front while `pred`
+        holds, then return the untouched suffix starting at the first
+        element where it doesn't (or an empty array if `pred` held for
+        every element). The scan is a single early-breaking pass reusing
+        `_emit_counted_loop`'s own index slot as the drop point: on early
+        exit (`pred` failed) `i_slot` still holds that index, since the
+        increment only runs after a successful iteration; on a normal
+        loop-exhausted exit it holds `len`, matching an all-true scan.
+        """
+        callable_ = self._resolve_callable(f_arg)
+        if callable_ is None:
+            return None
+        fnptr, param_tys, _ = callable_
+        elem_ty = self._env_array_elem[arr_name]
+
+        arr, len64 = self._array_ptr_and_len(arr_name)
+        base = self._array_data_base(arr)
+
+        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
+        src_ptr = self._fresh_tmp()
+        self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
+        elem = self._fresh_tmp()
+        self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
+        arg_ty = param_tys[0] if param_tys else elem_ty
+        keep_dropping = self._emit_indirect_call_raw(fnptr, [arg_ty], [elem], "i1")
+
+        cont_label = self._fresh_label("hof_dw_cont")
+        self._emit_line(f"br i1 {keep_dropping}, label %{cont_label}, label %{end_label}")
+        self._emit_label(cont_label)
+        i_next = self._fresh_tmp()
+        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(end_label)
+
+        drop_idx = self._fresh_tmp()
+        self._emit_line(f"{drop_idx} = load i64, ptr {i_slot}")
+        new_len = self._fresh_tmp()
+        self._emit_line(f"{new_len} = sub i64 {len64}, {drop_idx}")
+
+        out_size = self._fresh_tmp()
+        self._emit_line(f"{out_size} = mul i64 {new_len}, {self._sizeof(elem_ty)}")
+        total = self._fresh_tmp()
+        self._emit_line(f"{total} = add i64 {out_size}, 8")
+        self._declare_extern("declare ptr @malloc(i64)")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {total})")
+        self._emit_line(f"store i64 {new_len}, ptr {out}")
+        out_base = self._array_data_base(out)
+
+        # Copy the surviving suffix element-by-element, matching the
+        # style of _emit_hof_map/_emit_hof_filter (no llvm.memcpy
+        # elsewhere in this file).
+        j_slot, j_val, copy_cond, copy_end = self._emit_counted_loop(new_len)
+        src_idx = self._fresh_tmp()
+        self._emit_line(f"{src_idx} = add i64 {drop_idx}, {j_val}")
+        copy_src = self._fresh_tmp()
+        self._emit_line(f"{copy_src} = getelementptr {elem_ty}, ptr {base}, i64 {src_idx}")
+        copy_val = self._fresh_tmp()
+        self._emit_line(f"{copy_val} = load {elem_ty}, ptr {copy_src}")
+        copy_dst = self._fresh_tmp()
+        self._emit_line(f"{copy_dst} = getelementptr {elem_ty}, ptr {out_base}, i64 {j_val}")
+        self._emit_line(f"store {elem_ty} {copy_val}, ptr {copy_dst}")
+        j_next = self._fresh_tmp()
+        self._emit_line(f"{j_next} = add i64 {j_val}, 1")
+        self._emit_line(f"store i64 {j_next}, ptr {j_slot}")
+        self._emit_line(f"br label %{copy_cond}")
+        self._emit_label(copy_end)
+
+        return out
 
     def _emit_hof_zip(self, arr1_name: str, arr2_name: str) -> str | None:
         elem1_ty = self._env_array_elem[arr1_name]

@@ -1,0 +1,22 @@
+;;;; dropwhile.no
+
+(fn isEven (x:i32) -> bool
+  (== (% x 2) 0))
+
+(fn print_array (arr:Array[i32]) -> unit
+  (do
+    (var i:i32 0)
+    (loop
+      (if (>= i (len arr)) (break pass) pass)
+      (out (arr i))
+      (out " ")
+      (= i (+ i 1)))
+    (out "\n")))
+
+(fn main () -> unit
+  (do
+    (var nums:Array[i32] [
+      2 4 6 8 10 12 14 16 18 20
+      1 2 1 2 2 4 2 5 3 1])
+    (let rest:Array[i32] (drop_while isEven nums))
+    (print_array rest)))
