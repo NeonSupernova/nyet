@@ -41,6 +41,21 @@
             <key>patterns</key>
             <array>
                 <dict>
+                    <key>name</key><string>comment.block.nyet</string>
+                    <key>begin</key><string>#\|</string>
+                    <key>beginCaptures</key>
+                    <dict>
+                        <key>0</key>
+                        <dict><key>name</key><string>punctuation.definition.comment.begin.nyet</string></dict>
+                    </dict>
+                    <key>end</key><string>\|#</string>
+                    <key>endCaptures</key>
+                    <dict>
+                        <key>0</key>
+                        <dict><key>name</key><string>punctuation.definition.comment.end.nyet</string></dict>
+                    </dict>
+                </dict>
+                <dict>
                     <key>name</key><string>comment.line.section.nyet</string>
                     <key>match</key><string>;;;+.*$</string>
                 </dict>
