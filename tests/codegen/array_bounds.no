@@ -1,0 +1,11 @@
+;; Array indexing must panic on out-of-bounds access instead of
+;; silently reading adjacent heap memory.
+;; Expected:
+;;   in bounds: 20
+;;   index out of bounds: the len is 3 but the index is 5
+;; (exit code 1)
+
+(fn main () -> unit
+  (var a:Array[i32] [10 20 30])
+  (out "in bounds: ") (out (a 1)) (out "\n")
+  (out (a 5)) (out "\n"))

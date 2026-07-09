@@ -2991,6 +2991,39 @@ class Emitter:
         self._emit_line(f"{idx64} = sext {idx_ty} {idx_val} to i64")
         return idx64
 
+    def _emit_bounds_check(self, arr_ptr: str, idx64: str) -> None:
+        """Panic (print + exit(1)) if `idx64` is out of `[0, len)` for the
+        array at `arr_ptr`. Length is the i64 stored at offset 0."""
+        self._declare_printf()
+        self._declare_extern("declare void @exit(i32)")
+
+        len64 = self._fresh_tmp()
+        self._emit_line(f"{len64} = load i64, ptr {arr_ptr}")
+        lo_ok = self._fresh_tmp()
+        self._emit_line(f"{lo_ok} = icmp sge i64 {idx64}, 0")
+        hi_ok = self._fresh_tmp()
+        self._emit_line(f"{hi_ok} = icmp slt i64 {idx64}, {len64}")
+        ok = self._fresh_tmp()
+        self._emit_line(f"{ok} = and i1 {lo_ok}, {hi_ok}")
+
+        ok_label = self._fresh_label("bounds_ok")
+        panic_label = self._fresh_label("bounds_panic")
+        self._emit_line(f"br i1 {ok}, label %{ok_label}, label %{panic_label}")
+
+        self._emit_label(panic_label)
+        msg = self._get_format_string(
+            "index out of bounds: the len is %lld but the index is %lld\n",
+            "bounds_panic_msg",
+        )
+        panic_tmp = self._fresh_tmp()
+        self._emit_line(
+            f"{panic_tmp} = call i32 (ptr, ...) @printf(ptr {msg}, i64 {len64}, i64 {idx64})"
+        )
+        self._emit_line("call void @exit(i32 1)")
+        self._emit_line("unreachable")
+
+        self._emit_label(ok_label)
+
     def _emit_array_len(self, arg: N.Expr) -> str:
         """Read the i64 length stored at offset 0 of an array's heap block,
         then truncate to i32 so it can be used in `i32` arithmetic and
@@ -3047,6 +3080,7 @@ class Emitter:
         idx_val = self._emit_expr(idx_arg)
         idx_ty = self._infer_llvm_type(idx_arg)
         idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
+        self._emit_bounds_check(arr, idx64)
 
         base = self._array_data_base(arr)
         elem_ptr = self._fresh_tmp()
@@ -3089,6 +3123,7 @@ class Emitter:
         idx_val = self._emit_expr(idx_arg)
         idx_ty = self._infer_llvm_type(idx_arg)
         idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
+        self._emit_bounds_check(arr, idx64)
 
         if value is None:
             return None
