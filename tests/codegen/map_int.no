@@ -1,0 +1,15 @@
+;; Map[string i32] -- integer values go through the i64-slot conversion
+;; (sext on insert, trunc on lookup), not just pointer-typed strings.
+;; Expected:
+;;   90
+;;   85
+;;   77
+;;   0
+
+(fn main () -> unit
+  (let scores:Map[string i32] {"alice" 90 "bob" 85})
+  (out (scores "alice")) (out "\n")
+  (out (scores "bob")) (out "\n")
+  (= (scores "carol") 77)
+  (out (scores "carol")) (out "\n")
+  (out (scores "unknown")) (out "\n"))

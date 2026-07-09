@@ -174,11 +174,15 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(ir_text)
         return 0
 
-    # Compile with clang
+    # Compile with clang, linking the C runtime's Map[K V]/Set[T] support
+    # (self-contained, matches codegen's plain-C-string representation --
+    # see runtime/map.c; the rest of runtime/ uses an incompatible fat-
+    # pointer string ABI and isn't linked).
     out_path = Path(args.output) if args.output else Path("output")
+    runtime_map_c = Path(__file__).resolve().parents[1] / "runtime" / "map.c"
     try:
         result = subprocess.run(
-            ["clang", "-o", str(out_path), str(ll_path)],
+            ["clang", "-o", str(out_path), str(ll_path), str(runtime_map_c)],
             capture_output=True,
             text=True,
         )

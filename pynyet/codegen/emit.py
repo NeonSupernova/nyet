@@ -84,6 +84,14 @@ class Emitter:
         self._env_tuple_types: dict[str, str] = {}
         self._tuple_types: dict[tuple[str, ...], str] = {}
 
+        # Map[string V] bindings — name -> value LLVM type. Backed by
+        # runtime/map.c's nyet_map_* functions; keys are always strings
+        # (the runtime hashes/compares C strings). Used by `_emit_call`
+        # to dispatch `(m key)` to a lookup and by `_emit_assign` to
+        # dispatch `(= (m key) v)` to insert/update, mirroring
+        # `_env_array_elem`.
+        self._env_map_val_ty: dict[str, str] = {}
+
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
         # (fn_name, type_args_tuple) → mangled_name — already-monomorphized
@@ -805,6 +813,9 @@ class Emitter:
             if base_name == "Array":
                 # Arrays lower to a heap pointer (header + elements).
                 return "ptr"
+            if base_name in ("Map", "Set"):
+                # Hash table lowers to a heap pointer (see runtime/map.c).
+                return "ptr"
             if base_name is not None:
                 # Force inner generic args to monomorphize first so any
                 # nested sum/struct types are registered before we use
@@ -846,6 +857,19 @@ class Emitter:
             base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
             if base_name == "Array" and tn.args:
                 return self._llvm_type(tn.args[0])
+        return None
+
+    def _map_val_llvm_type(self, tn: N.TypeNode | None) -> str | None:
+        """Return the LLVM value type if `tn` is `Map[K V]` (or `&Map[K V]`)."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._map_val_llvm_type(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Map" and len(tn.args) >= 2:
+                return self._llvm_type(tn.args[1])
         return None
 
     def _llvm_ret_type(self, tn: N.TypeNode | None) -> str:
@@ -912,6 +936,7 @@ class Emitter:
             "env_char_names": set(self._env_char_names),
             "env_string_names": set(self._env_string_names),
             "env_tuple_types": dict(self._env_tuple_types),
+            "env_map_val_ty": dict(self._env_map_val_ty),
             "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
@@ -929,6 +954,7 @@ class Emitter:
         self._env_char_names = saved["env_char_names"]
         self._env_string_names = saved["env_string_names"]
         self._env_tuple_types = saved["env_tuple_types"]
+        self._env_map_val_ty = saved["env_map_val_ty"]
         self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
@@ -1095,6 +1121,8 @@ class Emitter:
             return "ptr"
         if isinstance(node, N.TupleLit):
             return "ptr"
+        if isinstance(node, N.MapLit):
+            return "ptr"
         if isinstance(node, N.Cast):
             return self._llvm_type(node.target_type)
         if isinstance(node, N.Ident) and node.name in self._env:
@@ -1121,6 +1149,9 @@ class Emitter:
                 idx = node.args[0].value
                 if 0 <= idx < len(fields):
                     return fields[idx][1]
+            # Map lookup: `(m key)` yields the map's value type.
+            if op in self._env_map_val_ty and len(node.args) == 1:
+                return self._env_map_val_ty[op]
             if op in ("+", "-", "*", "/", "%"):
                 if node.args:
                     sn = self._infer_nyet_type_name(node.args[0])
@@ -1272,6 +1303,9 @@ class Emitter:
         if isinstance(node, N.TupleLit):
             return self._emit_tuple_lit(node)
 
+        if isinstance(node, N.MapLit):
+            return self._emit_map_lit(node)
+
         if isinstance(node, N.Call):
             return self._emit_call(node)
 
@@ -1350,6 +1384,9 @@ class Emitter:
             # Tuple indexing: `(t i)` where `t` is a local tuple binding.
             if name in self._env_tuple_types and len(node.args) == 1:
                 return self._emit_tuple_index(name, node.args[0])
+            # Map lookup: `(m key)` where `m` is a local Map[string V].
+            if name in self._env_map_val_ty and len(node.args) == 1:
+                return self._emit_map_get(name, node.args[0])
             # Builtins
             if name == "out":
                 return self._emit_out(node.args)
@@ -2945,6 +2982,26 @@ class Emitter:
             self._env_tuple_types[node.name] = tname
             return None
 
+        # Map[string V] bindings: store the heap pointer and remember the
+        # value type so `(name key)` / `(= (name key) v)` lower correctly.
+        # Detected via either a `Map[K V]` annotation or a literal
+        # `MapLit` rhs (value type inferred from its first entry).
+        map_val_ty: str | None = None
+        if node.type is not None:
+            map_val_ty = self._map_val_llvm_type(node.type)
+        if map_val_ty is None and isinstance(node.value, N.MapLit) and node.value.entries:
+            map_val_ty = self._infer_llvm_type(node.value.entries[0][1])
+        if map_val_ty is not None:
+            ptr = self._emit_alloca("ptr")
+            val = self._emit_expr(node.value) if node.value is not None else None
+            if val is not None:
+                self._emit_line(f"store ptr {val}, ptr {ptr}")
+            else:
+                self._emit_line(f"store ptr null, ptr {ptr}")
+            self._env[node.name] = (ptr, "ptr")
+            self._env_map_val_ty[node.name] = map_val_ty
+            return None
+
         # For struct/sum-type bindings, the value is already a ptr (from construction)
         is_aggregate = nyet_name is not None and (
             nyet_name in self._structs or nyet_name in self._sum_types
@@ -3056,6 +3113,14 @@ class Emitter:
             and len(target.args) == 1
         ):
             return self._emit_array_assign(target.head.name, target.args[0], node.value)
+        # Map insert/update: `(= (m key) v)`.
+        if (
+            isinstance(target, N.Call)
+            and isinstance(target.head, N.Ident)
+            and target.head.name in self._env_map_val_ty
+            and len(target.args) == 1
+        ):
+            return self._emit_map_set(target.head.name, target.args[0], node.value)
         # Field assignment: `(= (. p x) v)`.
         if isinstance(target, N.FieldAccess):
             ptr_and_ty = self._emit_field_ptr(target)
@@ -3605,6 +3670,102 @@ class Emitter:
         self._emit_line(f"br label %{cond_label}")
         self._emit_label(end_label)
         return out
+
+    # ------------------------------------------------------------------
+    # Map[string V] / Set[T] — backed by runtime/map.c
+    # ------------------------------------------------------------------
+    #
+    # Values are stored as generic 8-byte slots in the hash table; the
+    # real Nyet type is tracked statically per binding (`_env_map_val_ty`,
+    # mirroring `_env_array_elem`) and used to convert to/from the slot
+    # representation at each read/write, the same trick Array[T] uses to
+    # stay generic without per-type monomorphized codegen.
+
+    def _to_i64_slot(self, val: str, ty: str) -> str:
+        """Widen/reinterpret a value of LLVM type `ty` to an i64 slot."""
+        if ty == "i64":
+            return val
+        if ty in ("i1", "i8", "i16", "i32"):
+            tmp = self._fresh_tmp()
+            self._emit_line(f"{tmp} = sext {ty} {val} to i64")
+            return tmp
+        if ty == "ptr":
+            tmp = self._fresh_tmp()
+            self._emit_line(f"{tmp} = ptrtoint ptr {val} to i64")
+            return tmp
+        if ty == "double":
+            tmp = self._fresh_tmp()
+            self._emit_line(f"{tmp} = bitcast double {val} to i64")
+            return tmp
+        # float and anything else unhandled: widen through i32 as a
+        # best-effort fallback rather than emitting invalid IR.
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = sext i32 0 to i64")
+        return tmp
+
+    def _from_i64_slot(self, val: str, ty: str) -> str:
+        """Narrow/reinterpret an i64 slot back to LLVM type `ty`."""
+        if ty == "i64":
+            return val
+        if ty in ("i1", "i8", "i16", "i32"):
+            tmp = self._fresh_tmp()
+            self._emit_line(f"{tmp} = trunc i64 {val} to {ty}")
+            return tmp
+        if ty == "ptr":
+            tmp = self._fresh_tmp()
+            self._emit_line(f"{tmp} = inttoptr i64 {val} to ptr")
+            return tmp
+        if ty == "double":
+            tmp = self._fresh_tmp()
+            self._emit_line(f"{tmp} = bitcast i64 {val} to double")
+            return tmp
+        return val
+
+    def _emit_map_lit(self, node: N.MapLit) -> str:
+        """Emit `{k1 v1 k2 v2 ...}` -> nyet_map_new + nyet_map_set per entry."""
+        self._declare_extern("declare ptr @nyet_map_new(i64)")
+        self._declare_extern("declare void @nyet_map_set(ptr, ptr, i64)")
+        cap = max(16, len(node.entries) * 2)
+        m = self._fresh_tmp()
+        self._emit_line(f"{m} = call ptr @nyet_map_new(i64 {cap})")
+        for k_node, v_node in node.entries:
+            k_val = self._emit_expr(k_node)
+            v_val = self._emit_expr(v_node)
+            if k_val is None or v_val is None:
+                continue
+            v_ty = self._infer_llvm_type(v_node)
+            v_slot = self._to_i64_slot(v_val, v_ty)
+            self._emit_line(f"call void @nyet_map_set(ptr {m}, ptr {k_val}, i64 {v_slot})")
+        return m
+
+    def _emit_map_get(self, name: str, key_arg: N.Expr) -> str | None:
+        self._declare_extern("declare i64 @nyet_map_get(ptr, ptr, i64)")
+        val_ty = self._env_map_val_ty[name]
+        ptr_slot, _ = self._env[name]
+        m = self._fresh_tmp()
+        self._emit_line(f"{m} = load ptr, ptr {ptr_slot}")
+        key_val = self._emit_expr(key_arg)
+        if key_val is None:
+            return None
+        raw = self._fresh_tmp()
+        self._emit_line(f"{raw} = call i64 @nyet_map_get(ptr {m}, ptr {key_val}, i64 0)")
+        return self._from_i64_slot(raw, val_ty)
+
+    def _emit_map_set(self, name: str, key_arg: N.Expr, value: N.Expr | None) -> str | None:
+        self._declare_extern("declare void @nyet_map_set(ptr, ptr, i64)")
+        val_ty = self._env_map_val_ty[name]
+        ptr_slot, _ = self._env[name]
+        m = self._fresh_tmp()
+        self._emit_line(f"{m} = load ptr, ptr {ptr_slot}")
+        key_val = self._emit_expr(key_arg)
+        if key_val is None or value is None:
+            return None
+        val = self._emit_expr(value)
+        if val is None:
+            return None
+        v_slot = self._to_i64_slot(val, val_ty)
+        self._emit_line(f"call void @nyet_map_set(ptr {m}, ptr {key_val}, i64 {v_slot})")
+        return None
 
     # ------------------------------------------------------------------
     # User-defined function calls

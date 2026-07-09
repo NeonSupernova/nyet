@@ -204,12 +204,35 @@ HEAD was independently verified clean.
       (parser discards the pattern -- separate feature); generic
       functions returning a tuple built from type params (`#(B A)`)
       don't substitute correctly in typeck's generic instantiation.
-- [ ] Map/Set runtime + codegen
-- [ ] stdlib HOFs: map/filter/fold/any/all/zip/...
+- [x] stdlib HOFs (2026-07-09): map/filter/fold/any/all over Array[T],
+      plus zip (pairs into an array of tuples). All match main.no's own
+      call syntax (array/arrays last). flat_map deliberately not
+      implemented (dynamic-size result, needs more machinery) and not
+      registered as a builtin, so it fails cleanly as "undefined name".
+- [x] Map/Set runtime + codegen (2026-07-09) — see the runtime-fate
+      decision below. Map[string V] fully works: `{k v ...}`
+      construction, `(m key)` lookup, `(= (m key) v)` insert/update,
+      matching main.no's own documented example exactly. Values are
+      generic 8-byte slots (sext/trunc for ints, ptrtoint/inttoptr for
+      pointers, bitcast for f64), the real type tracked statically per
+      binding the same way Array[T] tracks its element type. Only
+      string keys are supported (the runtime hashes/compares C
+      strings) -- Map[i32 V] etc. isn't recognized. Set[T] has runtime
+      support (nyet_set_new/add/contains/count) but main.no defines no
+      construction syntax for it at all (no SetLit AST node, no `{...}`
+      equivalent) -- not a codegen gap, a language-design gap; skipped
+      rather than invent syntax unilaterally.
 - [ ] `dyn` trait objects + vtables
 - [ ] Drop insertion (everything currently leaks)
-- [ ] Decide fate of orphaned C runtime (runtime/*.c) — link it in, or
-      remove; string/Map/bounds-check work wants it
+- [x] Decided the fate of the orphaned C runtime (2026-07-09): the
+      original runtime/{alloc,string,io}.c used a length-prefixed fat
+      `nyet_string` struct that never matched what codegen actually
+      emits (plain null-terminated C strings) -- those three files
+      remain unlinked/orphaned. Added a new, separate
+      runtime/map.c using the representations codegen actually uses;
+      `driver.py`'s build command and the codegen test harness both
+      link it into every build now (tiny, unconditional, unused
+      symbols cost nothing if a program doesn't touch Map/Set).
 - [ ] Consider introducing the typed IR layer (PLAN.md §6) before
       attempting v1.1 async/spawn/await
 - [ ] v1.1 async/spawn/await
