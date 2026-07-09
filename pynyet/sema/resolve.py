@@ -70,6 +70,12 @@ BUILTINS = {
     "file_read_all",
     "file_write",
     "file_close",
+    "map",
+    "filter",
+    "fold",
+    "any",
+    "all",
+    "zip",
 }
 
 # Primitive type names valid in expression position (e.g. `(in i32)`)

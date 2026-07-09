@@ -1369,6 +1369,45 @@ class Emitter:
                 return self._emit_file_write(node.args)
             if name == "file_close":
                 return self._emit_file_close(node.args)
+            # Higher-order functions over Array[T]: `(map f arr)`,
+            # `(filter f arr)`, `(fold f init arr)`, `(any f arr)`,
+            # `(all f arr)`, `(zip arr1 arr2)` — matching main.no's
+            # documented call form (array/arrays last).
+            if (
+                name in ("map", "filter")
+                and len(node.args) == 2
+                and isinstance(node.args[1], N.Ident)
+                and node.args[1].name in self._env_array_elem
+            ):
+                arr_name = node.args[1].name
+                if name == "map":
+                    return self._emit_hof_map(node.args[0], arr_name)
+                return self._emit_hof_filter(node.args[0], arr_name)
+            if (
+                name == "fold"
+                and len(node.args) == 3
+                and isinstance(node.args[2], N.Ident)
+                and node.args[2].name in self._env_array_elem
+            ):
+                return self._emit_hof_fold(node.args[0], node.args[1], node.args[2].name)
+            if (
+                name in ("any", "all")
+                and len(node.args) == 2
+                and isinstance(node.args[1], N.Ident)
+                and node.args[1].name in self._env_array_elem
+            ):
+                return self._emit_hof_any_all(
+                    node.args[0], node.args[1].name, is_all=(name == "all")
+                )
+            if (
+                name == "zip"
+                and len(node.args) == 2
+                and isinstance(node.args[0], N.Ident)
+                and isinstance(node.args[1], N.Ident)
+                and node.args[0].name in self._env_array_elem
+                and node.args[1].name in self._env_array_elem
+            ):
+                return self._emit_hof_zip(node.args[0].name, node.args[1].name)
             # Operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -2862,15 +2901,17 @@ class Emitter:
 
         # Array bindings: store the heap pointer and remember its element
         # type so `(name i)` and `(= (name i) v)` lower correctly. We
-        # detect via either a `Array[T]` annotation or an `ArrayLit` rhs.
+        # detect via either a `Array[T]` annotation (needed when the rhs
+        # isn't a literal, e.g. a HOF call like `map`/`filter`) or an
+        # `ArrayLit` rhs.
         elem_ty: str | None = None
         if node.type is not None:
             elem_ty = self._array_elem_llvm_type(node.type)
         if elem_ty is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
             elem_ty = self._infer_llvm_type(node.value.elements[0])
-        if elem_ty is not None and isinstance(node.value, N.ArrayLit):
+        if elem_ty is not None:
             ptr = self._emit_alloca("ptr")
-            val = self._emit_expr(node.value)
+            val = self._emit_expr(node.value) if node.value is not None else None
             if val is not None:
                 self._emit_line(f"store ptr {val}, ptr {ptr}")
             else:
@@ -3266,6 +3307,304 @@ class Emitter:
         self._emit_line(f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}")
         self._emit_line(f"store {elem_ty} {val}, ptr {elem_ptr}")
         return None
+
+    # ------------------------------------------------------------------
+    # Higher-order functions over Array[T]: map, filter, fold, any, all, zip
+    # ------------------------------------------------------------------
+    #
+    # `f` arguments always arrive as an N.Ident after lambda lifting (see
+    # `_lift_in`, which rewrites every inline `(fn ...)` into a top-level
+    # N.FnDecl and replaces the literal with a reference to it) -- so
+    # resolving "the callable" is uniform whether it's a named top-level
+    # function or a closure that used to be an inline lambda.
+
+    def _resolve_callable(self, node: N.Expr) -> tuple[str, list[str], str] | None:
+        """Resolve a callable expression to (fnptr_value, param_types, ret_type)."""
+        if not isinstance(node, N.Ident):
+            return None
+        if node.name in self._fn_sigs:
+            param_tys, ret_ty = self._fn_sigs[node.name]
+            return f"@{node.name}", list(param_tys), ret_ty
+        if node.name in self._env_fn_sig:
+            ptr, _ = self._env[node.name]
+            fnptr = self._fresh_tmp()
+            self._emit_line(f"{fnptr} = load ptr, ptr {ptr}")
+            sig_types, ret_type = self._env_fn_sig[node.name]
+            return fnptr, list(sig_types), ret_type
+        return None
+
+    def _emit_indirect_call_raw(
+        self, fnptr: str, arg_tys: list[str], arg_vals: list[str], ret_ty: str
+    ) -> str | None:
+        """Like `_emit_indirect_call`, but over already-materialized values."""
+        args_str = ", ".join(f"{t} {v}" for t, v in zip(arg_tys, arg_vals, strict=False))
+        if ret_ty == "void":
+            self._emit_line(f"call void {fnptr}({args_str})")
+            return None
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call {ret_ty} {fnptr}({args_str})")
+        return tmp
+
+    def _array_ptr_and_len(self, arr_name: str) -> tuple[str, str]:
+        """Load an array binding's heap ptr and its i64 length."""
+        ptr_slot, _ = self._env[arr_name]
+        arr = self._fresh_tmp()
+        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+        len64 = self._fresh_tmp()
+        self._emit_line(f"{len64} = load i64, ptr {arr}")
+        return arr, len64
+
+    def _emit_counted_loop(self, len64: str):
+        """Emit a `for i in 0..len64` skeleton. Returns (i_slot, body_label,
+        end_label); caller emits the body then must `br` back to the
+        condition label (returned as the third element is the exit label —
+        see call sites) and close with `_emit_label(end_label)`."""
+        i_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {i_slot}")
+        cond_label = self._fresh_label("hof_cond")
+        body_label = self._fresh_label("hof_body")
+        end_label = self._fresh_label("hof_end")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(cond_label)
+        i_val = self._fresh_tmp()
+        self._emit_line(f"{i_val} = load i64, ptr {i_slot}")
+        cmp = self._fresh_tmp()
+        self._emit_line(f"{cmp} = icmp slt i64 {i_val}, {len64}")
+        self._emit_line(f"br i1 {cmp}, label %{body_label}, label %{end_label}")
+        self._emit_label(body_label)
+        return i_slot, i_val, cond_label, end_label
+
+    def _emit_hof_map(self, f_arg: N.Expr, arr_name: str) -> str | None:
+        callable_ = self._resolve_callable(f_arg)
+        if callable_ is None:
+            return None
+        fnptr, param_tys, ret_ty = callable_
+        elem_ty = self._env_array_elem[arr_name]
+
+        arr, len64 = self._array_ptr_and_len(arr_name)
+        base = self._array_data_base(arr)
+
+        out_size = self._fresh_tmp()
+        self._emit_line(f"{out_size} = mul i64 {len64}, {self._sizeof(ret_ty)}")
+        total = self._fresh_tmp()
+        self._emit_line(f"{total} = add i64 {out_size}, 8")
+        self._declare_extern("declare ptr @malloc(i64)")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {total})")
+        self._emit_line(f"store i64 {len64}, ptr {out}")
+        out_base = self._array_data_base(out)
+
+        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
+        src_ptr = self._fresh_tmp()
+        self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
+        elem = self._fresh_tmp()
+        self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
+        arg_ty = param_tys[0] if param_tys else elem_ty
+        result = self._emit_indirect_call_raw(fnptr, [arg_ty], [elem], ret_ty)
+        dst_ptr = self._fresh_tmp()
+        self._emit_line(f"{dst_ptr} = getelementptr {ret_ty}, ptr {out_base}, i64 {i_val}")
+        self._emit_line(f"store {ret_ty} {result if result is not None else '0'}, ptr {dst_ptr}")
+        i_next = self._fresh_tmp()
+        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(end_label)
+        return out
+
+    def _emit_hof_filter(self, f_arg: N.Expr, arr_name: str) -> str | None:
+        callable_ = self._resolve_callable(f_arg)
+        if callable_ is None:
+            return None
+        fnptr, param_tys, _ = callable_
+        elem_ty = self._env_array_elem[arr_name]
+
+        arr, len64 = self._array_ptr_and_len(arr_name)
+        base = self._array_data_base(arr)
+
+        # Over-allocate to the input's worst case (every element matches);
+        # the true count is tracked separately and stored as the final
+        # length header once known.
+        out_size = self._fresh_tmp()
+        self._emit_line(f"{out_size} = mul i64 {len64}, {self._sizeof(elem_ty)}")
+        total = self._fresh_tmp()
+        self._emit_line(f"{total} = add i64 {out_size}, 8")
+        self._declare_extern("declare ptr @malloc(i64)")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {total})")
+        out_base = self._array_data_base(out)
+
+        out_i_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {out_i_slot}")
+
+        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
+        src_ptr = self._fresh_tmp()
+        self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
+        elem = self._fresh_tmp()
+        self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
+        arg_ty = param_tys[0] if param_tys else elem_ty
+        keep = self._emit_indirect_call_raw(fnptr, [arg_ty], [elem], "i1")
+
+        keep_label = self._fresh_label("hof_keep")
+        skip_label = self._fresh_label("hof_skip")
+        self._emit_line(f"br i1 {keep}, label %{keep_label}, label %{skip_label}")
+        self._emit_label(keep_label)
+        out_i = self._fresh_tmp()
+        self._emit_line(f"{out_i} = load i64, ptr {out_i_slot}")
+        dst_ptr = self._fresh_tmp()
+        self._emit_line(f"{dst_ptr} = getelementptr {elem_ty}, ptr {out_base}, i64 {out_i}")
+        self._emit_line(f"store {elem_ty} {elem}, ptr {dst_ptr}")
+        out_i_next = self._fresh_tmp()
+        self._emit_line(f"{out_i_next} = add i64 {out_i}, 1")
+        self._emit_line(f"store i64 {out_i_next}, ptr {out_i_slot}")
+        self._emit_line(f"br label %{skip_label}")
+        self._emit_label(skip_label)
+
+        i_next = self._fresh_tmp()
+        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(end_label)
+
+        final_count = self._fresh_tmp()
+        self._emit_line(f"{final_count} = load i64, ptr {out_i_slot}")
+        self._emit_line(f"store i64 {final_count}, ptr {out}")
+        return out
+
+    def _emit_hof_fold(self, f_arg: N.Expr, init_arg: N.Expr, arr_name: str) -> str | None:
+        callable_ = self._resolve_callable(f_arg)
+        if callable_ is None:
+            return None
+        fnptr, param_tys, ret_ty = callable_
+        elem_ty = self._env_array_elem[arr_name]
+
+        init_val = self._emit_expr(init_arg)
+        if init_val is None:
+            return None
+        acc_slot = self._emit_alloca(ret_ty)
+        self._emit_line(f"store {ret_ty} {init_val}, ptr {acc_slot}")
+
+        arr, len64 = self._array_ptr_and_len(arr_name)
+        base = self._array_data_base(arr)
+
+        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
+        src_ptr = self._fresh_tmp()
+        self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
+        elem = self._fresh_tmp()
+        self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
+        acc = self._fresh_tmp()
+        self._emit_line(f"{acc} = load {ret_ty}, ptr {acc_slot}")
+        acc_ty = param_tys[0] if param_tys else ret_ty
+        elem_arg_ty = param_tys[1] if len(param_tys) > 1 else elem_ty
+        result = self._emit_indirect_call_raw(fnptr, [acc_ty, elem_arg_ty], [acc, elem], ret_ty)
+        if result is not None:
+            self._emit_line(f"store {ret_ty} {result}, ptr {acc_slot}")
+        i_next = self._fresh_tmp()
+        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(end_label)
+
+        final = self._fresh_tmp()
+        self._emit_line(f"{final} = load {ret_ty}, ptr {acc_slot}")
+        return final
+
+    def _emit_hof_any_all(self, f_arg: N.Expr, arr_name: str, *, is_all: bool) -> str | None:
+        callable_ = self._resolve_callable(f_arg)
+        if callable_ is None:
+            return None
+        fnptr, param_tys, _ = callable_
+        elem_ty = self._env_array_elem[arr_name]
+
+        result_slot = self._emit_alloca("i1")
+        self._emit_line(f"store i1 {'1' if is_all else '0'}, ptr {result_slot}")
+
+        arr, len64 = self._array_ptr_and_len(arr_name)
+        base = self._array_data_base(arr)
+
+        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
+        src_ptr = self._fresh_tmp()
+        self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
+        elem = self._fresh_tmp()
+        self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
+        arg_ty = param_tys[0] if param_tys else elem_ty
+        matched = self._emit_indirect_call_raw(fnptr, [arg_ty], [elem], "i1")
+
+        # any: matched -> set true, stop early. all: !matched -> set false, stop early.
+        trigger = matched if not is_all else self._fresh_tmp()
+        if is_all:
+            self._emit_line(f"{trigger} = xor i1 {matched}, true")
+        hit_label = self._fresh_label("hof_hit")
+        cont_label = self._fresh_label("hof_cont")
+        self._emit_line(f"br i1 {trigger}, label %{hit_label}, label %{cont_label}")
+        self._emit_label(hit_label)
+        self._emit_line(f"store i1 {'1' if not is_all else '0'}, ptr {result_slot}")
+        self._emit_line(f"br label %{end_label}")
+        self._emit_label(cont_label)
+
+        i_next = self._fresh_tmp()
+        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(end_label)
+
+        final = self._fresh_tmp()
+        self._emit_line(f"{final} = load i1, ptr {result_slot}")
+        return final
+
+    def _emit_hof_zip(self, arr1_name: str, arr2_name: str) -> str | None:
+        elem1_ty = self._env_array_elem[arr1_name]
+        elem2_ty = self._env_array_elem[arr2_name]
+        tname = self._get_or_register_tuple_type([elem1_ty, elem2_ty])
+        tsize = self._struct_size_bytes(tname)
+
+        arr1, len1 = self._array_ptr_and_len(arr1_name)
+        arr2, len2 = self._array_ptr_and_len(arr2_name)
+        base1 = self._array_data_base(arr1)
+        base2 = self._array_data_base(arr2)
+
+        shorter = self._fresh_tmp()
+        cmp = self._fresh_tmp()
+        self._emit_line(f"{cmp} = icmp slt i64 {len1}, {len2}")
+        self._emit_line(f"{shorter} = select i1 {cmp}, i64 {len1}, i64 {len2}")
+
+        out_size = self._fresh_tmp()
+        self._emit_line(f"{out_size} = mul i64 {shorter}, {tsize}")
+        total = self._fresh_tmp()
+        self._emit_line(f"{total} = add i64 {out_size}, 8")
+        self._declare_extern("declare ptr @malloc(i64)")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {total})")
+        self._emit_line(f"store i64 {shorter}, ptr {out}")
+        out_base = self._array_data_base(out)
+
+        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(shorter)
+        p1 = self._fresh_tmp()
+        self._emit_line(f"{p1} = getelementptr {elem1_ty}, ptr {base1}, i64 {i_val}")
+        v1 = self._fresh_tmp()
+        self._emit_line(f"{v1} = load {elem1_ty}, ptr {p1}")
+        p2 = self._fresh_tmp()
+        self._emit_line(f"{p2} = getelementptr {elem2_ty}, ptr {base2}, i64 {i_val}")
+        v2 = self._fresh_tmp()
+        self._emit_line(f"{v2} = load {elem2_ty}, ptr {p2}")
+
+        tup_ptr = self._heap_alloc_struct(tname, tsize)
+        f0 = self._fresh_tmp()
+        self._emit_line(f"{f0} = getelementptr inbounds %{tname}, ptr {tup_ptr}, i32 0, i32 0")
+        self._emit_line(f"store {elem1_ty} {v1}, ptr {f0}")
+        f1 = self._fresh_tmp()
+        self._emit_line(f"{f1} = getelementptr inbounds %{tname}, ptr {tup_ptr}, i32 0, i32 1")
+        self._emit_line(f"store {elem2_ty} {v2}, ptr {f1}")
+
+        dst = self._fresh_tmp()
+        self._emit_line(f"{dst} = getelementptr ptr, ptr {out_base}, i64 {i_val}")
+        self._emit_line(f"store ptr {tup_ptr}, ptr {dst}")
+
+        i_next = self._fresh_tmp()
+        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(end_label)
+        return out
 
     # ------------------------------------------------------------------
     # User-defined function calls
