@@ -1,5 +1,7 @@
 ;;;; dropwhile.no
 
+(use std/collections)
+
 (fn isEven (x:i32) -> bool
   (== (% x 2) 0))
 

@@ -47,13 +47,19 @@ def _load_program_with_deps(entry_path: str) -> list[N.Node]:
     returning so downstream passes don't need to know about them. Each
     surviving `Decl` has its `module` annotation set.
 
-    Resolution: `(use foo/bar)` in a file at `<dir>/<file>.no` looks for
-    `<dir>/foo/bar.no`. Missing targets are silently ignored — that's how
-    references to not-yet-implemented stdlib modules (`std/io`, etc.) stay
-    benign while we ship the multi-file driver.
+    Resolution: `(use foo/bar)` in a file at `<dir>/<file>.no` first looks
+    for `<dir>/foo/bar.no` (sibling-relative, e.g. main.no's own
+    `(use nyet/geometry)`), then falls back to `<repo root>/foo/bar.no`
+    — this is what makes `(use std/collections)` resolve to the real
+    `std/` library regardless of which directory the importing file
+    lives in (scripts/, examples/, tests/, ...). Missing targets are
+    silently ignored — that's how references to not-yet-implemented
+    stdlib modules (`std/io`, etc.) stay benign while we ship the
+    multi-file driver.
     """
     from pynyet.parser.parser import parse
 
+    repo_root = Path(__file__).resolve().parents[1]
     entry = Path(entry_path).resolve()
     seen: set[Path] = set()
     order: list[Path] = []
@@ -66,7 +72,11 @@ def _load_program_with_deps(entry_path: str) -> list[N.Node]:
         seen.add(path)
         if not path.is_file():
             return
-        sf = SourceFile(str(path), path.read_text())
+        try:
+            display_path = str(path.relative_to(repo_root))
+        except ValueError:
+            display_path = str(path)  # outside the repo -- keep it absolute
+        sf = SourceFile(display_path, path.read_text())
         tokens = lex(sf)
         program = parse(tokens)
         mod_name = path.stem
@@ -80,7 +90,12 @@ def _load_program_with_deps(entry_path: str) -> list[N.Node]:
         loaded[path] = program
         for n in program:
             if isinstance(n, N.UseDecl):
-                target = path.parent / ("/".join(n.path) + ".no")
+                rel = "/".join(n.path) + ".no"
+                target = path.parent / rel
+                if not target.is_file():
+                    root_target = repo_root / rel
+                    if root_target.is_file():
+                        target = root_target
                 load(target)
         order.append(path)
 

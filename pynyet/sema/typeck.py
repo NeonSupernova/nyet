@@ -487,6 +487,39 @@ class TypeChecker:
             return True  # integer literals can be assigned to float bindings
         if is_bare_int_lit and isinstance(expected, (IntType, CharType)):
             return True
+        # This pass doesn't do real per-call-site generic substitution
+        # (see emit.py's _unify_param_type for where that actually
+        # happens, at codegen time) -- a generic fn's signature gets
+        # resolved once at registration, and a bare type-param name
+        # like `T` resolves to ERROR (_resolve_type_node's "unknown
+        # type" fallback). That only worked as a de-facto wildcard for
+        # a generic return type used directly (`-> T`), since the ERROR
+        # check above is top-level only. A generic return type nested
+        # inside a container -- `-> Array[T]`, the shape every
+        # Array[T]-taking stdlib function needs -- resolves to
+        # `ArrayType(ERROR)`, which isn't `is ERROR` itself and fails
+        # `==`. Recursing into these container shapes and treating
+        # ERROR as a wildcard at any depth extends the same existing
+        # leniency instead of building full call-site substitution.
+        if isinstance(expected, ArrayType) and isinstance(actual, ArrayType):
+            return self._compatible(expected.element, actual.element)
+        if isinstance(expected, TupleType) and isinstance(actual, TupleType):
+            if len(expected.elements) != len(actual.elements):
+                return False
+            return all(
+                self._compatible(e, a)
+                for e, a in zip(expected.elements, actual.elements, strict=False)
+            )
+        if isinstance(expected, FnSig) and isinstance(actual, FnSig):
+            if len(expected.params) != len(actual.params):
+                return False
+            return self._compatible(expected.ret, actual.ret) and all(
+                self._compatible(e, a) for e, a in zip(expected.params, actual.params, strict=False)
+            )
+        from pynyet.sema.types import RefType
+
+        if isinstance(expected, RefType) and isinstance(actual, RefType):
+            return self._compatible(expected.inner, actual.inner)
         return expected == actual
 
 

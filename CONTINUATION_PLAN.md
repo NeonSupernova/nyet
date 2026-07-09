@@ -386,11 +386,130 @@ dedicated session rather than folded in here:
 - [ ] Check whether `pynyet/ast/visitor.py` is dead code (0% coverage,
       Phase 1.6) — delete or start using it
 
-- North star progress: `check main.no` errors are down to **44** (was
+- North star progress: `check main.no` errors are down to **45** (was
       68 pre-merge, 61 as of Phase 1.5) — the tuple/HOF/Map/keyword
       work landed this session incidentally fixed a batch of these
       (e.g. `map`/`filter`/`fold` were "undefined name" errors in
       main.no's own HOF examples until they became real builtins).
       Not yet zero; remaining errors are still mostly undefined stdlib
       names and free-floating snippet variables in the spec's example
-      sections.
+      sections. (This line previously said 44; re-measuring against a
+      clean checkout of the prior commit gave 46, not 44, so that
+      figure was off by some amount at the time it was written — noted
+      here rather than silently corrected, since the exact history
+      isn't reconstructible. 45 is a freshly re-verified count as of
+      Phase 4 below, one better than the 46 baseline it was checked
+      against.)
+
+## Phase 4 — Standard library, written in Nyet — DONE (2026-07-09)
+
+New direction, not part of the original roadmap above: the long-term
+goal is to eventually rewrite this compiler *in Nyet itself*, and a
+standard library that only exists as Python special-cases in
+`pynyet/codegen/emit.py` can't help bootstrap that — it needs to be
+real `.no` source a self-hosted compiler could also consume. Going
+forward, new stdlib functionality is Nyet source under `std/`, not a
+new compiler intrinsic, unless it's a genuine core primitive nothing
+else can be built from.
+
+- [x] Diagnosed two prerequisite gaps by hand before writing any
+      stdlib code (both confirmed with throwaway probes, not assumed):
+      1. No way to allocate a runtime-sized `Array[T]` from Nyet source
+         at all — every array-producing construct (literals, the HOF
+         builtins) called `@malloc` directly inside Python codegen.
+      2. Generic functions over container/closure params didn't
+         monomorphize — `(fn f[T] (pred:(fn (T) -> bool) arr:Array[T])
+         -> ...)` passed `check` but failed at `build` with "use of
+         undefined value", because type-argument inference only
+         matched a generic name against a param's *direct* type, never
+         one nested inside `Array[T]` or a closure signature.
+- [x] `array_new` (2026-07-09) — the one new core primitive:
+      `(array_new n)` allocates a heap `Array[T]` of runtime length
+      `n` with uninitialized contents (same malloc + length-header as
+      `_emit_array_lit`, minus the per-element stores); the caller
+      fills every slot via ordinary indexed assignment before reading
+      it back, exactly how `_emit_hof_map`/`_emit_hof_filter` already
+      built their own result arrays internally. Implemented as a
+      special case inside `_emit_let` (`pynyet/codegen/emit.py`),
+      reusing the point where `elem_ty` is already resolved from an
+      explicit `Array[T]` annotation — scoped to the
+      `(let/var x:Array[T] (array_new n))` pattern specifically, not a
+      general `_emit_call` dispatch entry.
+- [x] Generic inference over containers/closures (2026-07-09) — two
+      independent fixes, one per pass, since each has its own separate
+      (and separately incomplete) generics handling:
+      - Codegen (`emit.py`): rewrote `_infer_type_args_from_params` as
+        a recursive unifier (`_unify_param_type` /
+        `_unify_type_against_llvm`) that matches a param's declared
+        type against its argument's concrete type through `Array[T]`,
+        closure `(fn (T) -> R)`, and `&T` shapes, not just a param
+        whose type IS directly the generic name. Known limitation: an
+        `Array[T]` element that's itself `ptr`-backed (string/struct/
+        nested array) can't be told apart at this level and falls back
+        to "string", same lossy default already used elsewhere in this
+        file for LLVM `ptr` → Nyet-name conversion — primitive element
+        types (i32/i64/f64/f32/bool/i8/i16) round-trip exactly, which
+        covers main.no's own generic-HOF examples (`sum[T: Add Zero]`,
+        `largest[T: Ord]`).
+      - Typecheck (`typeck.py`): `_compatible()` only treated the
+        `ERROR` placeholder (what an unresolved generic param name
+        resolves to) as a wildcard at the top level, so `T` used
+        directly as a return type worked by accident but `Array[T]`
+        didn't (`ArrayType(ERROR)` isn't `is ERROR` itself). Extended
+        to recurse into `ArrayType`/`TupleType`/`FnSig`/`RefType`,
+        treating `ERROR` as a wildcard at any depth — this pass still
+        doesn't do real per-call-site generic substitution (that only
+        happens at codegen time), this just extends the same existing
+        leniency structurally instead of building that out.
+      Verified against a throwaway probe (`count_true[T]` over
+      `Array[T]` with a closure predicate) that failed exactly as
+      diagnosed before the fix and produced the correct answer after.
+- [x] `std/` module resolution (2026-07-09) — `_load_program_with_deps`
+      (`pynyet/driver.py`) resolved `(use foo/bar)` relative to the
+      *importing* file only, so `(use std/collections)` from `scripts/`
+      would've wrongly looked for `scripts/std/collections.no`. Added
+      a repo-root fallback, tried when the sibling-relative path
+      doesn't exist — additive, doesn't change existing same-directory
+      resolution (main.no's own `(use nyet/geometry)` still resolves
+      the same way, since main.no already lives at the repo root).
+      Also fixed `SourceFile` construction in the same function to use
+      a repo-relative display path when possible instead of always
+      absolute — needed for golden-test portability across machines
+      (diagnostics embed the path), and a readability improvement for
+      the CLI regardless.
+- [x] Golden-test harness multi-file support (2026-07-09) —
+      `tests/codegen/run.py` previously did raw single-file
+      `lex`/`parse`, bypassing `_load_program_with_deps` entirely, so
+      it couldn't exercise `(use ...)` at all. Swapped to
+      `_load_program_with_deps`, so a golden test can genuinely import
+      from `std/` the way a real script would; verified zero
+      regressions across the full existing suite, including the
+      portable-path-dependent `match_nonexhaustive.no`.
+- [x] First stdlib content: `std/collections.no`'s `drop_while[T]`
+      (2026-07-09) — the same function this session first tried to add
+      as a Python compiler builtin (`1d5f5cc`), reverted in favor of
+      this. Real generic Nyet source built entirely on `array_new` +
+      ordinary loops/indexing, no compiler special-casing beyond the
+      one core primitive above. `scripts/dropwhile.no` (the originally
+      broken hand-written script this whole thread started from) now
+      does `(use std/collections)` and calls the real thing.
+      `tests/codegen/drop_while.no` replaced to exercise the same
+      multi-file `(use std/collections)` path rather than a
+      compiler-builtin call syntax.
+      Verified: full golden suite (37 cases) + 33 unit tests, `just
+      fmt`/`lint`/`typecheck` clean, full `scripts/`+`examples/` sweep
+      (two pre-existing, by-design failures unrelated to this work:
+      `v05_use_after_move.no` is an intentionally-invalid borrow-
+      checker demo, `v09_lib.no` is a library file with no `main`),
+      and `check main.no`'s error count improved by one (46 → 45) —
+      the generics fix resolved a real error in main.no's own
+      `largest[T: Ord]`-style generic-over-`Array[T]` spec examples,
+      which is exactly the shape this phase's work targeted.
+
+Not attempted this phase, left for whenever more of `std/` exists to
+justify it: migrating the other Python-compiler HOF builtins
+(`map`/`filter`/`fold`/`any`/`all`/`zip`) into `std/` too. They still
+work and are still tested; `array_new` now makes rewriting them as
+plain Nyet source possible, but doing all of them at once alongside
+introducing the two prerequisite fixes above was more change than one
+slice should carry. Natural next step for whoever picks this up.

@@ -1295,12 +1295,12 @@ class Emitter:
             # since they're handled specially rather than as real
             # top-level functions, so without an explicit case here they
             # fell through every branch below to the final "i32" default.
-            # That's silently wrong for map/filter/zip/drop_while (all
-            # return a heap Array[T], i.e. `ptr`) whenever the call is
-            # used inline (e.g. `(print_array (map f arr))`) rather than
-            # through a `let` with an explicit type annotation, which has
-            # its own separate, correct type-driven path.
-            if op in ("map", "filter", "zip", "drop_while"):
+            # That's silently wrong for map/filter/zip (all return a heap
+            # Array[T], i.e. `ptr`) whenever the call is used inline
+            # (e.g. `(print_array (map f arr))`) rather than through a
+            # `let` with an explicit type annotation, which has its own
+            # separate, correct type-driven path.
+            if op in ("map", "filter", "zip"):
                 return "ptr"
             if op in ("any", "all"):
                 return "i1"
@@ -1600,13 +1600,6 @@ class Emitter:
                 and node.args[1].name in self._env_array_elem
             ):
                 return self._emit_hof_zip(node.args[0].name, node.args[1].name)
-            if (
-                name == "drop_while"
-                and len(node.args) == 2
-                and isinstance(node.args[1], N.Ident)
-                and node.args[1].name in self._env_array_elem
-            ):
-                return self._emit_hof_drop_while(node.args[0], node.args[1].name)
             # Operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -1771,31 +1764,107 @@ class Emitter:
         params: list,
         args: list[N.Expr],
     ) -> tuple[str, ...] | None:
-        """Infer concrete type args by matching param types against arg types.
+        """Infer concrete type args by unifying each param's declared type
+        against its argument's concrete type.
 
-        For each generic param name, find the first param with that type name,
-        then read the concrete type from the corresponding arg.
+        Recurses into `Array[T]` and closure `(fn (T) -> R)` shapes via
+        `_unify_param_type`, not just a param whose type IS directly the
+        generic name -- needed for anything like
+        `(fn f[T] (pred:(fn (T) -> bool) arr:Array[T]) -> Array[T] ...)`,
+        which previously left `T` unresolved and silently failed to
+        monomorphize (the call site would reference an emitted function
+        that never got emitted).
         """
         if not generics:
             return ()
+        generic_names = {gp.name for gp in generics}
         resolved: dict[str, str] = {}
         for i, p in enumerate(params):
             if i >= len(args):
                 break
-            ptype_name = self._nyet_type_name_of_node(p.type)
-            if ptype_name is None:
-                continue
-            # Only bind unresolved generic names
-            for gp in generics:
-                if gp.name not in resolved and ptype_name == gp.name:
-                    resolved[gp.name] = self._infer_nyet_type_from_arg(args[i])
-        # Check all are resolved
+            self._unify_param_type(p.type, args[i], generic_names, resolved)
         result = []
         for gp in generics:
             if gp.name not in resolved:
                 return None
             result.append(resolved[gp.name])
         return tuple(result)
+
+    def _unify_param_type(
+        self,
+        pattern: N.TypeNode | None,
+        arg: N.Expr,
+        generic_names: set[str],
+        resolved: dict[str, str],
+    ) -> None:
+        """Match a declared param TypeNode against its concrete argument
+        expression, binding any generic names found in `pattern` into
+        `resolved` (first occurrence wins, matching the old direct-match
+        behavior for the simple case).
+        """
+        if pattern is None:
+            return
+        if isinstance(pattern, N.RefType):
+            self._unify_param_type(pattern.inner, arg, generic_names, resolved)
+            return
+        if isinstance(pattern, N.NamedType) and pattern.name in generic_names:
+            if pattern.name not in resolved:
+                resolved[pattern.name] = self._infer_nyet_type_from_arg(arg)
+            return
+        if (
+            isinstance(pattern, N.GenericType)
+            and isinstance(pattern.base, N.NamedType)
+            and pattern.base.name == "Array"
+            and len(pattern.args) == 1
+        ):
+            # Element type isn't recoverable as a Nyet name for a ptr-
+            # backed element (string/struct/nested array all share the
+            # same "ptr" LLVM representation) -- _nyet_from_llvm's
+            # ptr->"string" default applies here too, same as every
+            # other lossy LLVM->Nyet-name site in this file. Primitive
+            # element types (i32/i64/f64/f32/bool/i8/i16) round-trip
+            # exactly, which covers main.no's own generic-HOF examples.
+            unwrapped = self._unwrap_borrow(arg)
+            if isinstance(unwrapped, N.Ident) and unwrapped.name in self._env_array_elem:
+                elem_llvm_ty = self._env_array_elem[unwrapped.name]
+                self._unify_type_against_llvm(
+                    pattern.args[0], elem_llvm_ty, generic_names, resolved
+                )
+            return
+        if isinstance(pattern, N.FnType):
+            callee_sig = None
+            if isinstance(arg, N.Ident):
+                if arg.name in self._fn_sigs:
+                    callee_sig = self._fn_sigs[arg.name]
+                elif arg.name in self._env_fn_sig:
+                    callee_sig = self._env_fn_sig[arg.name]
+            if callee_sig is not None:
+                param_tys, ret_ty = callee_sig
+                for pp, at in zip(pattern.params, param_tys, strict=False):
+                    self._unify_type_against_llvm(pp, at, generic_names, resolved)
+                if pattern.ret is not None:
+                    self._unify_type_against_llvm(pattern.ret, ret_ty, generic_names, resolved)
+            return
+
+    def _unify_type_against_llvm(
+        self,
+        pattern: N.TypeNode | None,
+        llvm_ty: str,
+        generic_names: set[str],
+        resolved: dict[str, str],
+    ) -> None:
+        """Like `_unify_param_type` but for recursion sites (closure
+        params/return) where only an LLVM type string is available, not
+        a full argument expression to re-inspect."""
+        if pattern is None:
+            return
+        if isinstance(pattern, N.RefType):
+            self._unify_type_against_llvm(pattern.inner, llvm_ty, generic_names, resolved)
+            return
+        if isinstance(pattern, N.NamedType) and pattern.name in generic_names:
+            if pattern.name not in resolved:
+                resolved[pattern.name] = self._nyet_from_llvm(llvm_ty)
+            return
 
     # ------------------------------------------------------------------
     # out
@@ -3145,7 +3214,20 @@ class Emitter:
             elem_ty = self._infer_llvm_type(node.value.elements[0])
         if elem_ty is not None:
             ptr = self._emit_alloca("ptr")
-            val = self._emit_expr(node.value) if node.value is not None else None
+            if (
+                isinstance(node.value, N.Call)
+                and isinstance(node.value.head, N.Ident)
+                and node.value.head.name == "array_new"
+                and len(node.value.args) == 1
+            ):
+                # `array_new` isn't dispatched through the general
+                # _emit_call builtin table like map/filter -- it needs
+                # the element type, and this is the one place that's
+                # already resolved from an explicit Array[T] annotation
+                # regardless of the RHS shape (see the comment above).
+                val = self._emit_array_new(node.value.args[0], elem_ty)
+            else:
+                val = self._emit_expr(node.value) if node.value is not None else None
             if val is not None:
                 self._emit_line(f"store ptr {val}, ptr {ptr}")
             else:
@@ -3438,6 +3520,36 @@ class Emitter:
                     self._emit_line(f"{slot} = getelementptr {elem_ty}, ptr {base}, i64 {i}")
                 self._emit_line(f"store {elem_ty} {val}, ptr {slot}")
         return arr_ptr
+
+    def _emit_array_new(self, n_arg: N.Expr, elem_ty: str) -> str | None:
+        """`(array_new n)` -- the one core primitive that lets Nyet
+        source allocate a runtime-sized Array[T], for stdlib code
+        (std/) to build on instead of every collection operation living
+        in the Python compiler. Same malloc + `[i64 length]` header as
+        `_emit_array_lit`, minus the per-element stores: contents are
+        UNINITIALIZED, and the caller must fill every slot via indexed
+        assignment before reading it back (exactly how
+        `_emit_hof_map`/`_emit_hof_filter` already build their own
+        result arrays internally -- this just exposes the same pattern
+        as a callable). Only reachable from `_emit_let`, which is the
+        one place `elem_ty` is already resolved from an explicit
+        `Array[T]` annotation regardless of the RHS shape.
+        """
+        n_val = self._emit_expr(n_arg)
+        if n_val is None:
+            return None
+        n_ty = self._infer_llvm_type(n_arg)
+        n64 = self._idx_to_i64(n_val, n_ty)
+
+        out_size = self._fresh_tmp()
+        self._emit_line(f"{out_size} = mul i64 {n64}, {self._sizeof(elem_ty)}")
+        total = self._fresh_tmp()
+        self._emit_line(f"{total} = add i64 {out_size}, 8")
+        self._declare_extern("declare ptr @malloc(i64)")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {total})")
+        self._emit_line(f"store i64 {n64}, ptr {out}")
+        return out
 
     def _emit_array_index(self, name: str, idx_arg: N.Expr) -> str:
         ptr_slot, _ = self._env[name]
@@ -3812,78 +3924,6 @@ class Emitter:
         final = self._fresh_tmp()
         self._emit_line(f"{final} = load i1, ptr {result_slot}")
         return final
-
-    def _emit_hof_drop_while(self, f_arg: N.Expr, arr_name: str) -> str | None:
-        """`(drop_while pred arr)` -- scan from the front while `pred`
-        holds, then return the untouched suffix starting at the first
-        element where it doesn't (or an empty array if `pred` held for
-        every element). The scan is a single early-breaking pass reusing
-        `_emit_counted_loop`'s own index slot as the drop point: on early
-        exit (`pred` failed) `i_slot` still holds that index, since the
-        increment only runs after a successful iteration; on a normal
-        loop-exhausted exit it holds `len`, matching an all-true scan.
-        """
-        callable_ = self._resolve_callable(f_arg)
-        if callable_ is None:
-            return None
-        fnptr, param_tys, _ = callable_
-        elem_ty = self._env_array_elem[arr_name]
-
-        arr, len64 = self._array_ptr_and_len(arr_name)
-        base = self._array_data_base(arr)
-
-        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
-        src_ptr = self._fresh_tmp()
-        self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
-        elem = self._fresh_tmp()
-        self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
-        arg_ty = param_tys[0] if param_tys else elem_ty
-        keep_dropping = self._emit_indirect_call_raw(fnptr, [arg_ty], [elem], "i1")
-
-        cont_label = self._fresh_label("hof_dw_cont")
-        self._emit_line(f"br i1 {keep_dropping}, label %{cont_label}, label %{end_label}")
-        self._emit_label(cont_label)
-        i_next = self._fresh_tmp()
-        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
-        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
-        self._emit_line(f"br label %{cond_label}")
-        self._emit_label(end_label)
-
-        drop_idx = self._fresh_tmp()
-        self._emit_line(f"{drop_idx} = load i64, ptr {i_slot}")
-        new_len = self._fresh_tmp()
-        self._emit_line(f"{new_len} = sub i64 {len64}, {drop_idx}")
-
-        out_size = self._fresh_tmp()
-        self._emit_line(f"{out_size} = mul i64 {new_len}, {self._sizeof(elem_ty)}")
-        total = self._fresh_tmp()
-        self._emit_line(f"{total} = add i64 {out_size}, 8")
-        self._declare_extern("declare ptr @malloc(i64)")
-        out = self._fresh_tmp()
-        self._emit_line(f"{out} = call ptr @malloc(i64 {total})")
-        self._emit_line(f"store i64 {new_len}, ptr {out}")
-        out_base = self._array_data_base(out)
-
-        # Copy the surviving suffix element-by-element, matching the
-        # style of _emit_hof_map/_emit_hof_filter (no llvm.memcpy
-        # elsewhere in this file).
-        j_slot, j_val, copy_cond, copy_end = self._emit_counted_loop(new_len)
-        src_idx = self._fresh_tmp()
-        self._emit_line(f"{src_idx} = add i64 {drop_idx}, {j_val}")
-        copy_src = self._fresh_tmp()
-        self._emit_line(f"{copy_src} = getelementptr {elem_ty}, ptr {base}, i64 {src_idx}")
-        copy_val = self._fresh_tmp()
-        self._emit_line(f"{copy_val} = load {elem_ty}, ptr {copy_src}")
-        copy_dst = self._fresh_tmp()
-        self._emit_line(f"{copy_dst} = getelementptr {elem_ty}, ptr {out_base}, i64 {j_val}")
-        self._emit_line(f"store {elem_ty} {copy_val}, ptr {copy_dst}")
-        j_next = self._fresh_tmp()
-        self._emit_line(f"{j_next} = add i64 {j_val}, 1")
-        self._emit_line(f"store i64 {j_next}, ptr {j_slot}")
-        self._emit_line(f"br label %{copy_cond}")
-        self._emit_label(copy_end)
-
-        return out
 
     def _emit_hof_zip(self, arr1_name: str, arr2_name: str) -> str | None:
         elem1_ty = self._env_array_elem[arr1_name]

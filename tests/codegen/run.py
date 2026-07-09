@@ -30,21 +30,20 @@ def dump_codegen_output(path: Path) -> str:
     import tempfile
 
     from pynyet.diagnostic import NyetError
-    from pynyet.lexer.scanner import lex
-    from pynyet.parser.parser import parse
+    from pynyet.driver import _load_program_with_deps
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
     from pynyet.codegen.emit import emit_ir
-    from pynyet.source import SourceFile
 
     build_stderr = io.StringIO()
     with contextlib.redirect_stderr(build_stderr):
-        rel_path = path.resolve().relative_to(ROOT)
-        sf = SourceFile(str(rel_path), path.read_text())
+        # Multi-file aware (resolves `(use ...)`, including `std/`) --
+        # same loader the CLI's `check`/`build` commands use, so a
+        # golden test can exercise a real `(use std/...)` import the
+        # way a script actually would.
         try:
-            tokens = lex(sf)
-            program = parse(tokens)
+            program = _load_program_with_deps(str(path))
         except NyetError as e:
             return "".join(d.format() + "\n" for d in e.diagnostics)
 

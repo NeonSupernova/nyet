@@ -1,12 +1,20 @@
-;; drop_while over Array[T]: `(drop_while pred arr)` scans from the
-;; front while `pred` holds and returns the untouched suffix starting
-;; at the first element where it doesn't. Also exercises both edge
-;; cases: predicate true for every element (empty result) and false on
-;; the very first element (whole array returned unchanged).
+;; drop_while[T] -- real Nyet source in std/collections.no, not a
+;; compiler builtin, imported via `(use std/collections)`. Confirms
+;; the multi-file `(use ...)` path actually resolves `std/` (see
+;; driver.py's _load_program_with_deps repo-root fallback) and that
+;; the generic function correctly monomorphizes for Array[i32] (see
+;; emit.py's _unify_param_type / typeck.py's recursive _compatible).
+;; `(drop_while pred arr)` scans from the front while `pred` holds and
+;; returns the untouched suffix starting at the first element where it
+;; doesn't. Also exercises both edge cases: predicate true for every
+;; element (empty result) and false on the very first element (whole
+;; array returned unchanged).
 ;; Expected:
 ;;   1 2 1 2 2 4 2 5 3 1
 ;;   len=0
 ;;   len=4 1 3 5 7
+
+(use std/collections)
 
 (fn is_even (x:i32) -> bool
   (== (% x 2) 0))

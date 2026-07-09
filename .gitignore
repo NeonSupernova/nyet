@@ -4,6 +4,7 @@
 !/tests/**/*.no
 !examples/*.no
 !scripts/*.no
+!std/**/*.no
 *.pyc
 __pycache__
 

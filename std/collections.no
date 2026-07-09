@@ -1,0 +1,25 @@
+;;;; std/collections.no
+;;;
+;;; Real Nyet source, not a Python compiler builtin -- part of a stdlib
+;;; meant to eventually help bootstrap a self-hosted compiler. Built on
+;;; `array_new`, the one core primitive that lets user-space Nyet code
+;;; allocate a runtime-sized Array[T] (see pynyet/codegen/emit.py's
+;;; _emit_array_new); everything else here is ordinary Nyet.
+
+;;; `(drop_while pred arr)` scans from the front while `pred` holds and
+;;; returns the untouched suffix starting at the first element where it
+;;; doesn't (or an empty array if `pred` held for every element).
+(fn drop_while[T] (pred:(fn (T) -> bool) arr:Array[T]) -> Array[T]
+  (do
+    (var i:i32 0)
+    (loop
+      (if (>= i (len arr)) (break pass) pass)
+      (if (pred (arr i)) (= i (+ i 1)) (break pass)))
+    (let new_len:i32 (- (len arr) i))
+    (var result:Array[T] (array_new new_len))
+    (var j:i32 0)
+    (loop
+      (if (>= j new_len) (break pass) pass)
+      (= (result j) (arr (+ i j)))
+      (= j (+ j 1)))
+    result))
