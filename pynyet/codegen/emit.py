@@ -1662,7 +1662,15 @@ class Emitter:
         # the global function pointer.
         if node.name in self._fn_sigs:
             return f"@{node.name}"
-        return None
+        raise NotImplementedError(
+            f"undefined identifier '{node.name}' at codegen time -- most likely a "
+            f"closure referencing a variable from its enclosing scope: "
+            f"`_lift_closures` hoists a `(fn ...)`/`(fn! ...)` literal to a "
+            f"top-level function with no access to the enclosing scope's locals "
+            f"('{node.name}' resolves fine at the sema level, where lexical "
+            f"scoping still applies, but not after lifting) -- variable capture "
+            f"in closures is not implemented yet (see CONTINUATION_PLAN.md)"
+        )
 
     # ==================================================================
     # Calls — builtins, operators, struct ctors, user fns
@@ -3794,6 +3802,22 @@ class Emitter:
             val = self._emit_expr(node.value)
             if val is not None:
                 self._emit_line(f"store {ty} {val}, ptr {ptr}")
+            return None
+        if isinstance(target, N.Ident):
+            # Same "undefined identifier at codegen time" case _emit_ident
+            # raises for a read -- most commonly a `(fn! ...)` closure
+            # writing a variable from its enclosing scope, which
+            # `_lift_closures` hoists to a function with no access to it.
+            # Falling through to the generic `return None` below used to
+            # silently skip the assignment (and never even evaluate
+            # `node.value`, so a read-then-write like `(= counter (+
+            # counter 1))` didn't hit _emit_ident's own check either).
+            raise NotImplementedError(
+                f"undefined identifier '{target.name}' at codegen time in an "
+                f"assignment -- most likely a `(fn! ...)` closure writing a "
+                f"variable from its enclosing scope: variable capture in "
+                f"closures is not implemented yet (see CONTINUATION_PLAN.md)"
+            )
         return None
 
     # ------------------------------------------------------------------

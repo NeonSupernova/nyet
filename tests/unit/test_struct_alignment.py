@@ -46,7 +46,7 @@ def test_struct_pads_i32_before_pointer_field():
     # pointer (8..15), then the bool (16), rounded up to 24.
     e = _emitter_for("""
         (struct Row id:i32 name:string used:bool)
-        (fn main () -> unit unit)
+        (fn main () -> unit pass)
     """)
     assert e._struct_size_bytes("Row") == 24
 
@@ -54,7 +54,7 @@ def test_struct_pads_i32_before_pointer_field():
 def test_struct_with_uniform_field_widths_needs_no_interior_padding():
     e = _emitter_for("""
         (struct ThreeInts a:i32 b:i32 c:i32)
-        (fn main () -> unit unit)
+        (fn main () -> unit pass)
     """)
     # 12 bytes of fields, no interior padding needed, rounded up to 16.
     assert e._struct_size_bytes("ThreeInts") == 16
@@ -63,7 +63,7 @@ def test_struct_with_uniform_field_widths_needs_no_interior_padding():
 def test_struct_of_bools_stays_small():
     e = _emitter_for("""
         (struct AllBool a:bool b:bool)
-        (fn main () -> unit unit)
+        (fn main () -> unit pass)
     """)
     assert e._struct_size_bytes("AllBool") == 8
 
@@ -75,25 +75,25 @@ def test_pointer_field_before_narrower_fields_needs_no_padding():
     # workaround (see nyet-repo-state memory).
     e = _emitter_for("""
         (struct Row name:string id:i32 used:bool)
-        (fn main () -> unit unit)
+        (fn main () -> unit pass)
     """)
     assert e._struct_size_bytes("Row") == 16
 
 
 def test_field_offsets_align_pointer_after_i32():
-    e = _emitter_for("(fn main () -> unit unit)")
+    e = _emitter_for("(fn main () -> unit pass)")
     assert e._field_offsets(["i32", "ptr"]) == [0, 8]
 
 
 def test_field_offsets_no_padding_when_already_aligned():
-    e = _emitter_for("(fn main () -> unit unit)")
+    e = _emitter_for("(fn main () -> unit pass)")
     assert e._field_offsets(["i64", "double", "i64"]) == [0, 8, 16]
 
 
 def test_sum_type_payload_accounts_for_interior_padding():
     e = _emitter_for("""
         (type Item (Entry i32 string) (Empty))
-        (fn main () -> unit unit)
+        (fn main () -> unit pass)
     """)
     # tag(4) + payload (i32 padded to 8, then the 8-byte ptr = 16) = 20,
     # rounded up to 24.

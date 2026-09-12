@@ -49,24 +49,24 @@ def _ir_for(src: str) -> str:
 
 
 def test_int_const_defaults_to_i32():
-    e = _emitter_for("(const MAX:i32 5) (fn main () -> unit unit)")
+    e = _emitter_for("(const MAX:i32 5) (fn main () -> unit pass)")
     assert e._const_values["MAX"] == ("5", "i32")
 
 
 def test_const_type_annotation_overrides_default_width():
-    e = _emitter_for("(const BIG:i64 100) (fn main () -> unit unit)")
+    e = _emitter_for("(const BIG:i64 100) (fn main () -> unit pass)")
     assert e._const_values["BIG"] == ("100", "i64")
 
 
 def test_string_const_registers_a_string_global():
-    e = _emitter_for('(const GREETING:string "hi") (fn main () -> unit unit)')
+    e = _emitter_for('(const GREETING:string "hi") (fn main () -> unit pass)')
     val, ty = e._const_values["GREETING"]
     assert ty == "ptr"
     assert val.startswith("@.str.")
 
 
 def test_float_const_is_the_ieee754_double_bit_pattern():
-    e = _emitter_for("(const PI:f64 3.5) (fn main () -> unit unit)")
+    e = _emitter_for("(const PI:f64 3.5) (fn main () -> unit pass)")
     val, ty = e._const_values["PI"]
     assert ty == "double"
     expected = _struct.unpack("Q", _struct.pack("d", 3.5))[0]
@@ -74,7 +74,7 @@ def test_float_const_is_the_ieee754_double_bit_pattern():
 
 
 def test_bool_const():
-    e = _emitter_for("(const ENABLED:bool true) (fn main () -> unit unit)")
+    e = _emitter_for("(const ENABLED:bool true) (fn main () -> unit pass)")
     assert e._const_values["ENABLED"] == ("1", "i1")
 
 
@@ -124,5 +124,5 @@ def test_non_literal_const_raises_instead_of_silently_dropping():
     with pytest.raises(NotImplementedError):
         _emitter_for("""
             (const TOTAL:i32 (+ 1 2))
-            (fn main () -> unit unit)
+            (fn main () -> unit pass)
         """)

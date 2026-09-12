@@ -74,7 +74,7 @@ def test_two_runtime_strings_compare_via_strcmp_not_pointer_identity():
 def test_struct_string_field_registry_tracks_string_typed_fields():
     e = _emitter_for("""
         (struct Row name:string id:i32)
-        (fn main () -> unit unit)
+        (fn main () -> unit pass)
     """)
     assert e._struct_string_fields["Row"] == {"name"}
 
