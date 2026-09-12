@@ -1,0 +1,5 @@
+=== stdout ===
+i64 + float: 8.5
+i64 > float: 1
+u32 widened to f64: 4e+09
+f64 narrowed to u32: 4000000000

@@ -2735,7 +2735,8 @@ class Emitter:
             fty = "double" if "double" in (lty, rty) else "float"
             if not self._is_float(lty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {lhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[0]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {lty} {lhs} to {fty}")
                 lhs = conv
             elif lty != fty:
                 conv = self._fresh_tmp()
@@ -2743,7 +2744,8 @@ class Emitter:
                 lhs = conv
             if not self._is_float(rty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {rhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[1]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {rty} {rhs} to {fty}")
                 rhs = conv
             elif rty != fty:
                 conv = self._fresh_tmp()
@@ -2820,7 +2822,8 @@ class Emitter:
             fty = "double" if "double" in (lty, rty) else "float"
             if not self._is_float(lty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {lhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[0]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {lty} {lhs} to {fty}")
                 lhs = conv
             elif lty != fty:
                 conv = self._fresh_tmp()
@@ -2828,7 +2831,8 @@ class Emitter:
                 lhs = conv
             if not self._is_float(rty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {rhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[1]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {rty} {rhs} to {fty}")
                 rhs = conv
             elif rty != fty:
                 conv = self._fresh_tmp()
@@ -3005,10 +3009,12 @@ class Emitter:
 
         # float conversions
         if self._is_float(dst_ty) and not self._is_float(src_ty):
-            self._emit_line(f"{tmp} = sitofp {src_ty} {src} to {dst_ty}")
+            op = "uitofp" if self._node_is_unsigned(value) else "sitofp"
+            self._emit_line(f"{tmp} = {op} {src_ty} {src} to {dst_ty}")
             return tmp
         if not self._is_float(dst_ty) and self._is_float(src_ty):
-            self._emit_line(f"{tmp} = fptosi {src_ty} {src} to {dst_ty}")
+            op = "fptoui" if self._type_is_unsigned(target_tn) else "fptosi"
+            self._emit_line(f"{tmp} = {op} {src_ty} {src} to {dst_ty}")
             return tmp
         if self._is_float(dst_ty) and self._is_float(src_ty):
             src_bits = self._sizeof(src_ty) * 8
@@ -3103,6 +3109,16 @@ class Emitter:
         binding (u8/u16/u32/u64/usize) -- see `_env_unsigned_names`."""
         if isinstance(node, N.Ident):
             return node.name in self._env_unsigned_names
+        return False
+
+    def _type_is_unsigned(self, tn: N.TypeNode | None) -> bool:
+        """Return True if `tn` is itself a u8/u16/u32/u64/usize type
+        annotation -- for a cast's declared TARGET type, where there is
+        no binding/value node to consult `_node_is_unsigned` on."""
+        if isinstance(tn, N.RefType):
+            return self._type_is_unsigned(tn.inner)
+        if isinstance(tn, (N.PrimType, N.NamedType)):
+            return tn.name in self._UNSIGNED_NAMES
         return False
 
     # ------------------------------------------------------------------
@@ -3853,7 +3869,8 @@ class Emitter:
                     val_ty = self._infer_llvm_type(node.value)
                     if self._is_float(break_ty) and not self._is_float(val_ty):
                         conv = self._fresh_tmp()
-                        self._emit_line(f"{conv} = sitofp {val_ty} {val} to {break_ty}")
+                        iop = "uitofp" if self._node_is_unsigned(node.value) else "sitofp"
+                        self._emit_line(f"{conv} = {iop} {val_ty} {val} to {break_ty}")
                         val = conv
                     self._emit_line(f"store {break_ty} {val}, ptr {result_ptr}")
             self._emit_line(f"br label %{end_label}")
@@ -4021,7 +4038,8 @@ class Emitter:
                     val_ty = self._infer_llvm_type(node.value)
                     if self._is_float(ty) and not self._is_float(val_ty):
                         conv = self._fresh_tmp()
-                        self._emit_line(f"{conv} = sitofp {val_ty} {val} to {ty}")
+                        iop = "uitofp" if self._node_is_unsigned(node.value) else "sitofp"
+                        self._emit_line(f"{conv} = {iop} {val_ty} {val} to {ty}")
                         val = conv
                     elif not self._is_float(ty) and not self._is_float(val_ty) and val_ty != ty:
                         # Integer width mismatch — coerce to match declared type
@@ -4536,7 +4554,8 @@ class Emitter:
         val_ty = self._infer_llvm_type(value)
         if self._is_float(elem_ty) and not self._is_float(val_ty):
             conv = self._fresh_tmp()
-            self._emit_line(f"{conv} = sitofp {val_ty} {val} to {elem_ty}")
+            iop = "uitofp" if self._node_is_unsigned(value) else "sitofp"
+            self._emit_line(f"{conv} = {iop} {val_ty} {val} to {elem_ty}")
             val = conv
 
         base = self._array_data_base(arr)
