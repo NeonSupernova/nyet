@@ -59,6 +59,11 @@ class Emitter:
         # v0.2: struct registry — name → [(field_name, llvm_type)]
         self._structs: dict[str, list[tuple[str, str]]] = {}
         self._struct_type_lines: list[str] = []
+        # struct name → set of field names whose Nyet type is `string`
+        # (as opposed to some other `ptr`-shaped field — nested struct,
+        # Array, tuple, Map). Used by `_is_string_operand` so `(. row
+        # name)` is recognized as a string for `==`/`</`>` comparisons.
+        self._struct_string_fields: dict[str, set[str]] = {}
 
         # v0.2: fn signature registry — name → (param_types, ret_type)
         self._fn_sigs: dict[str, tuple[list[str], str]] = {}
@@ -82,6 +87,16 @@ class Emitter:
         # `_emit_call` and `_emit_assign` to dispatch `(arr i)` and
         # `(= (arr i) v)` to indexed load/store instead of a function call.
         self._env_array_elem: dict[str, str] = {}
+        # Parallel to `_env_array_elem`, but the *Nyet* element type name
+        # (e.g. "Point") when `T` is a named type — only ever set when
+        # `_env_array_elem[name]` is "ptr" and the element is a known
+        # struct/sum type. Without this, `(let a (arr i))` (no `&T`
+        # annotation) loses track of which struct `a` is, so `(. a
+        # field)` silently fails: `_infer_nyet_type_name` had no case for
+        # "a Call indexing a known array binding" at all, so `_emit_let`
+        # took the scalar-`ptr` path instead of the aggregate path and
+        # never registered `_env_struct_name[a]`.
+        self._env_array_elem_nyet: dict[str, str] = {}
 
         # Char bindings — names of variables whose Nyet type is `char`.
         # Used by _emit_cast to detect char→int conversions at the call site.
@@ -395,10 +410,14 @@ class Emitter:
 
     def _register_struct(self, node: N.StructDecl) -> None:
         fields = []
+        string_fields: set[str] = set()
         for p in node.fields:
             ty = self._llvm_type(p.type)
             fields.append((p.name, ty))
+            if self._nyet_type_name(p.type) == "string":
+                string_fields.add(p.name)
         self._structs[node.name] = fields
+        self._struct_string_fields[node.name] = string_fields
         llvm_fields = ", ".join(ty for _, ty in fields)
         self._struct_type_lines.append(f"%{node.name} = type {{ {llvm_fields} }}")
 
@@ -453,10 +472,20 @@ class Emitter:
         """Precompute a top-level `const`'s inlined value (see main.no's
         Constants section: consts are compile-time values with no runtime
         allocation or address). Only literal RHS values are supported,
-        matching every documented/tested `const` use."""
+        matching every documented/tested `const` use. A non-literal
+        initializer raises rather than silently registering nothing --
+        that silent-nothing behavior is exactly the original bug this
+        method exists to fix (a dropped reference, not a clean error),
+        and this compiler has no general constant-expression evaluator
+        to honor a non-literal const value yet."""
         val = self._const_literal_value(node.value)
         if val is None:
-            return
+            got = "no initializer" if node.value is None else type(node.value).__name__
+            raise NotImplementedError(
+                f"const '{node.name}': only literal initializers "
+                f"(int/float/bool/string/keyword) are supported by this "
+                f"compiler; got {got}"
+            )
         llvm_val, default_ty = val
         llvm_ty = self._llvm_type(node.type) if node.type is not None else default_ty
         self._const_values[node.name] = (llvm_val, llvm_ty)
@@ -963,6 +992,23 @@ class Emitter:
                 return self._llvm_type(tn.args[0])
         return None
 
+    def _array_elem_nyet_name(self, tn: N.TypeNode | None) -> str | None:
+        """Return the Nyet element type name if `tn` is `Array[T]` (or
+        `&Array[T]`) and `T` is a named type (e.g. a struct/sum type).
+        Mirrors `_array_elem_llvm_type`, but keeps the *Nyet* name so a
+        struct read out of an array can still be field-accessed -- see
+        `_env_array_elem_nyet`."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._array_elem_nyet_name(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Array" and tn.args:
+                return self._nyet_type_name(tn.args[0])
+        return None
+
     def _dyn_trait_name(self, tn: N.TypeNode | None) -> str | None:
         """Return the trait name if `tn` is `dyn Trait` (or `&dyn Trait`)."""
         if tn is None:
@@ -1154,6 +1200,9 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_array_elem[n] = arr_elem
+                    arr_elem_nyet = self._array_elem_nyet_name(p.type)
+                    if arr_elem_nyet is not None:
+                        self._env_array_elem_nyet[n] = arr_elem_nyet
                 elif isinstance(p.type, N.FnType):
                     # Function-typed param: a pointer to a function. Track its
                     # signature so calls like `(f x)` can be lowered as an
@@ -1538,7 +1587,17 @@ class Emitter:
             return self._emit_let(node)
 
         if isinstance(node, N.Return):
-            if node.value is not None:
+            # `(return ())` — an explicit unit value, e.g. from a macro
+            # that returns early with a caller-supplied "what to return"
+            # argument shared across `-> bool` and `-> unit` call sites —
+            # has a real `node.value` (a UnitLit, not Python None) but
+            # `_emit_expr` legitimately yields no SSA value for it (unit
+            # has no runtime representation). Falling into the branch
+            # below used to stringify that as the literal text "ret i32
+            # None" (Python's `None` interpolated straight into the IR).
+            # Both `(return)` and `(return ())` mean the same thing in a
+            # `-> unit` function, so treat them the same.
+            if node.value is not None and not isinstance(node.value, N.UnitLit):
                 val = self._emit_expr(node.value)
                 ty = self._infer_llvm_type(node.value)
                 self._emit_line(f"ret {ty} {val}")
@@ -1998,18 +2057,91 @@ class Emitter:
     # ------------------------------------------------------------------
 
     def _emit_in(self, args: list[N.Expr]) -> str | None:
+        """`(in)` -- read one line from stdin.
+
+        The FILE* stdin handle is opened via `fdopen` at most ONCE per
+        process, cached in a global. A `(in)` call site inside a `loop`
+        only appears once in the emitted IR, but that block runs on
+        every iteration -- calling `fdopen(0, "r")` again on every one
+        of those runtime iterations used to open a brand new stdio
+        buffer on fd 0 each time. Because stdio's first `fgets` on a
+        fresh buffer greedily reads ahead past the first line, and that
+        buffered-but-unread remainder was discarded the moment the
+        FILE* was abandoned at the end of the call, this silently
+        dropped every line after the first. Once stdin was actually
+        exhausted, `fgets` returned NULL (previously unchecked here),
+        leaving `buf`'s stack memory untouched -- so every call after
+        the first replayed the first line forever instead of the loop
+        ever observing EOF. Caching the handle fixes the dropped-lines
+        half; the EOF check below (empty string on NULL) fixes the
+        replay-forever half.
+
+        The read buffer itself is heap- (not stack-) allocated for the
+        same reason every other Nyet `string` value is static or heap
+        data: a `string` is meant to survive a function return (stored,
+        passed on, returned again) like any other owned value. A stack
+        `alloca` here would hand back a pointer into the current
+        function's frame, which is a dangling pointer to the caller
+        the moment that frame is popped -- e.g. any `(fn read_line ()
+        -> string (in))`-style wrapper, an entirely ordinary pattern
+        for prompting on a line of input, would silently read
+        clobbered stack memory back out of it.
+        """
         self._declare_extern("declare ptr @fgets(ptr, i32, ptr)")
         self._declare_extern("declare ptr @fdopen(i32, ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        self._declare_extern("@__nyet_stdin = internal global ptr null")
         self._declare_printf()
 
-        buf = self._emit_alloca("[256 x i8]")
         buf_ptr = self._fresh_tmp()
-        self._emit_line(f"{buf_ptr} = getelementptr [256 x i8], ptr {buf}, i32 0, i32 0")
+        self._emit_line(f"{buf_ptr} = call ptr @malloc(i64 256)")
+
+        cached = self._fresh_tmp()
+        self._emit_line(f"{cached} = load ptr, ptr @__nyet_stdin")
+        need_open = self._fresh_tmp()
+        self._emit_line(f"{need_open} = icmp eq ptr {cached}, null")
+        open_label = self._fresh_label("in_open")
+        have_label = self._fresh_label("in_have")
+        self._emit_line(f"br i1 {need_open}, label %{open_label}, label %{have_label}")
+
+        self._emit_label(open_label)
         mode_name = self._get_format_string("r", "r_mode")
+        opened = self._fresh_tmp()
+        self._emit_line(f"{opened} = call ptr @fdopen(i32 0, ptr {mode_name})")
+        self._emit_line(f"store ptr {opened}, ptr @__nyet_stdin")
+        self._emit_line(f"br label %{have_label}")
+
+        self._emit_label(have_label)
         stdin_fp = self._fresh_tmp()
-        self._emit_line(f"{stdin_fp} = call ptr @fdopen(i32 0, ptr {mode_name})")
-        tmp = self._fresh_tmp()
-        self._emit_line(f"{tmp} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})")
+        self._emit_line(f"{stdin_fp} = load ptr, ptr @__nyet_stdin")
+        fgets_ret = self._fresh_tmp()
+        self._emit_line(f"{fgets_ret} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})")
+
+        is_eof = self._fresh_tmp()
+        self._emit_line(f"{is_eof} = icmp eq ptr {fgets_ret}, null")
+        eof_label = self._fresh_label("in_eof")
+        done_label = self._fresh_label("in_done")
+        self._emit_line(f"br i1 {is_eof}, label %{eof_label}, label %{done_label}")
+
+        self._emit_label(eof_label)
+        self._emit_line(f"store i8 0, ptr {buf_ptr}")
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(done_label)
+
+        # `fgets` keeps the trailing newline (and a preceding `\r` on
+        # CRLF input) in the buffer -- every line `(in)` read used to
+        # come back with it still attached, so `(== line "quit")`
+        # could never match a line actually typed as "quit". Truncate
+        # at the first line-ending byte, same as a real line-reading
+        # API would hand back.
+        self._declare_extern("declare i64 @strcspn(ptr, ptr)")
+        line_endings = self._get_format_string("\r\n", "in_line_endings")
+        cut_off = self._fresh_tmp()
+        self._emit_line(f"{cut_off} = call i64 @strcspn(ptr {buf_ptr}, ptr {line_endings})")
+        cut_ptr = self._fresh_tmp()
+        self._emit_line(f"{cut_ptr} = getelementptr i8, ptr {buf_ptr}, i64 {cut_off}")
+        self._emit_line(f"store i8 0, ptr {cut_ptr}")
 
         target_type = "ptr"
         if args and isinstance(args[0], N.Ident):
@@ -2366,6 +2498,24 @@ class Emitter:
             fconds = {"==": "oeq", "!=": "one", "<": "olt", ">": "ogt", "<=": "ole", ">=": "oge"}
             self._emit_line(f"{tmp} = fcmp {fconds[op]} {fty} {lhs}, {rhs}")
             return tmp
+        elif (
+            lty == "ptr"
+            and rty == "ptr"
+            and self._is_string_operand(args[0])
+            and self._is_string_operand(args[1])
+        ):
+            # `string` lowers to `ptr` same as structs/arrays/maps, but
+            # unlike those it's a primitive value type with no `impl Eq`
+            # to dispatch through -- so every string `==`/`!=`/`<` used to
+            # fall into the raw-pointer-identity branch below, comparing
+            # *addresses* instead of contents. Two runtime strings (e.g.
+            # a line read via `(in)` against a literal) are essentially
+            # never the same allocation, so `(== cmd "quit")` could never
+            # match what the user actually typed -- it only ever looked
+            # like it worked for two identical string *literals*, which
+            # get interned to the same global constant by `_get_string`
+            # and were therefore accidentally pointer-equal.
+            return self._emit_string_cmp(op, lhs, rhs)
         else:
             # Integer / bool / char / pointer comparison. Choose a common
             # operand type and coerce the narrower side up to it, so that
@@ -2410,6 +2560,45 @@ class Emitter:
             self._emit_line(f"{tmp} = {opc} {src} {val} to {dst}")
         else:
             self._emit_line(f"{tmp} = trunc {src} {val} to {dst}")
+        return tmp
+
+    def _is_string_operand(self, node: N.Node) -> bool:
+        """True if `node` is confidently known to be a Nyet `string`
+        (as opposed to some other `ptr`-shaped type -- struct, array,
+        tuple, Map -- that also needs comparison to fall through to
+        raw pointer identity). Deliberately conservative: covers string
+        literals, `string`-typed let/var/param bindings (tracked in
+        `_env_string_names`), `fmt` calls, and `string`-typed struct
+        fields, which is every shape a string reaches `_emit_cmp` in in
+        idiomatic code (bind-then-compare); an inline `(in)`/`(+ ...)`
+        concat result not yet bound to a variable falls through to the
+        old pointer-identity path rather than risk misclassifying an
+        unrelated pointer type.
+        """
+        if isinstance(node, N.StringLit):
+            return True
+        if isinstance(node, N.Ident):
+            return node.name in self._env_string_names
+        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
+            return node.head.name == "fmt"
+        if isinstance(node, N.FieldAccess):
+            struct_name = self._struct_name_of(node.target)
+            if struct_name is not None:
+                return node.field_name in self._struct_string_fields.get(struct_name, set())
+        return False
+
+    def _emit_string_cmp(self, op: str, lhs: str, rhs: str) -> str:
+        """Lower a string comparison to `strcmp`, comparing contents
+        instead of the addresses `_emit_cmp`'s default `ptr` path
+        would compare. `strcmp`'s sign convention (0 iff equal, `< 0`
+        iff lhs sorts first, `> 0` iff rhs does) maps directly onto
+        every comparison op, not just `==`/`!=`."""
+        self._declare_extern("declare i32 @strcmp(ptr, ptr)")
+        cmp_result = self._fresh_tmp()
+        self._emit_line(f"{cmp_result} = call i32 @strcmp(ptr {lhs}, ptr {rhs})")
+        tmp = self._fresh_tmp()
+        iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
+        self._emit_line(f"{tmp} = icmp {iconds[op]} i32 {cmp_result}, 0")
         return tmp
 
     # ------------------------------------------------------------------
@@ -3154,6 +3343,19 @@ class Emitter:
         end_label = self._fresh_label("ifend")
 
         result_ty = self._infer_llvm_type(node.then_branch) if node.then_branch else "ptr"
+        if result_ty == "void":
+            # A branch that's a bare call to a `-> unit` function (e.g.
+            # `(if cond (some_unit_fn) (other_unit_fn))`, not wrapped in
+            # a `do` alongside other statements) makes `_infer_llvm_type`
+            # return the callee's real LLVM return type, "void" — which
+            # is not a valid `alloca`/local-variable type in LLVM (only
+            # legal as a function's own return type). `_emit_expr` never
+            # actually produces an SSA value for such a call anyway (the
+            # `then_val is not None` guards below just skip the store),
+            # so the slot's type only has to be *some* valid one; `ptr`
+            # is what an untyped/no-value branch already defaults to
+            # when there's no `then_branch` at all.
+            result_ty = "ptr"
         result_ptr = self._emit_alloca(result_ty)
         # Zero-initialize
         if result_ty == "ptr":
@@ -3294,6 +3496,11 @@ class Emitter:
         if elem_ty is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
             elem_ty = self._infer_llvm_type(node.value.elements[0])
         if elem_ty is not None:
+            elem_nyet: str | None = None
+            if node.type is not None:
+                elem_nyet = self._array_elem_nyet_name(node.type)
+            if elem_nyet is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
+                elem_nyet = self._infer_nyet_type_name(node.value.elements[0])
             ptr = self._emit_alloca("ptr")
             if (
                 isinstance(node.value, N.Call)
@@ -3315,6 +3522,8 @@ class Emitter:
                 self._emit_line(f"store ptr null, ptr {ptr}")
             self._env[node.name] = (ptr, "ptr")
             self._env_array_elem[node.name] = elem_ty
+            if elem_nyet is not None:
+                self._env_array_elem_nyet[node.name] = elem_nyet
             return None
 
         # Tuple bindings: store the heap pointer and remember the
@@ -3442,6 +3651,15 @@ class Emitter:
         """Try to infer the Nyet type name from an expression."""
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
             name = node.head.name
+            # Array indexing `(arr i)` where `arr` holds struct/sum-type
+            # elements — a bound name shadows any same-named function,
+            # matching `_emit_call`'s own array-indexing precedence.
+            if (
+                name in self._env_array_elem_nyet
+                and len(node.args) == 1
+                and name in self._env_array_elem
+            ):
+                return self._env_array_elem_nyet[name]
             if name in self._structs:
                 return name
             if name in self._variant_ctors:

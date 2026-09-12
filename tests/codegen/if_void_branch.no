@@ -1,0 +1,16 @@
+;; Regression test: an `if` whose branch is a bare call to a `-> unit`
+;; function (not wrapped in a `do` alongside other statements) used to
+;; crash codegen entirely -- `_emit_if` sizes its result slot from
+;; `_infer_llvm_type(then_branch)`, which for a direct call to a void
+;; function returns the callee's real LLVM return type, "void". `alloca
+;; void` is illegal LLVM IR (`void` is only a valid function return
+;; type, never a value/local type), so clang rejected the emitted
+;; module outright.
+;; Expected: yes / no
+
+(fn say_yes () -> unit (out "yes\n"))
+(fn say_no () -> unit (out "no\n"))
+
+(fn main () -> unit
+  (if true (say_yes) (say_no))
+  (if false (say_yes) (say_no)))

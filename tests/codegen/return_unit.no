@@ -1,0 +1,18 @@
+;; Regression test: `(return ())` inside a `-> unit` function used to
+;; emit the literal text "ret i32 None" (Python's `None` interpolated
+;; into the IR) instead of "ret void", because a UnitLit `node.value`
+;; is not Python `None` even though `_emit_expr` legitimately yields no
+;; SSA value for it. Useful in a macro shared between `-> bool` and
+;; `-> unit` callers, where the "what to return on early exit" is a
+;; caller-supplied argument that's sometimes `false` and sometimes `()`.
+;; Expected: a / before / b / unreachable
+
+(fn early_out (skip:bool) -> unit
+  (if skip (do (out "before\n") (return ())) pass)
+  (out "unreachable\n"))
+
+(fn main () -> unit
+  (out "a\n")
+  (early_out true)
+  (out "b\n")
+  (early_out false))

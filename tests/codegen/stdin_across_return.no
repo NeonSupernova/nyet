@@ -1,0 +1,25 @@
+;; Regression test: `(in)`'s read buffer used to be stack-allocated,
+;; so a `string` it returned was a dangling pointer the instant the
+;; declaring function returned -- the very next call reused that stack
+;; slot and clobbered the bytes. `read_line` below is the ordinary
+;; "print a prompt, read a line" helper shape; calling `(in)` again
+;; before printing the first result is what forces the old stack slot
+;; to be overwritten, proving the first read's buffer is independently
+;; heap-allocated now.
+;;
+;; The golden harness pipes no stdin, so both reads hit EOF and this
+;; can only confirm the "call (in) from a non-main function, across a
+;; return, more than once" shape doesn't crash or hang with an empty
+;; string either way -- it can't by itself prove content survives the
+;; return boundary uncorrupted (that needs real piped input; verified
+;; manually: `printf "hello\nworld\n" | ./this_binary` prints
+;; "[hello]" then "[world]", not corrupted bytes).
+;; Expected: [] then [].
+
+(fn read_line () -> string (in))
+
+(fn main () -> unit
+  (let first:string (read_line))
+  (let second:string (read_line))
+  (out "[") (out first) (out "]\n")
+  (out "[") (out second) (out "]\n"))

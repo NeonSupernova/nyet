@@ -1,0 +1,33 @@
+;; Regression test: `string` `==`/`!=` used to compare raw pointers
+;; (the same fallback path structs/arrays/maps use, since `string`
+;; lowers to `ptr` too) instead of contents. Two identical string
+;; *literals* happened to look equal anyway -- `_get_string` interns
+;; identical literal values to the same global constant, so they were
+;; accidentally pointer-equal -- but a runtime-built string (here,
+;; `fmt`) compared against an equal-content literal or another
+;; runtime-built string was a completely different allocation and
+;; could never compare equal, no matter how identical the contents.
+;; Also covers comparison via a struct's `string` field (`(. row
+;; name)`), which needs `_is_string_operand` to recognize a
+;; `FieldAccess` node, not just idents/literals/`fmt` calls.
+;; Expected: true true true true true true (six `1`s), one per line.
+
+(struct Row name:string)
+
+(fn show_cmp (arr:&Array[Row]) -> unit
+  (let r0:&Row (arr 0))
+  (let r1:&Row (arr 1))
+  (out (> (. r0 name) (. r1 name))) (out "\n")  ; "Bob" > "Alice"
+  (out (== (. r0 name) "Bob")) (out "\n"))       ; struct field vs literal
+
+(fn main () -> unit
+  (let a:string (fmt "{}-{}" "id" 1))
+  (let b:string (fmt "{}-{}" "id" 1))
+  (out (== a b)) (out "\n")       ; two separately-built, equal strings
+  (out (== a "id-1")) (out "\n")  ; runtime string vs equal literal
+  (out (!= a "id-2")) (out "\n")  ; runtime string vs unequal literal
+  (let c:string "quit")
+  (out (== c "quit")) (out "\n")  ; string-typed var vs literal
+
+  (let arr:Array[Row] [(Row name:"Bob") (Row name:"Alice")])
+  (show_cmp &arr))

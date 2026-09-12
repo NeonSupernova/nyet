@@ -17,6 +17,8 @@ directly instead of trying to `load` a nonexistent address.
 import re
 import struct as _struct
 
+import pytest
+
 from pynyet.codegen.emit import Emitter
 from pynyet.lexer.scanner import lex
 from pynyet.parser.parser import parse
@@ -110,3 +112,17 @@ def test_const_usable_before_its_declaration_in_source_order():
         (fn main () -> unit (out (get_limit)))
     """)
     assert re.search(r"ret i32 42\b", ir)
+
+
+def test_non_literal_const_raises_instead_of_silently_dropping():
+    # A const value that isn't one of the recognized literal forms used
+    # to hit the exact same silent-drop bug this file is about, just via
+    # a different path (_register_const returning early instead of
+    # registering anything). This compiler has no general constant-
+    # expression evaluator, so a non-literal initializer must be a loud
+    # compile-time failure instead of silently vanishing.
+    with pytest.raises(NotImplementedError):
+        _emitter_for("""
+            (const TOTAL:i32 (+ 1 2))
+            (fn main () -> unit unit)
+        """)
