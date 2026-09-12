@@ -1261,15 +1261,23 @@ class Emitter:
                     arr_elem_nyet = self._array_elem_nyet_name(p.type)
                     if arr_elem_nyet is not None:
                         self._env_array_elem_nyet[n] = arr_elem_nyet
-                elif isinstance(p.type, N.FnType):
-                    # Function-typed param: a pointer to a function. Track its
-                    # signature so calls like `(f x)` can be lowered as an
-                    # indirect call through the slot.
+                elif isinstance(
+                    p.type.inner if isinstance(p.type, N.RefType) else p.type, N.FnType
+                ):
+                    # Function-typed param: a pointer to a function. Track
+                    # its signature so calls like `(f x)` can be lowered as
+                    # an indirect call through the slot. Unwrap `&`/`&!`
+                    # first -- same fix as the tuple-param case just above,
+                    # same bug: a by-reference fn-typed param (`f:&(fn i32
+                    # -> i32)`) fell into the generic scalar-`ptr` fallback
+                    # below and `(f x)` was parsed as a call to an
+                    # undefined function `f`.
+                    fn_type = p.type.inner if isinstance(p.type, N.RefType) else p.type
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
-                    fn_param_tys = [self._llvm_type(pt) for pt in p.type.params]
-                    fn_ret_ty = self._llvm_ret_type(p.type.ret) if p.type.ret else "void"
+                    fn_param_tys = [self._llvm_type(pt) for pt in fn_type.params]
+                    fn_ret_ty = self._llvm_ret_type(fn_type.ret) if fn_type.ret else "void"
                     self._env_fn_sig[n] = (fn_param_tys, fn_ret_ty)
                 elif nyet_n and (nyet_n in self._structs or nyet_n in self._sum_types):
                     # Struct/sum params are already ptrs — register directly
