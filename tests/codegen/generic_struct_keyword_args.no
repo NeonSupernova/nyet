@@ -1,0 +1,24 @@
+;; Regression test: constructing a generic struct with keyword-style
+;; args (`(Pair first:a second:b)` -- the primary documented struct-
+;; construction style, per main.no's own examples) crashed at codegen
+;; time. `_infer_type_args_for_struct` filtered keyword args out
+;; entirely for positional matching, so a call using ALL keyword args
+;; (no positional args left at all) had nothing left to unify the
+;; generic type params against and could never infer them. The
+;; constructor call then fell through every dispatch case in
+;; `_emit_call` and was misparsed as an ordinary function call, whose
+;; (still keyword-shaped) args hit `_emit_expr`'s catch-all.
+;; Expected: 5 hello
+
+(struct Pair[A B] first:A second:B)
+
+(fn make_pair[A B] (a:A b:B) -> Pair[A B]
+  (Pair first:a second:b))
+
+(fn main () -> unit
+  (do
+    (let p (make_pair 5 "hello"))
+    (out (. p first))
+    (out " ")
+    (out (. p second))
+    (out "\n")))
