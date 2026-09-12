@@ -2000,12 +2000,46 @@ class Emitter:
     def _infer_type_args_for_struct(
         self, tmpl: N.StructDecl, args: list[N.Expr]
     ) -> tuple[str, ...] | None:
-        # Filter keyword args out for positional matching
-        pos_args: list[N.Expr] = []
+        # `_infer_type_args_from_params` unifies `tmpl.fields[i]` against
+        # `args[i]` purely positionally, so a keyword-style constructor
+        # call (`(Pair first:a second:b)` -- the primary documented
+        # struct-construction style, per main.no's own examples) needs
+        # its args reordered into declaration order first. A previous
+        # version of this method instead filtered keyword args out
+        # entirely, so a generic struct constructed with ALL keyword
+        # args (no positional args left at all) had nothing to unify
+        # against and could never infer its type args -- the call fell
+        # through every other dispatch case in `_emit_call` and was
+        # misparsed as an ordinary function call, whose args (still
+        # `KeywordArg` nodes) then hit the `_emit_expr` catch-all.
+        ordered_args = self._reorder_ctor_args(tmpl.fields, args)
+        return self._infer_type_args_from_params(tmpl.generics, tmpl.fields, ordered_args)
+
+    def _reorder_ctor_args(self, fields: list, args: list[N.Expr]) -> list[N.Expr]:
+        """Reorder a struct constructor's actual arguments (a mix of
+        positional and keyword-style) into declaration order, matching
+        `_emit_struct_construct`'s own by-name/by-position field
+        matching -- needed so callers that unify positionally (generic
+        type-arg inference) work regardless of whether the call used
+        keyword args, positional args, or a mix.
+        """
+        by_name: dict[str, N.Expr] = {}
+        positional: list[N.Expr] = []
         for a in args:
-            if not isinstance(a, N.KeywordArg):
-                pos_args.append(a)
-        return self._infer_type_args_from_params(tmpl.generics, tmpl.fields, pos_args)
+            if isinstance(a, N.KeywordArg):
+                if a.value is not None:
+                    by_name[a.name] = a.value
+            else:
+                positional.append(a)
+        ordered: list[N.Expr] = []
+        pos_i = 0
+        for f in fields:
+            if f.name in by_name:
+                ordered.append(by_name[f.name])
+            elif pos_i < len(positional):
+                ordered.append(positional[pos_i])
+                pos_i += 1
+        return ordered
 
     def _infer_type_args_for_variant(
         self,
