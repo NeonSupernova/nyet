@@ -19,6 +19,8 @@ from pynyet.sema.borrow import compute_drop_names
 class Emitter:
     """Emit LLVM IR text from a Nyet AST."""
 
+    _UNSIGNED_NAMES = frozenset({"u8", "u16", "u32", "u64", "usize"})
+
     def __init__(self, target_triple: str = "") -> None:
         self._triple = target_triple
         self._lines: list[str] = []
@@ -40,6 +42,8 @@ class Emitter:
         self._fmt_i32: str | None = None
         self._fmt_i64: str | None = None
         self._fmt_f64: str | None = None
+        self._fmt_u32: str | None = None
+        self._fmt_u64: str | None = None
         self._tmp = 0
         self._label = 0
         self._env: dict[str, tuple[str, str]] = {}  # name → (llvm_ptr, llvm_type)
@@ -131,6 +135,16 @@ class Emitter:
         # `_emit_call` to dispatch `(str i)` to an indexed byte load (a
         # `char`) instead of a function call, mirroring `_env_array_elem`.
         self._env_string_names: set[str] = set()
+
+        # Unsigned-integer bindings — names of let/var/params whose Nyet
+        # type is one of u8/u16/u32/u64/usize. LLVM integer types carry
+        # no signedness of their own (i8/i16/i32/i64 are used for both
+        # signed and unsigned Nyet types alike); this is the only place
+        # that distinction survives past `_llvm_type`, so every op that
+        # behaves differently for unsigned values (widening casts,
+        # comparisons, division/remainder, printing) needs to consult
+        # it via `_node_is_unsigned` instead of just the LLVM type.
+        self._env_unsigned_names: set[str] = set()
 
         # Tuple bindings — name -> synthesized tuple struct type name
         # (see `_get_or_register_tuple_type`). Used by `_emit_call` to
@@ -956,6 +970,16 @@ class Emitter:
             self._fmt_f64 = self._get_format_string("%g", "f64")
         return self._fmt_f64
 
+    def _get_fmt_u32(self) -> str:
+        if self._fmt_u32 is None:
+            self._fmt_u32 = self._get_format_string("%u", "u32")
+        return self._fmt_u32
+
+    def _get_fmt_u64(self) -> str:
+        if self._fmt_u64 is None:
+            self._fmt_u64 = self._get_format_string("%llu", "u64")
+        return self._fmt_u64
+
     @staticmethod
     def _escape_bytes(data: bytes) -> str:
         result = []
@@ -991,6 +1015,14 @@ class Emitter:
                 return "i8"
             if name in ("i16", "u16"):
                 return "i16"
+            if name == "u32":
+                return "i32"
+            if name in ("u64", "usize"):
+                # Falling through to the generic "i32" default below would
+                # silently store a 64-bit-wide Nyet type in a 32-bit LLVM
+                # int -- CLAUDE.md documents usize as "the indexing type",
+                # so this would truncate any array-length-scale value.
+                return "i64"
             if name == "char":
                 return "i32"  # Unicode scalar value stored as i32
             if name == "Keyword":
@@ -1175,6 +1207,7 @@ class Emitter:
             "env_array_elem": dict(self._env_array_elem),
             "env_char_names": set(self._env_char_names),
             "env_string_names": set(self._env_string_names),
+            "env_unsigned_names": set(self._env_unsigned_names),
             "env_tuple_types": dict(self._env_tuple_types),
             "env_map_val_ty": dict(self._env_map_val_ty),
             "env_dyn_trait": dict(self._env_dyn_trait),
@@ -1194,6 +1227,7 @@ class Emitter:
         self._env_array_elem = saved["env_array_elem"]
         self._env_char_names = saved["env_char_names"]
         self._env_string_names = saved["env_string_names"]
+        self._env_unsigned_names = saved["env_unsigned_names"]
         self._env_tuple_types = saved["env_tuple_types"]
         self._env_map_val_ty = saved["env_map_val_ty"]
         self._env_dyn_trait = saved["env_dyn_trait"]
@@ -1378,6 +1412,9 @@ class Emitter:
                 # reach here, so this only catches genuine `string` scalars.
                 if p.type is not None and self._nyet_type_name(p.type) == "string":
                     self._env_string_names.add(n)
+                # Track unsigned-typed params -- see `_env_unsigned_names`.
+                if p.type is not None and self._nyet_type_name(p.type) in self._UNSIGNED_NAMES:
+                    self._env_unsigned_names.add(n)
 
             if node.body is not None:
                 result = self._emit_expr(node.body)
@@ -2261,10 +2298,19 @@ class Emitter:
                     self._emit_line(f"{ext} = fpext float {val} to double")
                     val = ext
                 self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})")
+            elif ty == "i64" and self._node_is_unsigned(arg):
+                fmt = self._get_fmt_u64()
+                tmp = self._fresh_tmp()
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
             elif ty == "i64":
                 fmt = self._get_fmt_i64()
                 tmp = self._fresh_tmp()
                 self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
+            elif self._node_is_unsigned(arg):
+                fmt = self._get_fmt_u32()
+                tmp = self._fresh_tmp()
+                val = self._coerce_int_to(val, ty, "i32", unsigned=True)
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
             else:
                 fmt = self._get_fmt_i32()
                 tmp = self._fresh_tmp()
@@ -2550,12 +2596,12 @@ class Emitter:
         if template_val is None:
             return None
 
-        fmt_args: list[tuple[str, str]] = []
+        fmt_args: list[tuple[str, str, N.Expr]] = []
         for arg in args[1:]:
             val = self._emit_expr(arg)
             if val is not None:
                 ty = self._infer_llvm_type(arg)
-                fmt_args.append((ty, val))
+                fmt_args.append((ty, val, arg))
 
         template_text = None
         if isinstance(args[0], N.StringLit):
@@ -2565,7 +2611,7 @@ class Emitter:
 
         if template_text is not None:
             c_fmt = template_text
-            for llvm_ty, _ in fmt_args:
+            for llvm_ty, _, arg_node in fmt_args:
                 # `%d` only matches a 32-bit vararg -- an i64 argument
                 # (passed at its real width just below, in the
                 # `snprintf_args` loop) read back through `%d` silently
@@ -2573,13 +2619,20 @@ class Emitter:
                 # since C varargs have no type checking. `_emit_out`
                 # already gets this right per-argument; `fmt` here
                 # needs the same i64 case, not just ptr/float/else.
+                # Likewise an unsigned Nyet type (u32/u64/usize) needs
+                # `%u`/`%llu`, not `%d`/`%lld` -- see `_env_unsigned_names`.
+                unsigned = self._node_is_unsigned(arg_node)
                 spec = (
                     "%s"
                     if llvm_ty == "ptr"
                     else "%g"
                     if self._is_float(llvm_ty)
+                    else "%llu"
+                    if llvm_ty == "i64" and unsigned
                     else "%lld"
                     if llvm_ty == "i64"
+                    else "%u"
+                    if unsigned
                     else "%d"
                 )
                 c_fmt = c_fmt.replace("{}", spec, 1)
@@ -2591,7 +2644,10 @@ class Emitter:
         self._emit_line(f"{buf_ptr} = call ptr @malloc(i64 1024)")
         self._declare_extern("declare ptr @malloc(i64)")
         snprintf_args = f"ptr {buf_ptr}, i32 1024, ptr {fmt_name}"
-        for llvm_ty, val in fmt_args:
+        for llvm_ty, val, arg_node in fmt_args:
+            if llvm_ty not in ("i64", "double", "float") and self._node_is_unsigned(arg_node):
+                val = self._coerce_int_to(val, llvm_ty, "i32", unsigned=True)
+                llvm_ty = "i32"
             if llvm_ty == "float":
                 # Variadic callee (snprintf %g) expects double — promote
                 ext = self._fresh_tmp()
@@ -2703,10 +2759,14 @@ class Emitter:
             # this path previously hardcoded i32 and miscompiled any
             # arithmetic on i64 operands (e.g. i64 loop counters).
             cty = self._common_cmp_type(args[0], args[1], lty, rty)
-            lhs = self._coerce_int_to(lhs, lty, cty)
-            rhs = self._coerce_int_to(rhs, rty, cty)
+            unsigned = self._node_is_unsigned(args[0]) or self._node_is_unsigned(args[1])
+            lhs = self._coerce_int_to(lhs, lty, cty, unsigned)
+            rhs = self._coerce_int_to(rhs, rty, cty, unsigned)
             tmp = self._fresh_tmp()
-            iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
+            if unsigned:
+                iops = {"+": "add", "-": "sub", "*": "mul", "/": "udiv", "%": "urem"}
+            else:
+                iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
             self._emit_line(f"{tmp} = {iops[op]} {cty} {lhs}, {rhs}")
             return tmp
 
@@ -2802,10 +2862,14 @@ class Emitter:
             # `bool == bool` (i1), `i64 == i64`, and `char == 65` all emit a
             # well-typed `icmp` instead of assuming i32.
             cty = self._common_cmp_type(args[0], args[1], lty, rty)
-            lhs = self._coerce_int_to(lhs, lty, cty)
-            rhs = self._coerce_int_to(rhs, rty, cty)
+            unsigned = self._node_is_unsigned(args[0]) or self._node_is_unsigned(args[1])
+            lhs = self._coerce_int_to(lhs, lty, cty, unsigned)
+            rhs = self._coerce_int_to(rhs, rty, cty, unsigned)
             tmp = self._fresh_tmp()
-            iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
+            if unsigned:
+                iconds = {"==": "eq", "!=": "ne", "<": "ult", ">": "ugt", "<=": "ule", ">=": "uge"}
+            else:
+                iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
             self._emit_line(f"{tmp} = icmp {iconds[op]} {cty} {lhs}, {rhs}")
             return tmp
 
@@ -2826,9 +2890,13 @@ class Emitter:
             return lty
         return lty if self._sizeof(lty) >= self._sizeof(rty) else rty
 
-    def _coerce_int_to(self, val: str, src: str, dst: str) -> str:
+    def _coerce_int_to(self, val: str, src: str, dst: str, unsigned: bool = False) -> str:
         """Widen/narrow an integer value from `src` to `dst` for comparison.
-        i1 widens via zext (so `true` → 1), other ints via sext."""
+        i1 widens via zext (so `true` → 1); other ints widen via zext when
+        `unsigned` is set (the source binding has a Nyet u8/u16/u32/u64/
+        usize type -- LLVM's plain iN carries no signedness of its own, so
+        this is the only place that distinction survives), otherwise
+        sext."""
         if src == dst or dst == "ptr" or src == "ptr":
             return val
         sb, db = self._sizeof(src), self._sizeof(dst)
@@ -2836,7 +2904,7 @@ class Emitter:
             return val
         tmp = self._fresh_tmp()
         if db > sb:
-            opc = "zext" if src == "i1" else "sext"
+            opc = "zext" if (src == "i1" or unsigned) else "sext"
             self._emit_line(f"{tmp} = {opc} {src} {val} to {dst}")
         else:
             self._emit_line(f"{tmp} = trunc {src} {val} to {dst}")
@@ -3016,7 +3084,8 @@ class Emitter:
 
         # plain int → int
         if dst_bits > src_bits:
-            self._emit_line(f"{tmp} = sext {src_ty} {src} to {dst_ty}")
+            opc = "zext" if self._node_is_unsigned(value) else "sext"
+            self._emit_line(f"{tmp} = {opc} {src_ty} {src} to {dst_ty}")
         elif dst_bits < src_bits:
             self._emit_line(f"{tmp} = trunc {src_ty} {src} to {dst_ty}")
         else:
@@ -3027,6 +3096,13 @@ class Emitter:
         """Return True if node resolves to a char-typed binding."""
         if isinstance(node, N.Ident):
             return node.name in self._env_char_names
+        return False
+
+    def _node_is_unsigned(self, node: N.Node | None) -> bool:
+        """Return True if node resolves to an unsigned-integer-typed
+        binding (u8/u16/u32/u64/usize) -- see `_env_unsigned_names`."""
+        if isinstance(node, N.Ident):
+            return node.name in self._env_unsigned_names
         return False
 
     # ------------------------------------------------------------------
@@ -3953,7 +4029,8 @@ class Emitter:
                         dst_bits = self._sizeof(ty) * 8
                         conv = self._fresh_tmp()
                         if dst_bits > src_bits:
-                            self._emit_line(f"{conv} = sext {val_ty} {val} to {ty}")
+                            opc = "zext" if self._node_is_unsigned(node.value) else "sext"
+                            self._emit_line(f"{conv} = {opc} {val_ty} {val} to {ty}")
                         else:
                             self._emit_line(f"{conv} = trunc {val_ty} {val} to {ty}")
                         val = conv
@@ -3962,6 +4039,9 @@ class Emitter:
             # Track char bindings so _emit_cast can detect char→int conversions.
             if node.type is not None and self._nyet_type_name(node.type) == "char":
                 self._env_char_names.add(node.name)
+            # Track unsigned-typed bindings -- see `_env_unsigned_names`.
+            if node.type is not None and self._nyet_type_name(node.type) in self._UNSIGNED_NAMES:
+                self._env_unsigned_names.add(node.name)
             # Track string bindings so `(name i)` lowers to a byte index. A
             # `:string` annotation is authoritative; otherwise a bare string
             # literal RHS (`(let z "hi")`) infers the same shape.
