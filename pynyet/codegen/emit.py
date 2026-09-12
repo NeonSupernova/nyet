@@ -116,6 +116,11 @@ class Emitter:
         # took the scalar-`ptr` path instead of the aggregate path and
         # never registered `_env_struct_name[a]`.
         self._env_array_elem_nyet: dict[str, str] = {}
+        # Same idea, for an Array[T] whose elements are themselves
+        # closures/fn pointers (mirrors `_env_map_val_fn_sig`'s reasoning
+        # for the Map case) -- (param_llvm_types, ret_llvm_type), so
+        # `(let h (arr i)) (h ...)` recognizes `h` as callable.
+        self._env_array_elem_fn_sig: dict[str, tuple[list[str], str]] = {}
 
         # Char bindings — names of variables whose Nyet type is `char`.
         # Used by _emit_cast to detect char→int conversions at the call site.
@@ -3816,6 +3821,9 @@ class Emitter:
                 elem_nyet = self._array_elem_nyet_name(node.type)
             if elem_nyet is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
                 elem_nyet = self._infer_nyet_type_name(node.value.elements[0])
+            elem_fn_sig: tuple[list[str], str] | None = None
+            if isinstance(node.value, N.ArrayLit) and node.value.elements:
+                elem_fn_sig = self._fn_sig_of_value(node.value.elements[0])
             ptr = self._emit_alloca("ptr")
             if (
                 isinstance(node.value, N.Call)
@@ -3839,6 +3847,8 @@ class Emitter:
             self._env_array_elem[node.name] = elem_ty
             if elem_nyet is not None:
                 self._env_array_elem_nyet[node.name] = elem_nyet
+            if elem_fn_sig is not None:
+                self._env_array_elem_fn_sig[node.name] = elem_fn_sig
             return None
 
         # Tuple bindings: store the heap pointer and remember the
@@ -3995,6 +4005,15 @@ class Emitter:
             and value.head.name in self._env_map_val_ty
         ):
             return self._env_map_val_fn_sig[value.head.name]
+        # Same shape, for an Array[T] of closures/fn pointers.
+        if (
+            isinstance(value, N.Call)
+            and isinstance(value.head, N.Ident)
+            and value.head.name in self._env_array_elem_fn_sig
+            and len(value.args) == 1
+            and value.head.name in self._env_array_elem
+        ):
+            return self._env_array_elem_fn_sig[value.head.name]
         return None
 
     def _infer_nyet_type_name(self, node: N.Node) -> str | None:
