@@ -1182,7 +1182,10 @@ class Emitter:
             self._fn_ret_nyet_names[node.name] = ret_nyet
         if isinstance(node.return_type, N.TupleType):
             elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
-            self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(elem_tys)
+            elem_nyet = [self._nyet_type_name(et) for et in node.return_type.elements]
+            self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(
+                elem_tys, elem_nyet
+            )
         dyn_traits = [self._dyn_trait_name(p.type) for p in node.params]
         if any(t is not None for t in dyn_traits):
             self._fn_param_dyn_traits[node.name] = dyn_traits
@@ -1234,7 +1237,10 @@ class Emitter:
                 self._fn_ret_nyet_names[node.name] = ret_nyet
             if isinstance(node.return_type, N.TupleType):
                 elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
-                self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(elem_tys)
+                elem_nyet = [self._nyet_type_name(et) for et in node.return_type.elements]
+                self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(
+                    elem_tys, elem_nyet
+                )
 
             params_str = ", ".join(
                 f"{t} %{n}" for t, n in zip(param_types, param_names, strict=False)
@@ -1271,14 +1277,29 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_struct_name[n] = nyet_n
-                elif isinstance(p.type, N.TupleType):
+                elif isinstance(
+                    p.type.inner if isinstance(p.type, N.RefType) else p.type, N.TupleType
+                ):
                     # Tuple params are already ptrs — register their shape
-                    # so `(param i)` lowers to indexed field load.
+                    # so `(param i)` lowers to indexed field load. Unwrap
+                    # `&`/`&!` first (unlike the array/struct/sum/dyn-Trait
+                    # cases above, which already unwrap internally via
+                    # `_array_elem_llvm_type`/`_nyet_type_name`/
+                    # `_dyn_trait_name`) -- without it, a by-reference tuple
+                    # param (`t:&#(T1 T2)`, the natural way to avoid copying
+                    # one into a function) fell into the generic scalar-`ptr`
+                    # fallback below and `(t i)` was parsed as a call to an
+                    # undefined function `t`, the same bug already fixed for
+                    # Map[K V] params.
+                    tuple_type = p.type.inner if isinstance(p.type, N.RefType) else p.type
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
-                    tup_elem_tys = [self._llvm_type(et) for et in p.type.elements]
-                    self._env_tuple_types[n] = self._get_or_register_tuple_type(tup_elem_tys)
+                    tup_elem_tys = [self._llvm_type(et) for et in tuple_type.elements]
+                    tup_elem_nyet = [self._nyet_type_name(et) for et in tuple_type.elements]
+                    self._env_tuple_types[n] = self._get_or_register_tuple_type(
+                        tup_elem_tys, tup_elem_nyet
+                    )
                 elif self._map_val_llvm_type(p.type) is not None:
                     # Map[K V] params arrive as `ptr` to the runtime hash
                     # table, exactly like a local `let`/`var` — without
@@ -3677,11 +3698,14 @@ class Emitter:
         # `_fn_ret_tuple_types` (needed when neither of the above holds,
         # e.g. `(let p (make_pair))` with no annotation).
         tuple_elem_tys: list[str] | None = None
+        tuple_elem_nyet: list[str | None] | None = None
         tname: str | None = None
         if isinstance(node.type, N.TupleType):
             tuple_elem_tys = [self._llvm_type(et) for et in node.type.elements]
+            tuple_elem_nyet = [self._nyet_type_name(et) for et in node.type.elements]
         elif isinstance(node.value, N.TupleLit):
             tuple_elem_tys = [self._infer_llvm_type(e) for e in node.value.elements]
+            tuple_elem_nyet = [self._infer_nyet_type_name(e) for e in node.value.elements]
         elif (
             isinstance(node.value, N.Call)
             and isinstance(node.value.head, N.Ident)
@@ -3690,7 +3714,7 @@ class Emitter:
             tname = self._fn_ret_tuple_types[node.value.head.name]
         if tuple_elem_tys is not None or tname is not None:
             if tname is None:
-                tname = self._get_or_register_tuple_type(tuple_elem_tys)
+                tname = self._get_or_register_tuple_type(tuple_elem_tys, tuple_elem_nyet)
             ptr = self._emit_alloca("ptr")
             if node.value is not None:
                 val = self._emit_expr(node.value)
@@ -3827,6 +3851,17 @@ class Emitter:
                 and name in self._env_map_val_ty
             ):
                 return self._env_map_val_nyet[name]
+            # Tuple indexing `(t i)` where element `i` is itself a
+            # struct/sum type and `i` is a literal (the only case a
+            # specific field can be resolved at all, same restriction
+            # `_infer_llvm_type` already has for this shape).
+            if (
+                name in self._env_tuple_types
+                and len(node.args) == 1
+                and isinstance(node.args[0], N.IntLit)
+            ):
+                tname = self._env_tuple_types[name]
+                return self._struct_field_nyet.get(tname, {}).get(str(node.args[0].value))
             if name in self._structs:
                 return name
             if name in self._variant_ctors:
@@ -4105,11 +4140,32 @@ class Emitter:
         self._emit_line(f"{ch} = zext i8 {byte} to i32")
         return ch
 
-    def _get_or_register_tuple_type(self, elem_tys: list[str]) -> str:
+    def _get_or_register_tuple_type(
+        self, elem_tys: list[str], elem_nyet: list[str | None] | None = None
+    ) -> str:
         """Return the synthesized struct type name for a tuple shape,
         registering (and emitting a `%name = type {...}` line for) it on
         first use. Fields are named "0", "1", ... so the existing
-        struct-field GEP machinery applies unchanged."""
+        struct-field GEP machinery applies unchanged.
+
+        `elem_nyet`, when given, records each element's Nyet type name
+        in `_struct_field_nyet` (keyed like any other struct) so `(t i)`
+        on a tuple containing a struct/sum element keeps working for a
+        subsequent `(. (t i) field)` — see `_infer_nyet_type_name`'s
+        tuple-indexing case. Cached by LLVM shape only (`elem_tys`), so
+        two tuples that happen to share an LLVM shape (e.g. both a
+        single `ptr` field) but hold *different* Nyet element types
+        will share one synthesized type; whichever call registers it
+        first wins for this metadata. This can't cause a wrong field
+        *load* (the LLVM layout is genuinely identical either way,
+        which is why sharing the type is sound at all) — worst case, a
+        later caller's element is field-accessed as if it were the
+        earlier caller's struct type, which would only actually go
+        wrong if the two structs are unrelated types that happen to
+        share a field name with a different meaning. Accepted same as
+        the analogous existing limitation for `Array[T]` elements (see
+        CONTINUATION_PLAN.md's generics-inference note).
+        """
         key = tuple(elem_tys)
         if key in self._tuple_types:
             return self._tuple_types[key]
@@ -4118,6 +4174,10 @@ class Emitter:
         llvm_fields = ", ".join(elem_tys)
         self._struct_type_lines.append(f"%{name} = type {{ {llvm_fields} }}")
         self._tuple_types[key] = name
+        if elem_nyet is not None:
+            self._struct_field_nyet[name] = {
+                str(i): nyet for i, nyet in enumerate(elem_nyet) if nyet is not None
+            }
         return name
 
     def _emit_tuple_lit(self, node: N.TupleLit) -> str | None:
@@ -4125,14 +4185,16 @@ class Emitter:
         struct construction (heap-allocated so tuples can be returned)."""
         elem_vals: list[str] = []
         elem_tys: list[str] = []
+        elem_nyet: list[str | None] = []
         for e in node.elements:
             v = self._emit_expr(e)
             if v is None:
                 return None
             elem_vals.append(v)
             elem_tys.append(self._infer_llvm_type(e))
+            elem_nyet.append(self._infer_nyet_type_name(e))
 
-        tname = self._get_or_register_tuple_type(elem_tys)
+        tname = self._get_or_register_tuple_type(elem_tys, elem_nyet)
         ptr = self._heap_alloc_struct(tname, self._struct_size_bytes(tname))
         for i, (v, ty) in enumerate(zip(elem_vals, elem_tys, strict=False)):
             fptr = self._fresh_tmp()
@@ -4439,7 +4501,9 @@ class Emitter:
     def _emit_hof_zip(self, arr1_name: str, arr2_name: str) -> str | None:
         elem1_ty = self._env_array_elem[arr1_name]
         elem2_ty = self._env_array_elem[arr2_name]
-        tname = self._get_or_register_tuple_type([elem1_ty, elem2_ty])
+        elem1_nyet = self._env_array_elem_nyet.get(arr1_name)
+        elem2_nyet = self._env_array_elem_nyet.get(arr2_name)
+        tname = self._get_or_register_tuple_type([elem1_ty, elem2_ty], [elem1_nyet, elem2_nyet])
         tsize = self._struct_size_bytes(tname)
 
         arr1, len1 = self._array_ptr_and_len(arr1_name)

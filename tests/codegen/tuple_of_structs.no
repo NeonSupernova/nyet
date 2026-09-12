@@ -1,0 +1,18 @@
+;; Regression test: a tuple containing struct elements, indexed and
+;; then field-accessed with no intermediate annotation -- `(let p (t
+;; 0)) (. p x)` -- lost the struct type. Tuple element types were only
+;; ever tracked by LLVM shape (`_get_or_register_tuple_type` took a
+;; bare `list[str]` of LLVM types, no Nyet names threaded through at
+;; all), so `_infer_nyet_type_name` had no way to recover which struct
+;; type a given tuple slot held.
+;; Expected: 1 / 3
+
+(struct Point x:i32 y:i32)
+
+(fn main () -> unit
+  (do
+    (let t #((Point x:1 y:2) (Point x:3 y:4)))
+    (let p (t 0))
+    (out (. p x)) (out "\n")
+    (let q (t 1))
+    (out (. q x)) (out "\n")))
