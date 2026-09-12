@@ -64,6 +64,15 @@ class Emitter:
         # Array, tuple, Map). Used by `_is_string_operand` so `(. row
         # name)` is recognized as a string for `==`/`</`>` comparisons.
         self._struct_string_fields: dict[str, set[str]] = {}
+        # struct name → {field name: Nyet type name}, for every field
+        # whose type is a named type (primitives included). Used by
+        # `_struct_name_of`/`_infer_nyet_type_name` so `(let i (. o
+        # inner))` (binding a nested struct field with no `&T`
+        # annotation) keeps tracking which struct `i` is — without
+        # this, `(. i val)` on it silently produced no field load, the
+        # same bug already fixed for array/map reads and chained
+        # indexing (see _env_array_elem_nyet/_env_map_val_nyet).
+        self._struct_field_nyet: dict[str, dict[str, str]] = {}
 
         # v0.2: fn signature registry — name → (param_types, ret_type)
         self._fn_sigs: dict[str, tuple[list[str], str]] = {}
@@ -427,13 +436,18 @@ class Emitter:
     def _register_struct(self, node: N.StructDecl) -> None:
         fields = []
         string_fields: set[str] = set()
+        field_nyet: dict[str, str] = {}
         for p in node.fields:
             ty = self._llvm_type(p.type)
             fields.append((p.name, ty))
-            if self._nyet_type_name(p.type) == "string":
+            nyet_name = self._nyet_type_name(p.type)
+            if nyet_name == "string":
                 string_fields.add(p.name)
+            if nyet_name is not None:
+                field_nyet[p.name] = nyet_name
         self._structs[node.name] = fields
         self._struct_string_fields[node.name] = string_fields
+        self._struct_field_nyet[node.name] = field_nyet
         llvm_fields = ", ".join(ty for _, ty in fields)
         self._struct_type_lines.append(f"%{node.name} = type {{ {llvm_fields} }}")
 
@@ -1596,6 +1610,16 @@ class Emitter:
                 and name in self._env_map_val_ty
             ):
                 return self._env_map_val_nyet[name]
+        # A struct field that itself holds a struct/sum-type value —
+        # `(. o inner)` — chained onto another field access, or bound
+        # via `(let i (. o inner))` with no `&T` annotation. Same "the
+        # LLVM shape (ptr) was tracked but not the Nyet name" gap as
+        # the array/map cases above, just one level of field access
+        # instead of an index.
+        if isinstance(node, N.FieldAccess):
+            outer = self._struct_name_of(node.target)
+            if outer is not None:
+                return self._struct_field_nyet.get(outer, {}).get(node.field_name)
         return None
 
     # ==================================================================
@@ -3852,6 +3876,13 @@ class Emitter:
                 return self._fn_ret_nyet_names.get(mangled)
         if isinstance(node, N.Ident) and node.name in self._env_struct_name:
             return self._env_struct_name[node.name]
+        # A struct field that itself holds a struct/sum-type value —
+        # see `_struct_name_of`'s matching case for the "chained
+        # directly onto another field access" version of this gap.
+        if isinstance(node, N.FieldAccess):
+            outer = self._struct_name_of(node.target)
+            if outer is not None:
+                return self._struct_field_nyet.get(outer, {}).get(node.field_name)
         return None
 
     def _emit_assign(self, node: N.Assign) -> str | None:
