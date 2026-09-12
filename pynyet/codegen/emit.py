@@ -2941,6 +2941,7 @@ class Emitter:
 
         end_label = self._fresh_label("match_end")
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
+        result_ty = self._result_slot_type(result_ty)
         result_ptr = self._emit_alloca(result_ty)
 
         for arm in node.arms:
@@ -3099,11 +3100,19 @@ class Emitter:
                 dead = self._fresh_label("after_dead")
                 self._emit_label(dead)
                 return
-            cmp = self._fresh_tmp()
-            if llvm_ty in ("double", "float"):
-                self._emit_line(f"{cmp} = fcmp oeq {llvm_ty} {val}, {cmp_val}")
+            # A LitPat's own literal node tells us unambiguously whether
+            # this is a string comparison (unlike `llvm_ty`, which is
+            # just "ptr" for strings/structs/arrays/Maps alike) — no
+            # need for `_is_string_operand`'s more conservative,
+            # AST-shape-based guess.
+            if isinstance(pat.value, N.StringLit):
+                cmp = self._emit_string_cmp("==", val, cmp_val)
             else:
-                self._emit_line(f"{cmp} = icmp eq {llvm_ty} {val}, {cmp_val}")
+                cmp = self._fresh_tmp()
+                if llvm_ty in ("double", "float"):
+                    self._emit_line(f"{cmp} = fcmp oeq {llvm_ty} {val}, {cmp_val}")
+                else:
+                    self._emit_line(f"{cmp} = icmp eq {llvm_ty} {val}, {cmp_val}")
             ok_label = self._fresh_label("lit_ok")
             self._emit_line(f"br i1 {cmp}, label %{ok_label}, label %{fail_label}")
             self._emit_label(ok_label)
@@ -3131,10 +3140,21 @@ class Emitter:
         self._emit_label(dead)
 
     def _emit_match_simple(self, scrut: str, node: N.Match) -> str | None:
-        """Simple value-based match (integers, etc.)."""
+        """Simple value-based match — integers, floats, bools, and
+        strings. `scrut_ty`/`scrut_is_string` come from the scrutinee
+        expression itself (previously hardcoded to `i32` unconditionally,
+        which broke every non-int scrutinee: a `string` match emitted
+        `icmp eq i32` against a `ptr` value — a straight type mismatch —
+        and even where the width happened to still verify, e.g. `bool`,
+        it was comparing the wrong bit width by luck rather than by
+        design)."""
         end_label = self._fresh_label("match_end")
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
+        result_ty = self._result_slot_type(result_ty)
         result_ptr = self._emit_alloca(result_ty)
+
+        scrut_ty = self._infer_llvm_type(node.scrutinee)
+        scrut_is_string = self._is_string_operand(node.scrutinee)
 
         next_label = self._fresh_label("match_next")
         for i, arm in enumerate(node.arms):
@@ -3145,9 +3165,11 @@ class Emitter:
                 # Default arm
                 if isinstance(pat, N.VarPat):
                     saved = dict(self._env)
-                    vptr = self._emit_alloca("i32")
-                    self._emit_line(f"store i32 {scrut}, ptr {vptr}")
-                    self._env[pat.name] = (vptr, "i32")
+                    vptr = self._emit_alloca(scrut_ty)
+                    self._emit_line(f"store {scrut_ty} {scrut}, ptr {vptr}")
+                    self._env[pat.name] = (vptr, scrut_ty)
+                    if scrut_is_string:
+                        self._env_string_names.add(pat.name)
 
                 body_val = self._emit_expr(arm.body)
                 if body_val is not None:
@@ -3160,8 +3182,14 @@ class Emitter:
 
             elif isinstance(pat, N.LitPat):
                 cmp_val = self._emit_expr(pat.value)
-                cmp = self._fresh_tmp()
-                self._emit_line(f"{cmp} = icmp eq i32 {scrut}, {cmp_val}")
+                if scrut_is_string:
+                    cmp = self._emit_string_cmp("==", scrut, cmp_val)
+                else:
+                    cmp = self._fresh_tmp()
+                    if scrut_ty in ("double", "float"):
+                        self._emit_line(f"{cmp} = fcmp oeq {scrut_ty} {scrut}, {cmp_val}")
+                    else:
+                        self._emit_line(f"{cmp} = icmp eq {scrut_ty} {scrut}, {cmp_val}")
 
                 arm_label = self._fresh_label("match_arm")
                 if is_last:
@@ -3333,6 +3361,23 @@ class Emitter:
     # If expression
     # ------------------------------------------------------------------
 
+    def _result_slot_type(self, inferred_ty: str) -> str:
+        """Sanitize an `_infer_llvm_type` result before it's used to size
+        an `alloca` for an `if`/`match` result slot.
+
+        A branch or arm that's a bare call to a `-> unit` function (not
+        wrapped in a `do` alongside other statements) makes
+        `_infer_llvm_type` return that callee's real LLVM return type,
+        "void" — which is only legal as a function's own result type,
+        never as a local/alloca type. `_emit_expr` never actually
+        produces an SSA value for such a call anyway (every caller
+        guards its store with `if val is not None`), so the slot's type
+        only has to be *some* valid one; `ptr` is what an untyped/
+        no-value branch already defaults to when there's nothing to
+        infer from at all (e.g. `if` with no `then_branch`).
+        """
+        return "ptr" if inferred_ty == "void" else inferred_ty
+
     def _emit_if(self, node: N.If) -> str | None:
         cond = self._emit_expr(node.cond)
         if cond is None:
@@ -3343,19 +3388,7 @@ class Emitter:
         end_label = self._fresh_label("ifend")
 
         result_ty = self._infer_llvm_type(node.then_branch) if node.then_branch else "ptr"
-        if result_ty == "void":
-            # A branch that's a bare call to a `-> unit` function (e.g.
-            # `(if cond (some_unit_fn) (other_unit_fn))`, not wrapped in
-            # a `do` alongside other statements) makes `_infer_llvm_type`
-            # return the callee's real LLVM return type, "void" — which
-            # is not a valid `alloca`/local-variable type in LLVM (only
-            # legal as a function's own return type). `_emit_expr` never
-            # actually produces an SSA value for such a call anyway (the
-            # `then_val is not None` guards below just skip the store),
-            # so the slot's type only has to be *some* valid one; `ptr`
-            # is what an untyped/no-value branch already defaults to
-            # when there's no `then_branch` at all.
-            result_ty = "ptr"
+        result_ty = self._result_slot_type(result_ty)
         result_ptr = self._emit_alloca(result_ty)
         # Zero-initialize
         if result_ty == "ptr":

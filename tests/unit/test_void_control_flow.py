@@ -17,6 +17,12 @@ between -> bool and -> unit call sites" area of minibase/main.no:
    function returns the callee's real LLVM return type, "void" --
    illegal as an `alloca`/local-variable type (only ever legal as a
    function's own return type). End-to-end: tests/codegen/if_void_branch.no.
+
+Both `_emit_if` and `_emit_match`/`_emit_match_simple` now route through
+a shared `_result_slot_type` helper, since `match` had the exact same
+"first arm/branch is a bare `-> unit` call" crash independently in both
+of its own code paths (sum-type scrutinee and simple-value scrutinee).
+End-to-end: tests/codegen/match_void_arm.no.
 """
 
 from pynyet.codegen.emit import Emitter
@@ -69,4 +75,22 @@ def test_if_with_a_real_valued_branch_is_unaffected():
           (out x))
     """)
     assert "alloca i32" in ir
+    assert "alloca void" not in ir
+
+
+def test_simple_match_with_bare_unit_call_arm_does_not_alloca_void():
+    ir = _ir_for("""
+        (fn say () -> unit (out "hi\\n"))
+        (fn main () -> unit (match true (true (say)) (false (say))))
+    """)
+    assert "alloca void" not in ir
+    assert "alloca ptr" in ir
+
+
+def test_sum_type_match_with_bare_unit_call_arm_does_not_alloca_void():
+    ir = _ir_for("""
+        (fn say () -> unit (out "hi\\n"))
+        (type Choice (Yes) (No))
+        (fn main () -> unit (match (Yes) ((Yes) (say)) ((No) (say))))
+    """)
     assert "alloca void" not in ir

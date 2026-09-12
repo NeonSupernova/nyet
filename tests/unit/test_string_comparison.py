@@ -17,7 +17,17 @@ a REPL does (`(== cmd "quit")` against a line just read from stdin).
 End-to-end behavior (including via a struct's `string` field, and `<`/
 `>` ordering) is covered by tests/codegen/string_eq.no; these tests pin
 the underlying classification and lowering directly.
+
+Also covers the same bug's `match` counterpart: `_emit_match_simple`
+unconditionally compiled every `LitPat` arm as `icmp eq i32` regardless
+of the scrutinee's real type (its own docstring said "integers, etc.");
+a `string` scrutinee is a straight type mismatch against `ptr` and
+failed to build. `_emit_pattern_test_value`'s `LitPat` case (used for
+literal patterns nested inside sum-type payloads) had the identical
+bug. End-to-end: tests/codegen/match_string.no.
 """
+
+import re
 
 from pynyet.codegen.emit import Emitter
 from pynyet.lexer.scanner import lex
@@ -92,3 +102,34 @@ def test_non_string_pointer_comparison_is_unaffected():
     """)
     assert "call i32 @strcmp(" not in ir
     assert "icmp eq ptr" in ir
+
+
+def test_match_on_string_scrutinee_compares_via_strcmp_not_directly():
+    ir = _ir_for("""
+        (fn classify (s:string) -> string
+          (match s
+            ("a" "first")
+            (other other)))
+        (fn main () -> unit (out (classify "a")))
+    """)
+    assert "call i32 @strcmp(" in ir
+    # The old bug compared the raw `ptr` scrutinee against the pattern's
+    # string constant directly via `icmp eq i32` -- a type mismatch that
+    # failed to build. `icmp eq i32` legitimately still appears, but
+    # only downstream of strcmp, checking *its* i32 result against 0
+    # (see `_emit_string_cmp`) -- never applied straight to a `ptr`.
+    assert "icmp eq i32 %s" not in ir
+    assert re.search(r"icmp eq i32 %\w+, 0\b", ir)
+
+
+def test_match_string_default_arm_binds_at_ptr_not_i32():
+    # The `(pat)`-bound default arm used to always allocate its binding
+    # as `i32`, regardless of the scrutinee's real type.
+    ir = _ir_for("""
+        (fn classify (s:string) -> string
+          (match s
+            ("a" "first")
+            (other other)))
+        (fn main () -> unit (out (classify "z")))
+    """)
+    assert "alloca ptr" in ir

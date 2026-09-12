@@ -1,0 +1,27 @@
+;; Regression test: a `match` arm whose body is a bare call to a
+;; `-> unit` function (not wrapped in a `do`) crashed the same way an
+;; `if` branch shaped like that used to (see if_void_branch.no) --
+;; `_infer_llvm_type` of the first arm's body returns the callee's real
+;; return type "void", which both `_emit_match_simple` (non-sum
+;; scrutinee) and `_emit_match` (sum-type scrutinee) fed straight into
+;; `alloca`, which rejects `void` as a local type.
+;; Expected: yes / no / sum-yes / sum-no
+
+(fn say_yes () -> unit (out "yes\n"))
+(fn say_no () -> unit (out "no\n"))
+
+(type Choice (Yes) (No))
+
+(fn main () -> unit
+  (match true
+    (true (say_yes))
+    (false (say_no)))
+  (match false
+    (true (say_yes))
+    (false (say_no)))
+  (match (Yes)
+    ((Yes) (do (out "sum-") (say_yes)))
+    ((No)  (do (out "sum-") (say_no))))
+  (match (No)
+    ((Yes) (do (out "sum-") (say_yes)))
+    ((No)  (do (out "sum-") (say_no)))))
