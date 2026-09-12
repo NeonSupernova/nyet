@@ -1958,6 +1958,15 @@ class Emitter:
                 return self._emit_cmp(name, node.args)
             if name in ("&&", "||", "!"):
                 return self._emit_bool_op(name, node.args)
+            # Bitwise ops. `&` is overloaded with borrow (see below) --
+            # disambiguated by arity, same convention typeck uses: 2 args
+            # is bitwise AND, 1 arg is a borrow.
+            if name in ("&", "|", "^") and len(node.args) == 2:
+                return self._emit_bitwise(name, node.args)
+            if name in ("<<", ">>") and len(node.args) == 2:
+                return self._emit_shift(name, node.args)
+            if name == "~" and len(node.args) == 1:
+                return self._emit_bitnot(node.args[0])
             # Borrow / mutable borrow — pass-through; struct/sum values are
             # already pointer-shaped, so `&x` is just `x`.
             if name in ("&", "&!") and len(node.args) == 1:
@@ -2799,6 +2808,75 @@ class Emitter:
         cat_tmp = self._fresh_tmp()
         self._emit_line(f"{cat_tmp} = call ptr @strcat(ptr {buf}, ptr {rhs})")
         return buf
+
+    # ------------------------------------------------------------------
+    # Bitwise operators — main.no documents `&`/`|`/`^`/`~`/`<<`/`>>`, and
+    # the lexer/parser already tokenize them into ordinary operator-named
+    # Call nodes (`_OPERATOR_TOKENS` in parser.py), but until this fix
+    # nothing in codegen handled them: `(& a b)` (2-arg bitwise AND, as
+    # opposed to the 1-arg borrow `&x`) fell through every dispatch case
+    # in `_emit_call` and silently evaluated to `None` (dropped output,
+    # no error); `|`/`^`/`~`/`<<`/`>>` aren't recognized as borrow syntax
+    # at all, so they fell all the way through to `_emit_user_call`,
+    # emitting an outright illegal `call i32 @|(...)` (clang: "expected
+    # value token") since `|`/`^`/`~`/`<`/`>` aren't valid characters in
+    # an LLVM identifier.
+    # ------------------------------------------------------------------
+
+    def _emit_bitwise(self, op: str, args: list[N.Expr]) -> str | None:
+        if len(args) < 2:
+            return None
+        lhs = self._emit_expr(args[0])
+        rhs = self._emit_expr(args[1])
+        if lhs is None or rhs is None:
+            return None
+        lty = self._infer_llvm_type(args[0])
+        rty = self._infer_llvm_type(args[1])
+        cty = self._common_cmp_type(args[0], args[1], lty, rty)
+        unsigned = self._node_is_unsigned(args[0]) or self._node_is_unsigned(args[1])
+        lhs = self._coerce_int_to(lhs, lty, cty, unsigned)
+        rhs = self._coerce_int_to(rhs, rty, cty, unsigned)
+        tmp = self._fresh_tmp()
+        iops = {"&": "and", "|": "or", "^": "xor"}
+        self._emit_line(f"{tmp} = {iops[op]} {cty} {lhs}, {rhs}")
+        return tmp
+
+    def _emit_shift(self, op: str, args: list[N.Expr]) -> str | None:
+        if len(args) < 2:
+            return None
+        lhs = self._emit_expr(args[0])
+        rhs = self._emit_expr(args[1])
+        if lhs is None or rhs is None:
+            return None
+        lty = self._infer_llvm_type(args[0])
+        rty = self._infer_llvm_type(args[1])
+        # LLVM's shift instructions require both operands at the same
+        # width -- coerce the shift-amount side to match the shifted
+        # value's type rather than the other way around, since the
+        # amount is conventionally a small plain int regardless of the
+        # shifted value's declared width.
+        rhs = self._coerce_int_to(rhs, rty, lty, self._node_is_unsigned(args[1]))
+        tmp = self._fresh_tmp()
+        if op == "<<":
+            instr = "shl"
+        else:
+            # `>>` is arithmetic (sign-preserving) for a signed source,
+            # logical (zero-filling) for an unsigned one -- see
+            # `_env_unsigned_names`.
+            instr = "lshr" if self._node_is_unsigned(args[0]) else "ashr"
+        self._emit_line(f"{tmp} = {instr} {lty} {lhs}, {rhs}")
+        return tmp
+
+    def _emit_bitnot(self, arg: N.Expr) -> str | None:
+        val = self._emit_expr(arg)
+        if val is None:
+            return None
+        ty = self._infer_llvm_type(arg)
+        tmp = self._fresh_tmp()
+        # LLVM has no dedicated bitwise-NOT instruction; `xor <val>, -1`
+        # is the standard idiom (every bit of -1 is set).
+        self._emit_line(f"{tmp} = xor {ty} {val}, -1")
+        return tmp
 
     # ------------------------------------------------------------------
     # Comparisons (type-aware)

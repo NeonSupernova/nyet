@@ -285,6 +285,18 @@ class TypeChecker:
                     if node.args:
                         return self._infer(node.args[0])
                     return ERROR
+                # Bitwise ops (`&` with 2 args -- bitwise AND -- is already
+                # covered by the `&`/`&!` case above, which infers from the
+                # first operand regardless of arity) -- result type matches
+                # the first operand, same convention as +/-/*//%.
+                if op in ("|", "^", "<<", ">>"):
+                    if len(node.args) == 2:
+                        return self._infer(node.args[0])
+                    return ERROR
+                if op == "~":
+                    if len(node.args) == 1:
+                        return self._infer(node.args[0])
+                    return ERROR
             return ERROR
 
         if isinstance(node, N.If):

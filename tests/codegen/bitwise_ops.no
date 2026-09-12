@@ -1,0 +1,47 @@
+;; Bitwise operators (&/|/^/~/<</>>) are documented in main.no and
+;; lexed/parsed as ordinary operator tokens, but had zero codegen
+;; support before this fix: `(& a b)` (2-arg bitwise AND) silently
+;; produced no output at all, and `|`/`^`/`~`/`<<`/`>>` crashed clang
+;; outright trying to `call` a function literally named e.g. `@|`.
+;; Separately, `&` as the explicit HEAD of a parenthesized call form
+;; (`(& a b)`) was a parser bug on top of the missing codegen: the
+;; SAME leading `&` token also means "borrow" for a bare sub-expression
+;; (`&x`), and the parser's prefix-borrow rule greedily intercepted it
+;; even in call-head position, producing a Call-headed-by-Call node no
+;; downstream code could dispatch on. Both are fixed together here.
+;; Expected:
+;;   12 & 10 = 8
+;;   12 | 10 = 14
+;;   12 ^ 10 = 6
+;;   ~5 = -6
+;;   1 << 4 = 16
+;;   -8 >> 1 (signed, arithmetic) = -4
+;;   4294967288 >> 1 (u32, logical) = 2147483644
+
+(fn test_and_or_xor () -> unit
+  (do
+    (let a:i32 12)
+    (let b:i32 10)
+    (out (fmt "12 & 10 = {}\n" (& a b)))
+    (out (fmt "12 | 10 = {}\n" (| a b)))
+    (out (fmt "12 ^ 10 = {}\n" (^ a b)))))
+
+(fn test_not () -> unit
+  (do
+    (let a:i32 5)
+    (out (fmt "~5 = {}\n" (~ a)))))
+
+(fn test_shifts () -> unit
+  (do
+    (let a:i32 1)
+    (out (fmt "1 << 4 = {}\n" (<< a 4)))
+    (let neg:i32 (- 0 8))
+    (out (fmt "-8 >> 1 (signed, arithmetic) = {}\n" (>> neg 1)))
+    (let u:u32 4294967288)
+    (out (fmt "4294967288 >> 1 (u32, logical) = {}\n" (>> u 1)))))
+
+(fn main () -> unit
+  (do
+    (test_and_or_xor)
+    (test_not)
+    (test_shifts)))
