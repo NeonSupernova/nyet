@@ -1583,44 +1583,23 @@ class Emitter:
         return "i32"
 
     def _struct_name_of(self, node: N.Node | None) -> str | None:
-        """Try to determine which Nyet struct a node refers to."""
-        if isinstance(node, N.Ident) and node.name in self._env:
-            # Check if we've recorded the struct name for this binding
-            return self._env_struct_name.get(node.name)
-        # Array indexing `(arr i)` where `arr` holds struct/sum-type
-        # elements, chained directly onto a field access/assignment
-        # (`(. (arr i) field)` / `(= (. (arr i) field) v)`) instead of
-        # being bound to a name first. Without this, `_emit_field_ptr`
-        # couldn't determine the struct type at all and silently no-op'd
-        # both the read and the write -- see `_infer_nyet_type_name`'s
-        # matching case for the "bind it to a `let` first" version of
-        # the same gap.
-        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
-            name = node.head.name
-            if (
-                name in self._env_array_elem_nyet
-                and len(node.args) == 1
-                and name in self._env_array_elem
-            ):
-                return self._env_array_elem_nyet[name]
-            # Same shape, for a Map[K V] lookup `(m key)`.
-            if (
-                name in self._env_map_val_nyet
-                and len(node.args) == 1
-                and name in self._env_map_val_ty
-            ):
-                return self._env_map_val_nyet[name]
-        # A struct field that itself holds a struct/sum-type value —
-        # `(. o inner)` — chained onto another field access, or bound
-        # via `(let i (. o inner))` with no `&T` annotation. Same "the
-        # LLVM shape (ptr) was tracked but not the Nyet name" gap as
-        # the array/map cases above, just one level of field access
-        # instead of an index.
-        if isinstance(node, N.FieldAccess):
-            outer = self._struct_name_of(node.target)
-            if outer is not None:
-                return self._struct_field_nyet.get(outer, {}).get(node.field_name)
-        return None
+        """Try to determine which Nyet struct a node refers to.
+
+        A thin `Node | None` wrapper around `_infer_nyet_type_name`,
+        which handles every shape this needs (a plain binding, array/
+        map-index reads, chained field access, if/match/do, direct
+        struct/variant construction, static/inherent method calls,
+        ...) and is kept as the single source of truth for "what Nyet
+        type does this expression have" rather than duplicating that
+        shape-by-shape here — a previous version of this method only
+        handled a subset of those shapes (missing, at various points,
+        direct constructor calls and if/match/do), which silently
+        broke field access chained directly onto any of them (e.g.
+        `(. (Point x:1 y:2) x)`, `(. (if cond a b) x)`).
+        """
+        if node is None:
+            return None
+        return self._infer_nyet_type_name(node)
 
     # ==================================================================
     # Expression emission
@@ -3877,12 +3856,25 @@ class Emitter:
         if isinstance(node, N.Ident) and node.name in self._env_struct_name:
             return self._env_struct_name[node.name]
         # A struct field that itself holds a struct/sum-type value —
-        # see `_struct_name_of`'s matching case for the "chained
-        # directly onto another field access" version of this gap.
+        # `(. o inner)`, chained onto another field access or bound
+        # with no `&T` annotation.
         if isinstance(node, N.FieldAccess):
-            outer = self._struct_name_of(node.target)
+            outer = self._infer_nyet_type_name(node.target)
             if outer is not None:
                 return self._struct_field_nyet.get(outer, {}).get(node.field_name)
+        # `if`/`match`/`do` yield the type of their tail expression —
+        # mirrors `_infer_llvm_type`'s matching cases (used to size an
+        # alloca), which already handle these; without this, binding a
+        # struct-returning `(let p (if cond (make_a) (make_b)))` with no
+        # `&T` annotation lost the Nyet name the same way every other
+        # case fixed in this session did, even though the *LLVM* type
+        # ("ptr") was already inferred correctly.
+        if isinstance(node, N.If) and node.then_branch:
+            return self._infer_nyet_type_name(node.then_branch)
+        if isinstance(node, N.Match) and node.arms:
+            return self._infer_nyet_type_name(node.arms[0].body)
+        if isinstance(node, N.Do) and node.exprs:
+            return self._infer_nyet_type_name(node.exprs[-1])
         return None
 
     def _emit_assign(self, node: N.Assign) -> str | None:
