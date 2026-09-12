@@ -43,6 +43,11 @@ class Emitter:
         self._tmp = 0
         self._label = 0
         self._env: dict[str, tuple[str, str]] = {}  # name → (llvm_ptr, llvm_type)
+        # Top-level `const` bindings — name → (llvm_immediate, llvm_type).
+        # Consts have no runtime address (see main.no's Constants section:
+        # "inlined at every use site"), so this is checked directly by
+        # _emit_ident/_infer_llvm_type instead of going through _env.
+        self._const_values: dict[str, tuple[str, str]] = {}
         self._str_lits: dict[str, str] = {}
         self._declared_externs: set[str] = set()
         self._fn_lines: list[str] = []
@@ -336,6 +341,11 @@ class Emitter:
                 self._traits[node.name] = [
                     item for item in node.items if isinstance(item, N.FnDecl)
                 ]
+            elif isinstance(node, N.ConstDecl):
+                # Registered up front (not appended to top_level) so a
+                # const is available to every function regardless of
+                # whether `main` exists — see _register_const.
+                self._register_const(node)
             else:
                 top_level.append(node)
 
@@ -438,6 +448,36 @@ class Emitter:
             self._struct_type_lines.append(f"%{node.name} = type {{ i32 }}")
         else:
             self._struct_type_lines.append(f"%{node.name} = type {{ i32, [{max_payload} x i8] }}")
+
+    def _register_const(self, node: N.ConstDecl) -> None:
+        """Precompute a top-level `const`'s inlined value (see main.no's
+        Constants section: consts are compile-time values with no runtime
+        allocation or address). Only literal RHS values are supported,
+        matching every documented/tested `const` use."""
+        val = self._const_literal_value(node.value)
+        if val is None:
+            return
+        llvm_val, default_ty = val
+        llvm_ty = self._llvm_type(node.type) if node.type is not None else default_ty
+        self._const_values[node.name] = (llvm_val, llvm_ty)
+
+    def _const_literal_value(self, node: N.Expr | None) -> tuple[str, str] | None:
+        """Return (llvm_immediate, llvm_type) for a literal expression, or
+        None if it isn't one of the literal forms a `const` can hold."""
+        if isinstance(node, N.IntLit):
+            return str(node.value), self._infer_llvm_type(node)
+        if isinstance(node, N.FloatLit):
+            packed = _struct.pack("d", node.value)
+            as_int = _struct.unpack("Q", packed)[0]
+            return f"0x{as_int:016X}", "double"
+        if isinstance(node, N.BoolLit):
+            return ("1" if node.value else "0"), "i1"
+        if isinstance(node, N.StringLit):
+            name, _ = self._get_string(node.value)
+            return name, "ptr"
+        if isinstance(node, N.KeywordLit):
+            return str(self._keyword_id(node.name)), "i32"
+        return None
 
     # ==================================================================
     # v0.3: Monomorphization
@@ -725,6 +765,21 @@ class Emitter:
         if ty == "i1":
             return 1
         if ty == "i8":
+            return 1
+        if ty == "i16":
+            return 2
+        if ty in ("i32", "float"):
+            return 4
+        if ty in ("i64", "double", "ptr"):
+            return 8
+        if ty.startswith("%"):
+            return 8  # struct pointer
+        return 8
+
+    @staticmethod
+    def _alignof(ty: str) -> int:
+        """Natural alignment in bytes of an LLVM type, mirroring _sizeof."""
+        if ty in ("i1", "i8"):
             return 1
         if ty == "i16":
             return 2
@@ -1230,6 +1285,8 @@ class Emitter:
             return self._llvm_type(node.target_type)
         if isinstance(node, N.Ident) and node.name in self._env:
             return self._env[node.name][1]
+        if isinstance(node, N.Ident) and node.name in self._const_values:
+            return self._const_values[node.name][1]
         # v0.6: a bare reference to a top-level fn yields its function pointer.
         if isinstance(node, N.Ident) and node.name in self._fn_sigs:
             return "ptr"
@@ -1514,6 +1571,9 @@ class Emitter:
             tmp = self._fresh_tmp()
             self._emit_line(f"{tmp} = load {ty}, ptr {ptr}")
             return tmp
+        # Top-level `const` — inlined immediate, no load (no address).
+        if node.name in self._const_values:
+            return self._const_values[node.name][0]
         # v0.6: lifted lambda / top-level function used as a value yields
         # the global function pointer.
         if node.name in self._fn_sigs:
@@ -2512,20 +2572,41 @@ class Emitter:
         return ptr
 
     def _struct_size_bytes(self, name: str) -> int:
-        """Approximate struct size (sum of field sizes, rounded up to 8)."""
+        """Struct size matching LLVM's natural (non-packed) layout: each
+        field is placed at its own alignment (inserting interior padding
+        as needed), then the total is rounded up to a multiple of 8."""
         fields = self._structs.get(name, [])
-        total = sum(self._sizeof(ty) for _, ty in fields)
-        if total == 0:
+        if not fields:
             return 8
-        # Round up to multiple of 8 for alignment
-        return (total + 7) & ~7
+        offset = 0
+        for _, ty in fields:
+            align = self._alignof(ty)
+            offset = (offset + align - 1) & ~(align - 1)
+            offset += self._sizeof(ty)
+        return (offset + 7) & ~7
+
+    def _field_offsets(self, types: list[str]) -> list[int]:
+        """Byte offsets of `types` laid out sequentially with natural
+        alignment/padding (mirrors LLVM's struct layout), so a sum type's
+        multi-field variant payload doesn't misalign its later fields."""
+        offset = 0
+        offsets = []
+        for ty in types:
+            align = self._alignof(ty)
+            offset = (offset + align - 1) & ~(align - 1)
+            offsets.append(offset)
+            offset += self._sizeof(ty)
+        return offsets
 
     def _sum_type_size_bytes(self, name: str) -> int:
-        """Size of a sum type = tag + max payload."""
+        """Size of a sum type = tag + max (padded) payload."""
         variants = self._sum_types.get(name, [])
         max_payload = 0
         for _, types in variants:
-            payload = sum(self._sizeof(t) for t in types)
+            if not types:
+                continue
+            offsets = self._field_offsets(types)
+            payload = offsets[-1] + self._sizeof(types[-1])
             if payload > max_payload:
                 max_payload = payload
         total = 4 + max_payload  # i32 tag + payload
@@ -2590,22 +2671,22 @@ class Emitter:
             self._emit_line(
                 f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 1"
             )
-            offset = 0
+            offsets = self._field_offsets(payload_types)
             for i, arg in enumerate(args):
                 if i >= len(payload_types):
                     break
                 val = self._emit_expr(arg)
                 if val is not None:
                     ftype = payload_types[i]
-                    if offset == 0:
+                    off = offsets[i]
+                    if off == 0:
                         field_ptr = payload_ptr
                     else:
                         field_ptr = self._fresh_tmp()
                         self._emit_line(
-                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {offset}"
+                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}"
                         )
                     self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
-                    offset += self._sizeof(ftype)
 
         return ptr
 
@@ -2773,23 +2854,23 @@ class Emitter:
                     f"{payload_ptr} = getelementptr inbounds %{actual_sum}, "
                     f"ptr {scrut_val}, i32 0, i32 1"
                 )
-                offset = 0
+                offsets = self._field_offsets(payload_types)
                 for pi, ppat in enumerate(pat.args):
                     if pi >= len(payload_types):
                         break
                     pty = payload_types[pi]
                     inner_nyet = nyet_names[pi] if pi < len(nyet_names) else None
-                    if offset == 0:
+                    off = offsets[pi]
+                    if off == 0:
                         fld_ptr = payload_ptr
                     else:
                         fld_ptr = self._fresh_tmp()
                         self._emit_line(
-                            f"{fld_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {offset}"
+                            f"{fld_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}"
                         )
                     val = self._fresh_tmp()
                     self._emit_line(f"{val} = load {pty}, ptr {fld_ptr}")
                     self._emit_pattern_test_value(val, pty, inner_nyet, ppat, fail_label)
-                    offset += self._sizeof(pty)
             return
         if isinstance(pat, N.LitPat):
             # Match a literal against the whole sum struct — treat as fail.

@@ -1,0 +1,24 @@
+;;;; Struct heap allocation must match LLVM's real (padded) layout, not
+;;;; a naive sum-of-field-sizes. `{id:i32 name:string used:bool}` needs
+;;;; 24 bytes (the i32 is padded to 8 for the following pointer field).
+;;;; Under-allocating corrupts the heap after enough repeated allocations
+;;;; of the same shape, but whether that manifests as an observable crash
+;;;; is allocator/layout-dependent (see tests/unit/test_struct_alignment.py
+;;;; for a deterministic check of the size computation itself) -- this is
+;;;; just an end-to-end sanity check that the happy path still builds/runs.
+
+(struct Row id:i32 name:string used:bool)
+
+(fn make_row (n:i32) -> unit
+  (do
+    (let r (Row id:n name:"a reasonably long string payload" used:true))
+    (if (== (. r id) n) pass (panic "mismatch"))))
+
+(fn main () -> unit
+  (do
+    (var i:i32 0)
+    (loop
+      (if (>= i 200) (break) pass)
+      (make_row i)
+      (= i (+ i 1)))
+    (out "ok\n")))

@@ -1,0 +1,19 @@
+;;;; A sum-type variant with mixed-alignment payload fields must lay
+;;;; them out with interior padding, matching struct_align.no's fix for
+;;;; the same class of bug: `Entry(i32 string)` needs the pointer field
+;;;; at an 8-byte-aligned offset, not packed right after the i32.
+
+(type Item
+  (Entry i32 string)
+  (Empty))
+
+(fn describe (it:Item) -> unit
+  (match it
+    ((Entry n s) (do (out n) (out ": ") (out s) (out "\n")))
+    ((Empty) (out "empty\n"))))
+
+(fn main () -> unit
+  (do
+    (describe (Entry 42 "hello"))
+    (describe (Entry 7 "world"))
+    (describe (Empty))))
