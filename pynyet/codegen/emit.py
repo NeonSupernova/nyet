@@ -123,6 +123,12 @@ class Emitter:
         # dispatch `(= (m key) v)` to insert/update, mirroring
         # `_env_array_elem`.
         self._env_map_val_ty: dict[str, str] = {}
+        # Parallel to `_env_map_val_ty`, but the *Nyet* value type name
+        # (e.g. "Point") when `V` is a named type — mirrors
+        # `_env_array_elem_nyet`'s reasoning: without this, `(let a (m
+        # key))` (no `&T` annotation) loses track of which struct `a`
+        # is, so `(. a field)` on it silently produces no field load.
+        self._env_map_val_nyet: dict[str, str] = {}
 
         # dyn Trait objects: `&dyn Trait` params are a 2-word fat
         # pointer `{data, vtable}`. `_traits` holds each trait's method
@@ -1034,6 +1040,22 @@ class Emitter:
                 return self._llvm_type(tn.args[1])
         return None
 
+    def _map_val_nyet_name(self, tn: N.TypeNode | None) -> str | None:
+        """Return the Nyet value type name if `tn` is `Map[K V]` (or
+        `&Map[K V]`) and `V` is a named type. Mirrors
+        `_array_elem_nyet_name` for the same reason — see
+        `_env_map_val_nyet`."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._map_val_nyet_name(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Map" and len(tn.args) >= 2:
+                return self._nyet_type_name(tn.args[1])
+        return None
+
     def _llvm_ret_type(self, tn: N.TypeNode | None) -> str:
         if tn is None:
             return "void"
@@ -1227,6 +1249,22 @@ class Emitter:
                     self._env[n] = (ptr, "ptr")
                     tup_elem_tys = [self._llvm_type(et) for et in p.type.elements]
                     self._env_tuple_types[n] = self._get_or_register_tuple_type(tup_elem_tys)
+                elif self._map_val_llvm_type(p.type) is not None:
+                    # Map[K V] params arrive as `ptr` to the runtime hash
+                    # table, exactly like a local `let`/`var` — without
+                    # this case they fell into the generic `else` branch
+                    # below (an opaque scalar `ptr` param with no lookup
+                    # dispatch at all), so `(m key)` inside the function
+                    # body was misparsed as a call to an undefined
+                    # function literally named `m` instead of a map
+                    # lookup.
+                    ptr = self._emit_alloca("ptr")
+                    self._emit_line(f"store ptr %{n}, ptr {ptr}")
+                    self._env[n] = (ptr, "ptr")
+                    self._env_map_val_ty[n] = self._map_val_llvm_type(p.type)
+                    map_val_nyet = self._map_val_nyet_name(p.type)
+                    if map_val_nyet is not None:
+                        self._env_map_val_nyet[n] = map_val_nyet
                 elif self._dyn_trait_name(p.type) is not None:
                     # `dyn Trait` params arrive as an already-constructed
                     # fat pointer (the caller coerces -- see
@@ -1535,6 +1573,13 @@ class Emitter:
                 and name in self._env_array_elem
             ):
                 return self._env_array_elem_nyet[name]
+            # Same shape, for a Map[K V] lookup `(m key)`.
+            if (
+                name in self._env_map_val_nyet
+                and len(node.args) == 1
+                and name in self._env_map_val_ty
+            ):
+                return self._env_map_val_nyet[name]
         return None
 
     # ==================================================================
@@ -3641,6 +3686,11 @@ class Emitter:
         if map_val_ty is None and isinstance(node.value, N.MapLit) and node.value.entries:
             map_val_ty = self._infer_llvm_type(node.value.entries[0][1])
         if map_val_ty is not None:
+            map_val_nyet: str | None = None
+            if node.type is not None:
+                map_val_nyet = self._map_val_nyet_name(node.type)
+            if map_val_nyet is None and isinstance(node.value, N.MapLit) and node.value.entries:
+                map_val_nyet = self._infer_nyet_type_name(node.value.entries[0][1])
             ptr = self._emit_alloca("ptr")
             val = self._emit_expr(node.value) if node.value is not None else None
             if val is not None:
@@ -3649,6 +3699,8 @@ class Emitter:
                 self._emit_line(f"store ptr null, ptr {ptr}")
             self._env[node.name] = (ptr, "ptr")
             self._env_map_val_ty[node.name] = map_val_ty
+            if map_val_nyet is not None:
+                self._env_map_val_nyet[node.name] = map_val_nyet
             return None
 
         # For struct/sum-type bindings, the value is already a ptr (from construction)
@@ -3740,6 +3792,13 @@ class Emitter:
                 and name in self._env_array_elem
             ):
                 return self._env_array_elem_nyet[name]
+            # Same shape, for a Map[K V] lookup `(m key)`.
+            if (
+                name in self._env_map_val_nyet
+                and len(node.args) == 1
+                and name in self._env_map_val_ty
+            ):
+                return self._env_map_val_nyet[name]
             if name in self._structs:
                 return name
             if name in self._variant_ctors:
