@@ -1468,6 +1468,15 @@ class Emitter:
                 return "ptr"
             if op in self._generic_variant_ctors:
                 return "ptr"
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Path)
+            and len(node.head.segments) == 2
+        ):
+            # `(Type/name ...)` — see `_emit_call`'s matching case.
+            mangled = self._method_impls.get(tuple(node.head.segments))
+            if mangled is not None and mangled in self._fn_sigs:
+                return self._fn_sigs[mangled][1]
         if isinstance(node, N.FieldAccess):
             return self._infer_field_type(node)
         if isinstance(node, N.If) and node.then_branch:
@@ -1800,6 +1809,20 @@ class Emitter:
                 return self._emit_indirect_call(name, node.args)
             # User function
             return self._emit_user_call(name, node.args)
+        if isinstance(node.head, N.Path) and len(node.head.segments) == 2:
+            # `(Type/name ...)` — a self-less `impl` function (an
+            # associated/"static" constructor, e.g. `(fn origin () ->
+            # Point ...)` inside `impl Point`) called by its
+            # type-qualified path. There's no receiver argument to
+            # dispatch inherent-method lookup from (that path only
+            # triggers for `(method receiver ...)`), so this is the
+            # only call syntax such a method has at all — without this,
+            # `_emit_call` fell through to the final `return None`
+            # below, silently producing no call whatsoever.
+            target_name, method_name = node.head.segments
+            mangled = self._method_impls.get((target_name, method_name))
+            if mangled is not None:
+                return self._emit_user_call(mangled, node.args)
         return None
 
     # ------------------------------------------------------------------
@@ -3726,6 +3749,15 @@ class Emitter:
                     mangled = self._method_impls[(sn, name)]
                     if mangled in self._fn_ret_nyet_names:
                         return self._fn_ret_nyet_names[mangled]
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Path)
+            and len(node.head.segments) == 2
+        ):
+            # `(Type/name ...)` — see `_emit_call`'s matching case.
+            mangled = self._method_impls.get(tuple(node.head.segments))
+            if mangled is not None:
+                return self._fn_ret_nyet_names.get(mangled)
         if isinstance(node, N.Ident) and node.name in self._env_struct_name:
             return self._env_struct_name[node.name]
         return None
