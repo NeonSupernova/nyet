@@ -1400,6 +1400,33 @@ class Emitter:
     # Type inference
     # ==================================================================
 
+    def _find_do_tail_let(self, node: N.Do) -> N.LetDecl | None:
+        """If `node`'s tail expression is a bare reference to a name
+        bound by an earlier `let`/`var` in that SAME `do` block, return
+        that declaration.
+
+        `_infer_llvm_type`/`_infer_nyet_type_name` run before the do's
+        contents are actually emitted (they size an `alloca`/determine a
+        Nyet type ahead of emission), so `self._env` does not have the
+        binding yet — a plain `self._env[name]` lookup inside those
+        functions' `N.Ident` case silently misses it and falls through
+        to the wrong default (`i32` / `None`). E.g. `(let total (do
+        (let r (returns_i64)) (out "...") r))` used to size `total` as
+        i32, silently truncating a real i64 result. Scans forward and
+        keeps the LAST match so shadowing (`(let r ...) ... (let r
+        ...))` resolves to the binding actually in scope at the tail.
+        """
+        if not node.exprs:
+            return None
+        tail = node.exprs[-1]
+        if not isinstance(tail, N.Ident):
+            return None
+        found: N.LetDecl | None = None
+        for prior in node.exprs[:-1]:
+            if isinstance(prior, N.LetDecl) and prior.name == tail.name:
+                found = prior
+        return found
+
     def _infer_llvm_type(self, node: N.Node | None) -> str:
         if isinstance(node, N.IntLit):
             # The parser drops any `i64` suffix, so magnitude is the only
@@ -1517,6 +1544,8 @@ class Emitter:
                 return self._infer_llvm_type(node.args[0])
             if op == "fmt":
                 return "ptr"
+            if op == "now":
+                return "double"
             if op in ("file_open", "file_read_all"):
                 return "ptr"
             if op == "in":
@@ -1583,6 +1612,12 @@ class Emitter:
             # mirror `_emit_match`, which sizes its result slot the same way.
             return self._infer_llvm_type(node.arms[0].body)
         if isinstance(node, N.Do) and node.exprs:
+            prior_let = self._find_do_tail_let(node)
+            if prior_let is not None:
+                if prior_let.type is not None:
+                    return self._llvm_type(prior_let.type)
+                if prior_let.value is not None:
+                    return self._infer_llvm_type(prior_let.value)
             return self._infer_llvm_type(node.exprs[-1])
         if isinstance(node, N.Try):
             # Payload type of the first (success) variant of the sum type.
@@ -1796,6 +1831,8 @@ class Emitter:
                 return self._emit_fmt(node.args)
             if name == "panic":
                 return self._emit_panic(node.args)
+            if name == "now" and len(node.args) == 0:
+                return self._emit_now()
             if name == "len" and len(node.args) == 1:
                 return self._emit_array_len(node.args[0])
             if name == "file_open":
@@ -2192,6 +2229,28 @@ class Emitter:
         self._emit_label(dead)
         return None
 
+    def _emit_now(self) -> str:
+        """`(now)` -- CPU time consumed by this process so far, in
+        seconds, as an `f64`. Backed by libc `clock()` (`<time.h>`)
+        rather than a wall-clock call (`gettimeofday`/`clock_gettime`):
+        `clock()` is a single `clock_t` return value with no struct
+        layout or platform-specific clock-ID constant to get wrong,
+        making it the portable choice between macOS and Linux for a
+        first primitive. `CLOCKS_PER_SEC` is 1000000 on both glibc and
+        macOS libc. Intended for benchmarking CPU-bound Nyet code
+        (loops, arithmetic, struct/array operations) — not for measuring
+        real elapsed time around blocking I/O, which `clock()` doesn't
+        count.
+        """
+        self._declare_extern("declare i64 @clock()")
+        ticks = self._fresh_tmp()
+        self._emit_line(f"{ticks} = call i64 @clock()")
+        as_double = self._fresh_tmp()
+        self._emit_line(f"{as_double} = sitofp i64 {ticks} to double")
+        seconds = self._fresh_tmp()
+        self._emit_line(f"{seconds} = fdiv double {as_double}, 1000000.0")
+        return seconds
+
     # ------------------------------------------------------------------
     # in
     # ------------------------------------------------------------------
@@ -2441,7 +2500,22 @@ class Emitter:
         if template_text is not None:
             c_fmt = template_text
             for llvm_ty, _ in fmt_args:
-                spec = "%s" if llvm_ty == "ptr" else "%g" if self._is_float(llvm_ty) else "%d"
+                # `%d` only matches a 32-bit vararg -- an i64 argument
+                # (passed at its real width just below, in the
+                # `snprintf_args` loop) read back through `%d` silently
+                # truncates to its low 32 bits instead of erroring,
+                # since C varargs have no type checking. `_emit_out`
+                # already gets this right per-argument; `fmt` here
+                # needs the same i64 case, not just ptr/float/else.
+                spec = (
+                    "%s"
+                    if llvm_ty == "ptr"
+                    else "%g"
+                    if self._is_float(llvm_ty)
+                    else "%lld"
+                    if llvm_ty == "i64"
+                    else "%d"
+                )
                 c_fmt = c_fmt.replace("{}", spec, 1)
             fmt_name = self._get_format_string(c_fmt, f"fmt_{id(args[0])}")
         else:
@@ -3652,7 +3726,14 @@ class Emitter:
             ty = self._llvm_type(node.type)
             nyet_name = self._nyet_type_name(node.type)
         elif node.value:
-            ty = self._infer_llvm_type(node.value)
+            # An unannotated `(let r (some_unit_fn))` -- e.g. a macro
+            # like `time_it` that binds a caller-supplied body's result
+            # regardless of its type -- makes this the same "void isn't
+            # a valid local type" trap `_emit_if`/`_emit_match` had:
+            # `_infer_llvm_type` reports the callee's real return type,
+            # "void" for a bare call to a `-> unit` fn, which `alloca`
+            # rejects outright. Route through the same sanitizer.
+            ty = self._result_slot_type(self._infer_llvm_type(node.value))
             nyet_name = self._infer_nyet_type_name(node.value)
         else:
             ty = "i32"
@@ -3917,6 +3998,12 @@ class Emitter:
         if isinstance(node, N.Match) and node.arms:
             return self._infer_nyet_type_name(node.arms[0].body)
         if isinstance(node, N.Do) and node.exprs:
+            prior_let = self._find_do_tail_let(node)
+            if prior_let is not None:
+                if prior_let.type is not None:
+                    return self._nyet_type_name(prior_let.type)
+                if prior_let.value is not None:
+                    return self._infer_nyet_type_name(prior_let.value)
             return self._infer_nyet_type_name(node.exprs[-1])
         return None
 

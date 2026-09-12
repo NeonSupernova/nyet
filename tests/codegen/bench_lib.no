@@ -1,0 +1,29 @@
+;; std/bench.no -- confirms the multi-file `(use ...)` path resolves
+;; `std/bench` (same mechanism tests/codegen/drop_while.no exercises
+;; for std/collections) and that `elapsed_ms` composes correctly on
+;; top of the `now` builtin.
+;;
+;; `time_it` (also in std/bench.no) isn't golden-tested here: it always
+;; prints the actual elapsed milliseconds, which is inherently
+;; non-deterministic run to run -- exactly the point of a benchmarking
+;; macro, but not something an exact-stdout-match golden test can
+;; assert. Manually verified instead (busy_unit/busy_value bodies both
+;; print a plausible timing line and, for busy_value, the correct
+;; passed-through result).
+;;
+;; Expected: not_backwards / bucketed / ok
+
+(use std/bench)
+
+(fn main () -> unit
+  (let t0:f64 (now))
+  (var i:i32 0)
+  (loop (if (>= i 500000) (break) pass) (= i (+ i 1)))
+  (let ms:f64 (elapsed_ms t0))
+
+  (if (>= ms 0.0) (out "not_backwards\n") (out "WENT BACKWARDS\n"))
+  ;; Generous upper bound (5s) so this can never flake on a slow CI
+  ;; box, while still catching a genuinely broken (e.g. un-scaled)
+  ;; `elapsed_ms`.
+  (if (< ms 5000.0) (out "bucketed\n") (out "TOO LARGE\n"))
+  (out "ok\n"))

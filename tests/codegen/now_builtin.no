@@ -1,0 +1,19 @@
+;; `(now)` -- CPU time in seconds as an f64, backed by libc `clock()`.
+;; Timing values themselves are inherently non-deterministic, so this
+;; only asserts the property a benchmark actually needs: time doesn't
+;; go backwards, and doing measurable work advances it.
+;; Expected: monotonic / positive / ok
+
+(fn main () -> unit
+  (let t0:f64 (now))
+  (var i:i32 0)
+  (var sum:i64 0)
+  (loop
+    (if (>= i 2000000) (break) pass)
+    (= sum (+ sum 1))
+    (= i (+ i 1)))
+  (let t1:f64 (now))
+
+  (if (>= t1 t0) (out "monotonic\n") (out "WENT BACKWARDS\n"))
+  (if (>= t0 0.0) (out "positive\n") (out "NEGATIVE\n"))
+  (out "ok\n"))

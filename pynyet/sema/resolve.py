@@ -77,6 +77,7 @@ BUILTINS = {
     "all",
     "zip",
     "array_new",
+    "now",
 }
 
 # Primitive type names valid in expression position (e.g. `(in i32)`)
