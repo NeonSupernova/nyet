@@ -1,0 +1,19 @@
+;; Regression test: `(. (expr) field)` -- a field access/assignment
+;; chained directly onto a call expression like an array index, rather
+;; than bound to a `let` first -- used to silently no-op both reading
+;; and writing the field. `_struct_name_of` had no case for "a Call
+;; indexing a known array binding" (only a plain bound Ident), so
+;; `_emit_field_ptr` couldn't determine the struct type and returned
+;; None, and both `_emit_field_access` and `_emit_assign`'s
+;; FieldAccess branch silently did nothing.
+;; Expected: 1 / 99 / 3
+
+(struct Point x:i32 y:i32)
+
+(fn main () -> unit
+  (do
+    (var pts:Array[Point] [(Point x:1 y:2) (Point x:3 y:4)])
+    (out (. (pts 0) x)) (out "\n")
+    (= (. (pts 0) x) 99)
+    (out (. (pts 0) x)) (out "\n")
+    (out (. (pts 1) x)) (out "\n")))

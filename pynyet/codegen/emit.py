@@ -1510,6 +1510,22 @@ class Emitter:
         if isinstance(node, N.Ident) and node.name in self._env:
             # Check if we've recorded the struct name for this binding
             return self._env_struct_name.get(node.name)
+        # Array indexing `(arr i)` where `arr` holds struct/sum-type
+        # elements, chained directly onto a field access/assignment
+        # (`(. (arr i) field)` / `(= (. (arr i) field) v)`) instead of
+        # being bound to a name first. Without this, `_emit_field_ptr`
+        # couldn't determine the struct type at all and silently no-op'd
+        # both the read and the write -- see `_infer_nyet_type_name`'s
+        # matching case for the "bind it to a `let` first" version of
+        # the same gap.
+        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
+            name = node.head.name
+            if (
+                name in self._env_array_elem_nyet
+                and len(node.args) == 1
+                and name in self._env_array_elem
+            ):
+                return self._env_array_elem_nyet[name]
         return None
 
     # ==================================================================
