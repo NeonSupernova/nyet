@@ -148,6 +148,12 @@ class Emitter:
         # key))` (no `&T` annotation) loses track of which struct `a`
         # is, so `(. a field)` on it silently produces no field load.
         self._env_map_val_nyet: dict[str, str] = {}
+        # Same idea, for a Map[K V] whose values are closures/fn
+        # pointers (a dispatch-table pattern: `{"go" (fn () -> unit
+        # ...)}`) -- (param_llvm_types, ret_llvm_type), so `(let h (m
+        # key)) (h ...)` recognizes `h` as callable instead of `(h)`
+        # being parsed as a call to an undefined function `h`.
+        self._env_map_val_fn_sig: dict[str, tuple[list[str], str]] = {}
 
         # dyn Trait objects: `&dyn Trait` params are a 2-word fat
         # pointer `{data, vtable}`. `_traits` holds each trait's method
@@ -298,12 +304,33 @@ class Emitter:
             node.elements = [self._lift_in(e, lifted) for e in node.elements]
             return node
 
+        if isinstance(node, N.MapLit):
+            # A closure literal as a map value (e.g. a `{name (fn ...)}`
+            # dispatch table) was never recursed into -- this is an
+            # explicit node-type whitelist, not a generic walk, and
+            # `MapLit` was simply missing. The `FnExpr` reached
+            # `_emit_expr` un-lifted and hit its catch-all.
+            node.entries = [
+                (self._lift_in(k, lifted), self._lift_in(v, lifted)) for k, v in node.entries
+            ]
+            return node
+
         if isinstance(node, N.KeywordArg):
             if node.value is not None:
                 node.value = self._lift_in(node.value, lifted)
             return node
 
         if isinstance(node, (N.Try, N.Await, N.Spawn)):
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        if isinstance(node, N.FieldAccess):
+            if node.target is not None:
+                node.target = self._lift_in(node.target, lifted)
+            return node
+
+        if isinstance(node, N.Cast):
             if node.value is not None:
                 node.value = self._lift_in(node.value, lifted)
             return node
@@ -3785,6 +3812,9 @@ class Emitter:
                 map_val_nyet = self._map_val_nyet_name(node.type)
             if map_val_nyet is None and isinstance(node.value, N.MapLit) and node.value.entries:
                 map_val_nyet = self._infer_nyet_type_name(node.value.entries[0][1])
+            map_val_fn_sig: tuple[list[str], str] | None = None
+            if isinstance(node.value, N.MapLit) and node.value.entries:
+                map_val_fn_sig = self._fn_sig_of_value(node.value.entries[0][1])
             ptr = self._emit_alloca("ptr")
             val = self._emit_expr(node.value) if node.value is not None else None
             if val is not None:
@@ -3795,6 +3825,8 @@ class Emitter:
             self._env_map_val_ty[node.name] = map_val_ty
             if map_val_nyet is not None:
                 self._env_map_val_nyet[node.name] = map_val_nyet
+            if map_val_fn_sig is not None:
+                self._env_map_val_fn_sig[node.name] = map_val_fn_sig
             return None
 
         # For struct/sum-type bindings, the value is already a ptr (from construction)
@@ -3871,6 +3903,17 @@ class Emitter:
                 return self._fn_sigs[value.name]
             if value.name in self._env_fn_sig:
                 return self._env_fn_sig[value.name]
+        # A Map[K V] lookup `(m key)` where `m`'s values are themselves
+        # closures/fn pointers (a dispatch-table pattern) -- see
+        # `_env_map_val_fn_sig`.
+        if (
+            isinstance(value, N.Call)
+            and isinstance(value.head, N.Ident)
+            and value.head.name in self._env_map_val_fn_sig
+            and len(value.args) == 1
+            and value.head.name in self._env_map_val_ty
+        ):
+            return self._env_map_val_fn_sig[value.head.name]
         return None
 
     def _infer_nyet_type_name(self, node: N.Node) -> str | None:
