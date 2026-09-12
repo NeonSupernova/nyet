@@ -70,6 +70,16 @@ class Emitter:
         # v0.3: nyet return-type names per fn — lets `?` / let bindings
         # recover the sum type when an expression is a fn call.
         self._fn_ret_nyet_names: dict[str, str] = {}
+        # Same idea, for a fn returning a tuple type (`#(T1 T2)`):
+        # tuples are structurally typed (synthesized anonymous struct
+        # names keyed by element LLVM types, not a user-given name like
+        # a struct/sum type), so `_fn_ret_nyet_names` — which only ever
+        # holds a Nyet type NAME — can't represent one. Without this,
+        # `(let p (make_pair))` (no `#(T1 T2)` annotation) never
+        # registered `p` in `_env_tuple_types`, so `(p 0)` was parsed as
+        # an ordinary call to an undefined function named `p` instead of
+        # a tuple index.
+        self._fn_ret_tuple_types: dict[str, str] = {}
 
         # v0.2: sum type registry — name → [(variant_name, payload_types)]
         self._sum_types: dict[str, list[tuple[str, list[str]]]] = {}
@@ -1156,6 +1166,9 @@ class Emitter:
         ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
         if ret_nyet:
             self._fn_ret_nyet_names[node.name] = ret_nyet
+        if isinstance(node.return_type, N.TupleType):
+            elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
+            self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(elem_tys)
         dyn_traits = [self._dyn_trait_name(p.type) for p in node.params]
         if any(t is not None for t in dyn_traits):
             self._fn_param_dyn_traits[node.name] = dyn_traits
@@ -1205,6 +1218,9 @@ class Emitter:
             ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
             if ret_nyet:
                 self._fn_ret_nyet_names[node.name] = ret_nyet
+            if isinstance(node.return_type, N.TupleType):
+                elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
+                self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(elem_tys)
 
             params_str = ", ".join(
                 f"{t} %{n}" for t, n in zip(param_types, param_names, strict=False)
@@ -3653,16 +3669,25 @@ class Emitter:
 
         # Tuple bindings: store the heap pointer and remember the
         # synthesized tuple struct type so `(name i)` lowers correctly.
-        # Detected via either an explicit `#(T1 T2)` annotation (needed
-        # when the rhs isn't a literal, e.g. a call returning a tuple)
-        # or a literal `TupleLit` rhs.
+        # Detected via an explicit `#(T1 T2)` annotation, a literal
+        # `TupleLit` rhs, or a call to a fn registered in
+        # `_fn_ret_tuple_types` (needed when neither of the above holds,
+        # e.g. `(let p (make_pair))` with no annotation).
         tuple_elem_tys: list[str] | None = None
+        tname: str | None = None
         if isinstance(node.type, N.TupleType):
             tuple_elem_tys = [self._llvm_type(et) for et in node.type.elements]
         elif isinstance(node.value, N.TupleLit):
             tuple_elem_tys = [self._infer_llvm_type(e) for e in node.value.elements]
-        if tuple_elem_tys is not None:
-            tname = self._get_or_register_tuple_type(tuple_elem_tys)
+        elif (
+            isinstance(node.value, N.Call)
+            and isinstance(node.value.head, N.Ident)
+            and node.value.head.name in self._fn_ret_tuple_types
+        ):
+            tname = self._fn_ret_tuple_types[node.value.head.name]
+        if tuple_elem_tys is not None or tname is not None:
+            if tname is None:
+                tname = self._get_or_register_tuple_type(tuple_elem_tys)
             ptr = self._emit_alloca("ptr")
             if node.value is not None:
                 val = self._emit_expr(node.value)
