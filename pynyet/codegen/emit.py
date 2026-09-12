@@ -3887,6 +3887,25 @@ class Emitter:
                     mangled = self._method_impls[(sn, name)]
                     if mangled in self._fn_ret_nyet_names:
                         return self._fn_ret_nyet_names[mangled]
+            # Generic fn — mirrors `_infer_llvm_type`'s matching case.
+            # `_fn_ret_nyet_names[name]` above only ever holds a
+            # *template's* own (unsubstituted, generic-param-shaped)
+            # return type name, never a specific instantiation's, so a
+            # generic-returning call bound with no annotation
+            # (`(let p (make_pair 5 "hello"))`) needs its own type args
+            # inferred from this call's own arguments.
+            if name in self._fn_templates:
+                tmpl = self._fn_templates[name]
+                type_args = self._infer_type_args_for_fn(tmpl, node.args)
+                if type_args is not None:
+                    mangled = self._mangle(name, type_args)
+                    if mangled in self._fn_ret_nyet_names:
+                        return self._fn_ret_nyet_names[mangled]
+                    env: dict[str, N.TypeNode] = {}
+                    for gp, targ in zip(tmpl.generics, type_args, strict=False):
+                        env[gp.name] = N.NamedType(tmpl.span, targ)
+                    rt = self._subst_type(tmpl.return_type, env)
+                    return self._nyet_type_name(rt)
         if (
             isinstance(node, N.Call)
             and isinstance(node.head, N.Path)

@@ -1,0 +1,21 @@
+;; Regression test: binding a generic function's monomorphized result
+;; with no explicit annotation lost the struct type. `_infer_llvm_type`
+;; already had a case to infer type args from the call's own arguments
+;; and resolve the substituted return type for a generic fn template,
+;; but `_infer_nyet_type_name` had no matching case at all -- so
+;; `(let p (make_pair 5 "hello")) (. p first)` silently produced no
+;; field load.
+;; Expected: 5 hello
+
+(struct Pair[A B] first:A second:B)
+
+(fn make_pair[A B] (a:A b:B) -> Pair[A B]
+  (Pair a b))
+
+(fn main () -> unit
+  (do
+    (let p (make_pair 5 "hello"))
+    (out (. p first))
+    (out " ")
+    (out (. p second))
+    (out "\n")))
