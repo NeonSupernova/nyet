@@ -3187,6 +3187,15 @@ class Emitter:
         binding (u8/u16/u32/u64/usize) -- see `_env_unsigned_names`."""
         if isinstance(node, N.Ident):
             return node.name in self._env_unsigned_names
+        # A struct field declared with an unsigned type, e.g. `(. c val)`
+        # where `val:u32` -- reuses `_struct_field_nyet` (the same
+        # per-field Nyet-type-name registry `_infer_nyet_type_name`'s own
+        # FieldAccess case reads) rather than a separate table.
+        if isinstance(node, N.FieldAccess):
+            outer = self._infer_nyet_type_name(node.target)
+            if outer is not None:
+                field_ty = self._struct_field_nyet.get(outer, {}).get(node.field_name)
+                return field_ty in self._UNSIGNED_NAMES
         return False
 
     def _type_is_unsigned(self, tn: N.TypeNode | None) -> bool:
