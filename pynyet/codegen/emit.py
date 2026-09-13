@@ -38,6 +38,12 @@ class Emitter:
         # The current function's declared `-> Array[T]` element LLVM
         # type, if any -- see `_emit_expr_as_array`.
         self._current_fn_array_ret_elem_ty: str | None = None
+        # The current function's raw declared return TypeNode, if any --
+        # see `_resolve_generic_variant`'s use of it to recover type args
+        # a generic sum type variant's own arguments can't fully infer
+        # (e.g. `Err`'s payload type in `(fn f () -> Result[T E] (Ok
+        # v))`, which never appears in `Ok`'s own field types at all).
+        self._current_fn_return_type_node: N.TypeNode | None = None
         # Keyword literals (`:name`) intern to a small integer ID, assigned
         # on first use — allocation-free, compared by identity via plain
         # i32 equality.
@@ -1265,6 +1271,7 @@ class Emitter:
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
             "current_fn_array_ret_elem_ty": self._current_fn_array_ret_elem_ty,
+            "current_fn_return_type_node": self._current_fn_return_type_node,
         }
 
     def _restore_fn_state(self, saved: dict) -> None:
@@ -1286,6 +1293,7 @@ class Emitter:
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
         self._current_fn_array_ret_elem_ty = saved["current_fn_array_ret_elem_ty"]
+        self._current_fn_return_type_node = saved["current_fn_return_type_node"]
 
     def _register_fn_sig(self, node: N.FnDecl) -> None:
         """Pre-populate `_fn_sigs` so call sites resolve regardless of
@@ -1356,6 +1364,7 @@ class Emitter:
         self._fn_alloca_lines = []
         self._current_fn_name = node.name
         self._current_fn_array_ret_elem_ty = None
+        self._current_fn_return_type_node = node.return_type if node.name != "main" else None
 
         # Emit into a local buffer, then flush to self._lines at end.
         body_lines: list[str] = []
@@ -2168,6 +2177,22 @@ class Emitter:
             return None
         return self._monomorphize_struct(name, type_args)
 
+    def _sum_type_args_from_type_node(
+        self, tn: N.TypeNode | None, sum_name: str
+    ) -> tuple[str, ...] | None:
+        """If `tn` is `sum_name[concrete_args...]` (or `&sum_name[...]`),
+        return the concrete Nyet type-arg names -- used as a fallback
+        source of generic type args a variant's own field types can't
+        fully determine (see `_resolve_generic_variant`)."""
+        if isinstance(tn, N.RefType):
+            return self._sum_type_args_from_type_node(tn.inner, sum_name)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == sum_name and tn.args:
+                return tuple(self._nyet_type_name_of_node(a) or "unk" for a in tn.args)
+        return None
+
     def _resolve_generic_variant(self, vname: str, args: list[N.Expr]) -> str | None:
         """Find the generic sum type this variant belongs to and monomorphize.
 
@@ -2189,7 +2214,26 @@ class Emitter:
                     break
             type_args = self._infer_type_args_for_variant(tmpl, variant_types, args)
             if type_args is None:
-                continue
+                # A variant that doesn't reference every one of the sum
+                # type's generic params in its own field types (e.g.
+                # `Err`'s payload type never appears in `Ok`'s fields)
+                # can't be fully resolved from the constructor call's
+                # own arguments alone -- fall back to the enclosing
+                # function's declared return type, when the variant
+                # construction is (as it almost always is) that
+                # function's return value. Without this, unresolved
+                # inference silently fell through to the bare-name
+                # `_variant_ctors[vname]` lookup below in `_emit_call`,
+                # which whichever sum type instantiation registered
+                # LAST for this variant name always won -- a silent
+                # wrong-type miscompile (or an outright ill-typed store)
+                # for every OTHER instantiation of the same generic sum
+                # type in the same program.
+                type_args = self._sum_type_args_from_type_node(
+                    self._current_fn_return_type_node, sum_name
+                )
+                if type_args is None or len(type_args) != len(tmpl.generics):
+                    continue
             mangled_sum = self._monomorphize_sum_type(sum_name, type_args)
             if mangled_sum is None:
                 continue
@@ -4237,7 +4281,17 @@ class Emitter:
         if is_aggregate:
             # Value is a ptr to the struct — store the ptr itself
             if node.value is not None:
+                # Thread this `let`'s own annotation through as a
+                # fallback type-arg source for a generic sum-type
+                # variant constructor whose own field types can't fully
+                # resolve every generic param (e.g. `(let r:Result[i32
+                # string] (Ok v))`, where `Ok`'s field never mentions
+                # `string`) -- see `_resolve_generic_variant`.
+                saved_ret_type_node = self._current_fn_return_type_node
+                if node.type is not None:
+                    self._current_fn_return_type_node = node.type
                 val = self._emit_expr(node.value)
+                self._current_fn_return_type_node = saved_ret_type_node
                 if val is not None:
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr {val}, ptr {ptr}")

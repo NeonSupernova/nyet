@@ -1,0 +1,44 @@
+;; A generic sum type variant whose OWN field types don't reference
+;; every one of the sum type's generic params (e.g. `Ok`'s field is
+;; only `T`, never mentions `E`) can't be fully resolved from the
+;; constructor call's own arguments alone. `_resolve_generic_variant`
+;; used to give up entirely in that case, silently falling through to
+;; a bare-name `_variant_ctors[vname]` lookup that whichever concrete
+;; instantiation registered LAST for that variant name always won --
+;; every OTHER instantiation of the same generic sum type in the same
+;; program got the WRONG tag/payload layout (confirmed: storing an i32
+;; into a `ptr`-typed slot, an ill-typed store clang's LLVM verifier
+;; rejects outright, not even a silent miscompile in this exact case).
+;; Expected:
+;;   fn return position (i32 instantiation): 5
+;;   fn return position (string instantiation): hi
+;;   let annotation (i32 instantiation): 42
+;;   both instantiations in one function: 1 two
+;;   Err variant (i32 instantiation): bad
+;;   Err variant (string instantiation): boom
+
+(type MyResult[T E] (Ok2 T) (Err2 E))
+
+(fn make_ok_i32 () -> MyResult[i32 string] (Ok2 5))
+(fn make_ok_str (data:string) -> MyResult[string string] (Ok2 data))
+(fn make_err_i32 () -> MyResult[i32 string] (Err2 "bad"))
+(fn make_err_str (data:string) -> MyResult[string string] (Err2 data))
+
+(fn main () -> unit
+  (do
+    (match (make_ok_i32) ((Ok2 v) (out (fmt "fn return position (i32 instantiation): {}\n" v))) ((Err2 e) pass))
+    (match (make_ok_str "hi") ((Ok2 v) (out (fmt "fn return position (string instantiation): {}\n" v))) ((Err2 e) pass))
+
+    (let r:MyResult[i32 string] (Ok2 42))
+    (match r ((Ok2 v) (out (fmt "let annotation (i32 instantiation): {}\n" v))) ((Err2 e) pass))
+
+    (let a:MyResult[i32 string] (Ok2 1))
+    (let b:MyResult[string bool] (Ok2 "two"))
+    (out "both instantiations in one function: ")
+    (match a ((Ok2 v) (out v)) ((Err2 e) pass))
+    (out " ")
+    (match b ((Ok2 v) (out v)) ((Err2 e) pass))
+    (out "\n")
+
+    (match (make_err_i32) ((Ok2 v) pass) ((Err2 e) (out (fmt "Err variant (i32 instantiation): {}\n" e))))
+    (match (make_err_str "boom") ((Ok2 v) pass) ((Err2 e) (out (fmt "Err variant (string instantiation): {}\n" e))))))
