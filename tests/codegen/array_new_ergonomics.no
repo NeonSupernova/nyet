@@ -1,0 +1,53 @@
+;; `(array_new n)` only ever worked as the literal, direct RHS of a
+;; `let`/`var` with an explicit `Array[T]` annotation -- everywhere else
+;; it was written (a function's implicit tail-return value, an explicit
+;; `(return (array_new n))`, a `do` block's tail position, reassigning
+;; an existing array `var`, a struct field initializer, a bare function
+;; argument), it fell through to `_emit_user_call`, which has no idea
+;; `array_new` means anything special and compiled it as a call to an
+;; undefined external function -- a hard clang build failure (wrong
+;; return type entirely), not a silent miscompile.
+;; Expected:
+;;   tail-return: 3
+;;   explicit return: 4
+;;   do-tail: 8
+;;   var reassignment: 2 then 10
+;;   struct field init: 5
+;;   function argument: 6
+
+(fn make_tail (n:i32) -> Array[i32]
+  (array_new n))
+
+(fn make_explicit (n:i32) -> Array[i32]
+  (return (array_new n)))
+
+(fn make_do (n:i32) -> Array[i32]
+  (do
+    (let cap:i32 (* n 2))
+    (array_new cap)))
+
+(struct Vector data:Array[i32])
+
+(fn use_arr (a:Array[i32]) -> i32
+  (len a))
+
+(fn main () -> unit
+  (do
+    (let a (make_tail 3))
+    (out (fmt "tail-return: {}\n" (len a)))
+
+    (let b (make_explicit 4))
+    (out (fmt "explicit return: {}\n" (len b)))
+
+    (let c (make_do 4))
+    (out (fmt "do-tail: {}\n" (len c)))
+
+    (var v:Array[i32] (array_new 2))
+    (out (fmt "var reassignment: {} " (len v)))
+    (= v (array_new 10))
+    (out (fmt "then {}\n" (len v)))
+
+    (let vec (Vector data:(array_new 5)))
+    (out (fmt "struct field init: {}\n" (len (. vec data))))
+
+    (out (fmt "function argument: {}\n" (use_arr (array_new 6))))))

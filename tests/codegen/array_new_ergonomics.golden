@@ -1,0 +1,7 @@
+=== stdout ===
+tail-return: 3
+explicit return: 4
+do-tail: 8
+var reassignment: 2 then 10
+struct field init: 5
+function argument: 6
