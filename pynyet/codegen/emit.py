@@ -133,6 +133,18 @@ class Emitter:
         # for the Map case) -- (param_llvm_types, ret_llvm_type), so
         # `(let h (arr i)) (h ...)` recognizes `h` as callable.
         self._env_array_elem_fn_sig: dict[str, tuple[list[str], str]] = {}
+        # Same idea again, for an Array[T] whose elements are themselves
+        # arrays (e.g. `Array[Array[i32]]`, a 2D grid) -- name -> the
+        # INNER array's LLVM element type. Without this, `(let row (grid
+        # i))` (no annotation) registered `row` as an opaque scalar
+        # `ptr` binding instead of an array one, so `(row j)` was parsed
+        # as a call to an undefined function literally named `row` --
+        # the same failure shape `_env_array_elem_nyet`/
+        # `_env_array_elem_fn_sig` already fixed for struct/closure
+        # elements, but arrays have no Nyet type NAME to key off (they're
+        # structurally, not nominally, typed), hence a separate registry
+        # rather than reusing `_env_array_elem_nyet`.
+        self._env_array_elem_of_array: dict[str, str] = {}
 
         # Char bindings — names of variables whose Nyet type is `char`.
         # Used by _emit_cast to detect char→int conversions at the call site.
@@ -1107,6 +1119,21 @@ class Emitter:
             base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
             if base_name == "Array" and tn.args:
                 return self._llvm_type(tn.args[0])
+        return None
+
+    def _array_of_array_elem_llvm_type(self, tn: N.TypeNode | None) -> str | None:
+        """If `tn` is `Array[Array[U]]` (or `&Array[Array[U]]`), return
+        U's LLVM element type -- i.e. one level deeper than
+        `_array_elem_llvm_type`. See `_env_array_elem_of_array`."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._array_of_array_elem_llvm_type(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Array" and tn.args:
+                return self._array_elem_llvm_type(tn.args[0])
         return None
 
     def _array_elem_nyet_name(self, tn: N.TypeNode | None) -> str | None:
@@ -2111,13 +2138,14 @@ class Emitter:
             if mangled is not None:
                 return self._emit_user_call(mangled, node.args)
         if (
-            isinstance(node.head, N.FieldAccess)
+            isinstance(node.head, (N.FieldAccess, N.Call))
             and len(node.args) == 1
-            and self._array_field_elem_ty(node.head) is not None
+            and self._array_elem_ty_of_expr(node.head) is not None
         ):
-            # `((. v data) i)` -- indexing an `Array[T]`-typed struct
-            # field directly. See `_emit_array_index_on_field`.
-            return self._emit_array_index_on_field(node.head, node.args[0])
+            # `((. v data) i)` or `((grid i) j)` -- indexing an
+            # `Array[T]` value produced by a further expression. See
+            # `_emit_array_index_nested`.
+            return self._emit_array_index_nested(node.head, node.args[0])
         return None
 
     # ------------------------------------------------------------------
@@ -4084,6 +4112,20 @@ class Emitter:
             elem_ty = self._array_elem_llvm_type(node.type)
         if elem_ty is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
             elem_ty = self._infer_llvm_type(node.value.elements[0])
+        # `(let row (grid i))`, no annotation -- `grid` is itself an
+        # Array[Array[U]] binding, so its element (an Array[U]) needs
+        # the same array-ness threaded onto `row`. See
+        # `_env_array_elem_of_array`.
+        elem_of_array_src: str | None = None
+        if (
+            elem_ty is None
+            and isinstance(node.value, N.Call)
+            and isinstance(node.value.head, N.Ident)
+            and node.value.head.name in self._env_array_elem_of_array
+            and len(node.value.args) == 1
+        ):
+            elem_of_array_src = node.value.head.name
+            elem_ty = self._env_array_elem_of_array[elem_of_array_src]
         if elem_ty is not None:
             elem_nyet: str | None = None
             if node.type is not None:
@@ -4093,6 +4135,15 @@ class Emitter:
             elem_fn_sig: tuple[list[str], str] | None = None
             if isinstance(node.value, N.ArrayLit) and node.value.elements:
                 elem_fn_sig = self._fn_sig_of_value(node.value.elements[0])
+            # `elem_of_array` is only set from an explicit nested
+            # `Array[Array[U]]` annotation -- NOT inherited from
+            # `elem_of_array_src` above, which would incorrectly mark a
+            # plain `Array[U]` binding (`row`, one level in) as itself
+            # holding arrays (U's own element type), corrupting any
+            # further indexing into `row`'s own results.
+            elem_of_array: str | None = None
+            if node.type is not None:
+                elem_of_array = self._array_of_array_elem_llvm_type(node.type)
             ptr = self._emit_alloca("ptr")
             val = self._emit_expr_as_array(node.value, elem_ty) if node.value is not None else None
             if val is not None:
@@ -4105,6 +4156,8 @@ class Emitter:
                 self._env_array_elem_nyet[node.name] = elem_nyet
             if elem_fn_sig is not None:
                 self._env_array_elem_fn_sig[node.name] = elem_fn_sig
+            if elem_of_array is not None:
+                self._env_array_elem_of_array[node.name] = elem_of_array
             return None
 
         # Tuple bindings: store the heap pointer and remember the
@@ -4393,15 +4446,16 @@ class Emitter:
             and len(target.args) == 1
         ):
             return self._emit_array_assign(target.head.name, target.args[0], node.value)
-        # Indexed assignment into an `Array[T]`-typed struct field
-        # directly: `(= ((. v data) i) x)`. See `_emit_array_assign_on_field`.
+        # Indexed assignment into an `Array[T]` value produced by a
+        # further expression: `(= ((. v data) i) x)` or
+        # `(= ((grid i) j) x)`. See `_emit_array_assign_nested`.
         if (
             isinstance(target, N.Call)
-            and isinstance(target.head, N.FieldAccess)
+            and isinstance(target.head, (N.FieldAccess, N.Call))
             and len(target.args) == 1
-            and self._array_field_elem_ty(target.head) is not None
+            and self._array_elem_ty_of_expr(target.head) is not None
         ):
-            return self._emit_array_assign_on_field(target.head, target.args[0], node.value)
+            return self._emit_array_assign_nested(target.head, target.args[0], node.value)
         # Map insert/update: `(= (m key) v)`.
         if (
             isinstance(target, N.Call)
@@ -4646,31 +4700,50 @@ class Emitter:
         self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
         return self._emit_array_index_val(arr, elem_ty, idx_arg)
 
-    def _array_field_elem_ty(self, field: N.FieldAccess) -> str | None:
-        """If `field` (e.g. `(. v data)`) is an `Array[T]`-typed struct
-        field, return T's LLVM element type -- see
-        `_struct_field_array_elem`."""
-        struct_name = self._struct_name_of(field.target)
-        if struct_name is None:
-            return None
-        return self._struct_field_array_elem.get(struct_name, {}).get(field.field_name)
+    def _array_elem_ty_of_expr(self, node: N.Node) -> str | None:
+        """Return the LLVM element type if evaluating `node` yields an
+        `Array[T]` pointer, for the two shapes not already covered by a
+        plain `Ident` bound in `_env_array_elem`:
+          - a `FieldAccess` into an `Array[T]`-typed struct field, e.g.
+            `(. v data)` -- see `_struct_field_array_elem`.
+          - a `Call` indexing an `Array[Array[U]]`-typed binding, e.g.
+            `(grid i)` -- see `_env_array_elem_of_array`.
+        Used by `_emit_call`/`_emit_assign` to dispatch a further level
+        of indexing directly (`((. v data) i)`, `((grid i) j)`) without
+        requiring an intermediate `let` binding for the inner array."""
+        if isinstance(node, N.FieldAccess):
+            struct_name = self._struct_name_of(node.target)
+            if struct_name is None:
+                return None
+            return self._struct_field_array_elem.get(struct_name, {}).get(node.field_name)
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name in self._env_array_elem_of_array
+            and len(node.args) == 1
+        ):
+            return self._env_array_elem_of_array[node.head.name]
+        return None
 
-    def _emit_array_index_on_field(self, field: N.FieldAccess, idx_arg: N.Expr) -> str | None:
-        """`((. v data) i)` -- indexing an `Array[T]`-typed struct field
-        directly, without first binding it to a local. Before this,
-        `_emit_call` only ever recognized array indexing when its head
-        was a plain `Ident` bound in `_env_array_elem`; a FieldAccess
-        head fell through every dispatch case and silently evaluated to
-        `None` -- dropped output for a read, and (via `_emit_assign`'s
-        matching gap) a silently no-op'd write. This is precisely the
+    def _emit_array_index_nested(self, head: N.Node, idx_arg: N.Expr) -> str | None:
+        """`((. v data) i)` or `((grid i) j)` -- indexing an `Array[T]`
+        value produced by a further expression (a struct field, or
+        another array-of-arrays index), without first binding it to a
+        local. Before this, `_emit_call` only ever recognized array
+        indexing when its head was a plain `Ident` bound in
+        `_env_array_elem`; any other head shape fell through every
+        dispatch case and silently evaluated to `None` -- dropped
+        output for a read, and (via `_emit_assign`'s matching gap) a
+        silently no-op'd write. The FieldAccess case is precisely the
         shape a growable-Vector-style struct (`(struct Vector len:i32
         cap:i32 data:Array[T])`) needs for its own methods to index
-        `data` directly, so it's the single most natural pattern this
-        gap could block."""
-        elem_ty = self._array_field_elem_ty(field)
+        `data` directly; the nested-Call case is the natural way to
+        index a 2D `Array[Array[U]]` grid without an intermediate
+        `let`."""
+        elem_ty = self._array_elem_ty_of_expr(head)
         if elem_ty is None:
             return None
-        arr = self._emit_expr(field)
+        arr = self._emit_expr(head)
         if arr is None:
             return None
         return self._emit_array_index_val(arr, elem_ty, idx_arg)
@@ -4824,15 +4897,16 @@ class Emitter:
         self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
         return self._emit_array_assign_val(arr, elem_ty, idx_arg, value)
 
-    def _emit_array_assign_on_field(
-        self, field: N.FieldAccess, idx_arg: N.Expr, value: N.Expr | None
+    def _emit_array_assign_nested(
+        self, head: N.Node, idx_arg: N.Expr, value: N.Expr | None
     ) -> str | None:
-        """`(= ((. v data) i) x)` -- the write-side counterpart to
-        `_emit_array_index_on_field`; see its docstring."""
-        elem_ty = self._array_field_elem_ty(field)
+        """`(= ((. v data) i) x)` or `(= ((grid i) j) x)` -- the
+        write-side counterpart to `_emit_array_index_nested`; see its
+        docstring."""
+        elem_ty = self._array_elem_ty_of_expr(head)
         if elem_ty is None:
             return None
-        arr = self._emit_expr(field)
+        arr = self._emit_expr(head)
         if arr is None:
             return None
         return self._emit_array_assign_val(arr, elem_ty, idx_arg, value)
