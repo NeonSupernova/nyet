@@ -1,0 +1,37 @@
+;; `Array[Array[T]]` (a 2D grid) had two gaps:
+;;   1. `(let row (grid i))` (no annotation) registered `row` as an
+;;      opaque scalar `ptr` binding, not an array one, so `(row j)`
+;;      was parsed as a call to an undefined function literally named
+;;      `row` -- the same failure shape already fixed for struct/
+;;      closure array elements, but arrays have no Nyet type NAME to
+;;      key off (structurally, not nominally, typed), so it needed its
+;;      own `_env_array_elem_of_array` registry.
+;;   2. Indexing a further level directly with no intermediate `let`
+;;      at all (`((grid i) j)`, read or `(= ((grid i) j) x)` write)
+;;      silently produced nothing -- `_emit_call`/`_emit_assign`'s
+;;      array-indexing dispatch only recognized an `Ident` or (after
+;;      the struct-field fix) `FieldAccess` head, never a `Call` head.
+;; Expected:
+;;   grid len: 3
+;;   row (bound) len: 2
+;;   row[0] row[1]: 3 4
+;;   direct chained read: 5 6
+;;   mutate via bound row, read via chained: 99
+;;   mutate via chained, read via chained: 77
+
+(fn main () -> unit
+  (do
+    (let grid:Array[Array[i32]] [[1 2] [3 4] [5 6]])
+    (out (fmt "grid len: {}\n" (len grid)))
+
+    (let row (grid 1))
+    (out (fmt "row (bound) len: {}\n" (len row)))
+    (out (fmt "row[0] row[1]: {} {}\n" (row 0) (row 1)))
+
+    (out (fmt "direct chained read: {} {}\n" ((grid 2) 0) ((grid 2) 1)))
+
+    (= (row 0) 99)
+    (out (fmt "mutate via bound row, read via chained: {}\n" ((grid 1) 0)))
+
+    (= ((grid 2) 0) 77)
+    (out (fmt "mutate via chained, read via chained: {}\n" ((grid 2) 0)))))
