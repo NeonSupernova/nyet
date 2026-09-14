@@ -10,11 +10,23 @@
 # plus support files -- with std/ and runtime/ bundled as data so
 # `(use std/...)` and the C runtime link step work standalone, without
 # the source checkout being present on the target machine.
+#
+# Paths below are built from SPECPATH (this file's own directory,
+# injected by PyInstaller) rather than left relative, since PyInstaller
+# resolves a bare relative script/data path against SPECPATH -- not the
+# invoking shell's cwd -- which is easy to get wrong silently.
+
+import os
+
+repo_root = os.path.dirname(SPECPATH)
 
 a = Analysis(
-    ["packaging/nyet_entry.py"],
-    pathex=["."],
-    datas=[("std", "std"), ("runtime", "runtime")],
+    [os.path.join(SPECPATH, "nyet_entry.py")],
+    pathex=[repo_root],
+    datas=[
+        (os.path.join(repo_root, "std"), "std"),
+        (os.path.join(repo_root, "runtime"), "runtime"),
+    ],
     hiddenimports=[],
     noarchive=False,
 )
