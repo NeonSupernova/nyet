@@ -1,6 +1,6 @@
 name: Windows demo package
 
-# Manual only -- this downloads a ~100-200MB toolchain and runs
+# Manual only -- this downloads a ~360MB toolchain and runs
 # PyInstaller, which is unnecessary weight on every push. Trigger from
 # the Actions tab (or `gh workflow run windows-package.yml`) when you
 # need a fresh nyet-windows-demo.zip.

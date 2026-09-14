@@ -5,6 +5,10 @@ Everything in this folder is self-contained: the `nyet` compiler
 of demo programs. Nothing needs to be installed, and no admin rights
 are needed for any of it.
 
+The zip is around 390MB (almost all of it the bundled clang/LLVM
+toolchain) -- fine for a USB stick or shared drive, but budget a
+minute or two to copy/unzip per machine.
+
 ## One-time setup on each lab computer
 
 1. Copy this whole folder onto the machine (USB stick, shared drive,
