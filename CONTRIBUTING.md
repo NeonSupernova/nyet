@@ -4,8 +4,8 @@ Thanks for your interest in hacking on Nyet. See
 [PLAN.md](PLAN.md) for the original compiler blueprint,
 [CONTINUATION_PLAN.md](CONTINUATION_PLAN.md) for current status and
 what's left, and [main.no](main.no) for the language specification
-(note: the spec is aspirational in places — `main.no` itself doesn't
-fully pass `driver check` yet).
+(it compiles and runs, and the test suite checks it; designs that
+aren't implemented yet are in its "Planned" block).
 
 ## Development setup
 
@@ -135,6 +135,8 @@ regardless, so follow it by hand in that case.
 - [CONTINUATION_PLAN.md](CONTINUATION_PLAN.md) — current status, known
   gaps, and phased next steps.
 - [main.no](main.no) — the language specification. The source of truth
-  for intended syntax and semantics (not all of it is implemented yet).
+  for intended syntax and semantics. Everything outside its "Planned"
+  block is implemented and runs in the test suite; when you change the
+  language, update it and `tests/codegen/main_no.golden`.
 - [docs/architecture.md](docs/architecture.md) — the current module
   layout and pipeline walkthrough.

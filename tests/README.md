@@ -23,7 +23,10 @@ representation for each fixture and diffs it against the stored golden.
   formatted diagnostics.
 - `tests/codegen/` — end-to-end: builds the fixture, runs the binary,
   captures stdout (and any in-process build-stderr, e.g. exhaustiveness
-  warnings). Goldens use `.golden`.
+  warnings). Goldens use `.golden`. The runner also builds and runs the
+  repo-root `main.no` against `main_no.golden` (select it alone with
+  `python3 tests/codegen/run.py main`); a failing assert in it shows up
+  as an exit code in the diff.
 
 All four harnesses have real fixtures and pass. Codegen fixtures should
 not require stdin — programs that read `(in ...)` belong in `examples/`

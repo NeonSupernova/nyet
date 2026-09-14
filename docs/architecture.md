@@ -13,27 +13,24 @@ source → lexer → parser → AST → sema → codegen (LLVM IR text) → clan
 
 See [PLAN.md](../PLAN.md) for the original design document,
 [CONTINUATION_PLAN.md](../CONTINUATION_PLAN.md) for current status and
-what's left, and [main.no](../main.no) for the language spec (note:
-the spec documents features well beyond what's implemented — see
-below).
+what's left, and [main.no](../main.no) for the language spec (which
+compiles and runs — see below).
 
 ## Current status
 
-Nyet is at milestone **v1.0** (PLAN.md §10). Lexer, parser, AST, four
-sema passes, and codegen are implemented and covered by golden tests
-in `tests/{lexer,parser,sema,codegen}/`.
+Nyet is at milestone **v1.0** (PLAN.md §10), plus the later work tracked
+in CONTINUATION_PLAN.md: tuples, Map, `dyn` trait objects, drops,
+exhaustiveness diagnostics, async `spawn`/`await`, closures that capture
+their environment, and a `std/` written in Nyet. Lexer, parser, AST, four
+sema passes, and codegen are covered by golden tests in
+`tests/{lexer,parser,sema,codegen}/`.
 
-Not yet implemented: `dyn` trait objects/vtables, tuple codegen,
-Map/Set, stdlib higher-order functions (`map`/`filter`/`fold`/...),
-drop insertion (values currently leak), pattern exhaustiveness as a
-first-class diagnostic pass (a warning is emitted ad hoc from
-codegen's match lowering, not through the sema diagnostic pipeline),
-and v1.1 async/await/spawn. `main.no`'s own claim "This file is valid
-Nyet source. It compiles." is parse-true but not check-true — `driver
-check main.no` still reports errors (undefined stdlib names,
-free-floating snippet variables, and a couple of real type-checker
-bugs). Treat `main.no` as the aspirational spec, and
-`examples/`/`tests/` as what's actually verified.
+`main.no`'s claim "This file is valid Nyet source. It compiles." holds:
+the codegen harness builds and runs it against
+`tests/codegen/main_no.golden`, and its asserts check the results its
+comments state. Designs that aren't implemented yet (IO channel values,
+GPIO/TCP channels, http, `Shared`, `mpsc`) sit in the "Planned" block
+comment at the end of the file.
 
 Three files under `pynyet/` are dead legacy from the original
 `rply`/`llvmlite` prototype and are slated for deletion — nothing in
@@ -158,6 +155,7 @@ CONTINUATION_PLAN.md Phase 3.
 - [PLAN.md](../PLAN.md) — the original implementation blueprint
 - [CONTINUATION_PLAN.md](../CONTINUATION_PLAN.md) — current status,
   known gaps, and phased next steps
-- [main.no](../main.no) — the language specification (aspirational in
-  places — see "Current status" above)
+- [main.no](../main.no) — the language specification, built and run by
+  the test suite; unimplemented designs are in its "Planned" block (see
+  "Current status" above)
 - [tests/README.md](../tests/README.md) — golden-file test harness

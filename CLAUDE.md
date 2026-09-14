@@ -121,10 +121,13 @@ e.g. `(let ch:char 65)`. Explicit primitive casts use `(as expr type)`
 int→char cast panics at runtime (Unicode scalar bounds check).
 
 `main.no` at the repo root is the full language specification (not
-just an example) — it documents features well beyond what's
-implemented today; treat it as aspirational in places, not as proof a
-construct works. `examples/` and `tests/{lexer,parser,sema,codegen}/`
-are what's actually verified.
+just an example), and it compiles and runs: each section's examples
+live in a `*_examples` function called from `main`, and results the
+comments state are `assert`ed. The codegen harness builds and runs it
+against `tests/codegen/main_no.golden`, so `just test-all` fails if it
+breaks — update it (`python3 tests/codegen/run.py --update main`) when
+the language changes. Designs that aren't implemented yet sit in the
+"Planned" block comment at its end, the only part that isn't compiled.
 
 ## Dependencies
 

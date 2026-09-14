@@ -513,3 +513,46 @@ work and are still tested; `array_new` now makes rewriting them as
 plain Nyet source possible, but doing all of them at once alongside
 introducing the two prerequisite fixes above was more change than one
 slice should carry. Natural next step for whoever picks this up.
+
+## Phase 5 — main.no compiles and runs — DONE (2026-09-14)
+
+Branch `worktree-main-no-compiles`, on top of `worktree-fix-compiler-bugs`
+(`3cb712f`). main.no's header said "It compiles"; it had 45 `check`
+errors and couldn't be built. Probing its features one at a time (71
+small programs) found 18 working, 6 silent miscompiles, about 20 that
+passed `check` but failed to build, and the rest unimplemented.
+
+- [x] Silent miscompiles: variadic operators dropped operands; `|>`
+      called the result of a partial call; `&!T` scalar params mutated a
+      copy; `fmt`/`out` skipped arguments that produced no value;
+      module-qualified calls produced nothing.
+- [x] Closures capture their environment (`fn`/`fn!` by reference,
+      `move fn` by value) through closure records; functions returning
+      closures; `Fn[...]` types; lambdas inside generic functions.
+- [x] Generics: multi-bound params parse; type args are inferred through
+      tuples, generic types, and closures' declared types; compound types
+      are substituted when monomorphizing.
+- [x] Also: negative literals, tuple destructuring, struct update, trait
+      default methods, `alias`/`newtype`, the Index call operator,
+      `parse`, `err`, slash-named macros, `dyn` over primitives, `f32`
+      literals, loop values, string `==` on computed strings, and `...`
+      placeholder bodies.
+- [x] main.no restructured: one `*_examples` function per section called
+      from `main`, stated results asserted, internal contradictions
+      fixed, unimplemented designs moved to a "Planned" block. The
+      codegen harness builds and runs it against `main_no.golden`.
+
+Known gaps, deliberately left:
+- Untyped closure params are only inferred for the builtin HOFs; a
+  closure passed to a generic user function needs annotations.
+- Call argument types aren't checked, so `newtype` distinctness isn't
+  enforced (`(move_to 3.0)` is accepted).
+- A borrowing closure can outlive the function that created it; not
+  checked.
+- Indexing a tuple produced inline by another call (`((pairs 1) 1)`)
+  isn't supported; bind it first.
+- Everything in main.no's Planned block: IO channel values and `io/def`,
+  GPIO/TCP channels, http, `Shared[T]`, `mpsc`, the routing DSL.
+- This branch predates the uncommitted IOChannel / `!` macro-call work in
+  the main checkout. Merging will conflict in `emit.py`, `expand.py`, and
+  `main.no`, which that work also rewrote.
