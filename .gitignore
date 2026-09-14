@@ -5,6 +5,7 @@
 !examples/*.no
 !scripts/*.no
 !std/**/*.no
+!demo/*.no
 *.pyc
 __pycache__
 
@@ -18,3 +19,4 @@ htmlcov/
 *.vsix
 build/
 *.o
+packaging/dist/

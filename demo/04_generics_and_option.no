@@ -1,0 +1,31 @@
+;; Demo 4: generics + Option[T] + the `?` early-return operator.
+;;
+;; `Option[T]` is a generic sum type -- no null, no sentinel values.
+;; `double_it` uses `?` to unwrap-or-bail: if it gets `None`, it
+;; returns `None` immediately without the caller writing that check
+;; by hand.
+;;
+;; Expected output:
+;;   doubling Some(10): 20
+;;   doubling None: none
+
+(type Option[T]
+  (Some T)
+  (None))
+
+(fn double_it (o:Option[i32]) -> Option[i32]
+  (Some (* 2 (? o))))
+
+(fn describe (o:Option[i32]) -> unit
+  (match o
+    ((Some n) (do (out n) (out "\n")))
+    ((None) (out "none\n"))))
+
+(fn main () -> unit
+  (let a:Option[i32] (Some 10))
+  (out "doubling Some(10): ")
+  (describe (double_it a))
+
+  (let b:Option[i32] (None))
+  (out "doubling None: ")
+  (describe (double_it b)))

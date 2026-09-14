@@ -1,0 +1,16 @@
+;; Regression test: `fmt`'s `{}` placeholder always used `%d` for any
+;; non-pointer, non-float argument -- including a genuine `i64`, which
+;; `%d` only reads as 32 bits. The value itself was computed and
+;; passed correctly (as a real i64 vararg); only the format string
+;; was wrong, so `snprintf` silently read back just its low 32 bits
+;; instead of erroring. `out` (a separate code path) already had a
+;; distinct i64 case and was never affected. Found while benchmarking:
+;; an i64 sum over 20M elements is far bigger than 2^32, so the
+;; truncation was impossible to miss.
+;; Expected: 199999990000000 / small=42
+
+(fn main () -> unit
+  (let big:i64 199999990000000)
+  (out (fmt "{}\n" big))
+  (let small:i32 42)
+  (out (fmt "small={}\n" small)))

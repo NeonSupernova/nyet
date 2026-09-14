@@ -1,0 +1,18 @@
+;; Regression test: `match` on a `string` scrutinee used to be
+;; unconditionally compiled as `icmp eq i32` in `_emit_match_simple`
+;; (its own docstring said "integers, etc." -- strings were never
+;; actually handled), which is a straight type mismatch against a
+;; `ptr` value and failed to build at all. A `(pat)`-bound default arm
+;; had the same hardcoded-`i32` problem for the binding's own type.
+;; Expected: first / second / unknown: z
+
+(fn classify (s:string) -> string
+  (match s
+    ("a" "first")
+    ("b" "second")
+    (other (fmt "unknown: {}" other))))
+
+(fn main () -> unit
+  (out (classify "a")) (out "\n")
+  (out (classify "b")) (out "\n")
+  (out (classify "z")) (out "\n"))

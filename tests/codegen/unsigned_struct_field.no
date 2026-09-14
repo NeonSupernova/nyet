@@ -1,0 +1,20 @@
+;; `_node_is_unsigned` (added for bugs #26-#28) only checked plain Ident
+;; bindings, so a struct field declared with an unsigned type still
+;; misbehaved: `(. c val)` on a `val:u32` field printed/compared/divided
+;; as signed. Fixed by consulting `_struct_field_nyet` (the same
+;; per-field Nyet-type-name registry used for struct field access
+;; elsewhere) from `_node_is_unsigned`.
+;; Expected:
+;;   field printed directly: 4000000000
+;;   field > field: 1
+;;   field / 3: 1333333333
+
+(struct Counter val:u32)
+
+(fn main () -> unit
+  (do
+    (let a (Counter val:4000000000))
+    (let b (Counter val:3000000000))
+    (out (fmt "field printed directly: {}\n" (. a val)))
+    (out (fmt "field > field: {}\n" (> (. a val) (. b val))))
+    (out (fmt "field / 3: {}\n" (/ (. a val) 3)))))

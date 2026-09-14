@@ -1,0 +1,29 @@
+;; Regression test: a struct read out of an `Array[T]` by index never
+;; clones -- `_emit_struct_construct` heap-allocates a struct once, and
+;; every `Array[T]` slot just stores that same pointer, so indexing
+;; hands back an alias, not a fresh copy. `compute_drop_names`
+;; (pynyet/sema/borrow.py) didn't know this: a plain, non-`&`-annotated
+;; `(let a:Point (pts i))` was still classified as an owned struct local
+;; and got a `free` inserted for it at scope exit. Two such reads of the
+;; same slot (directly, or via two calls each doing one) then double-
+;; freed the array's own still-live element -- a heap corruption crash,
+;; not a compile error, so nothing short of actually running the binary
+;; catches it. Only the documented `&Point`/`&!Point` annotation
+;; workaround avoided this before the fix.
+;; Expected: 1 / 1 / done (twice, no crash)
+
+(struct Point x:i32 y:i32)
+
+(fn touch () -> unit
+  (do
+    (let pts:Array[Point] [(Point x:1 y:2) (Point x:3 y:4)])
+    (let a:Point (pts 0))
+    (let b:Point (pts 0))
+    (out (. a x)) (out "\n")
+    (out (. b x)) (out "\n")))
+
+(fn main () -> unit
+  (do
+    (touch)
+    (touch)
+    (out "done\n")))

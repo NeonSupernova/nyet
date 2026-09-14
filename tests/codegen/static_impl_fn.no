@@ -1,0 +1,24 @@
+;; Regression test: a self-less `impl` function (an associated/"static"
+;; constructor with no receiver, e.g. `Point/origin`) called via its
+;; `Type/name` path syntax silently produced no call at all. `_emit_call`
+;; only ever dispatched on a Call whose head was an `N.Ident`; a `Call`
+;; whose head is an `N.Path` (the parse of `Type/name`) fell straight
+;; through to the final `return None`. There's no other way to call such
+;; a method -- it has no receiver argument for inherent-method dispatch
+;; to key off of -- so this was a complete, silent dead end.
+;; Expected: 0 / 11 / 1
+
+(struct Point x:i32 y:i32)
+
+(impl Point
+  (fn origin () -> Point (Point x:0 y:0))
+  (fn make (x:i32 y:i32) -> Point (Point x:x y:y))
+  (fn unit_scale () -> i32 1))
+
+(fn main () -> unit
+  (do
+    (let p (Point/origin))
+    (out (. p x)) (out "\n")
+    (let q (Point/make 5 6))
+    (out (+ (. q x) (. q y))) (out "\n")
+    (out (Point/unit_scale)) (out "\n")))

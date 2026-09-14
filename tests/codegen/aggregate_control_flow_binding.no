@@ -1,0 +1,21 @@
+;; Regression test: binding the struct-valued result of an `if`/`do`
+;; expression (or a chained field access directly onto one) with no
+;; explicit `&T` annotation lost track of the struct type. This is the
+;; same recurring gap fixed for Array[T]/Map[K V]/tuple-returning-fns/
+;; nested struct fields elsewhere in this session: `_infer_llvm_type`
+;; (which sizes an alloca) already handles `if`/`match`/`do` by
+;; recursing into the tail expression, but `_infer_nyet_type_name` and
+;; `_struct_name_of` had no matching cases at all, so `(. p field)` on
+;; the resulting binding silently produced no field load.
+;; Expected: 1 / 5 / 9
+
+(struct Point x:i32 y:i32)
+
+(fn main () -> unit
+  (do
+    (let cond:bool true)
+    (let p (if cond (Point x:1 y:2) (Point x:3 y:4)))
+    (out (. p x)) (out "\n")
+    (let q (do (out "making\n") (Point x:5 y:6)))
+    (out (. q x)) (out "\n")
+    (out (. (do (Point x:9 y:0)) x)) (out "\n")))

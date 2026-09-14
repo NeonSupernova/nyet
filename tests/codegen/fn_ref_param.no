@@ -1,0 +1,18 @@
+;; Regression test: a function-typed param passed by reference
+;; (`f:&(fn i32 -> i32)`) was not recognized as callable at all -- same
+;; root cause as the by-reference tuple param bug: the param-type check
+;; was a bare `isinstance(p.type, N.FnType)` with no `&`/`&!`
+;; unwrapping, unlike Array[T]/struct/sum/dyn-Trait params. `(f x)`
+;; inside the function body was parsed as a call to an undefined
+;; function `f`.
+;; Expected: 10
+
+(fn apply (f:&(fn i32 -> i32) x:i32) -> i32
+  (f x))
+
+(fn double (n:i32) -> i32 (* n 2))
+
+(fn main () -> unit
+  (do
+    (out (apply double 5))
+    (out "\n")))

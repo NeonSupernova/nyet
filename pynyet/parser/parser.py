@@ -245,7 +245,7 @@ class Parser:
         return self._parse_call(lparen)
 
     def _parse_call(self, lparen: Token) -> N.Call:
-        head = self.parse_expr()
+        head = self._parse_call_head()
         args: list[N.Expr] = []
         while not self._at(TokenKind.RPAREN):
             # Keyword argument: name:value (e.g. x:0.0 in struct constructors)
@@ -262,6 +262,39 @@ class Parser:
                 args.append(self.parse_expr())
         self._expect(TokenKind.RPAREN)
         return N.Call(self._span_from(lparen), head, args)
+
+    def _parse_call_head(self) -> N.Expr:
+        """Parse the head of a `(...)` call form.
+
+        A leading `&`/`&!` is ambiguous with the SAME tokens' prefix-
+        borrow meaning that `_parse_expr_inner` gives them for a bare
+        sub-expression (`&x`, `&!x`) -- but as the explicit head of a
+        call, `&` is documented (main.no) as 2-arg bitwise AND, e.g.
+        `(& a b)`. Routing through the general `parse_expr()` here (as
+        every other operator token already does via `_OPERATOR_TOKENS`
+        in `_parse_atom`) would instead trigger the prefix-borrow branch,
+        which greedily parses the very next argument as borrow's own
+        single operand and returns a `Call` as the head -- so `(& a b)`
+        parsed as `Call(head=Call(Ident("&"), [a]), args=[b])`, a
+        Call-headed-by-Call shape no downstream dispatch (which only
+        ever checks for `Ident`/`Path` heads) recognizes, silently
+        producing nothing. Handling `&`/`&!` as plain operator
+        identifiers here instead resolves the ambiguity in favor of
+        the explicit-call reading; bare `&x`/`&!x` used as an ordinary
+        function ARGUMENT (parsed by the `parse_expr()` loop below, not
+        this method) is unaffected.
+        """
+        tok = self._peek()
+        if tok.kind is TokenKind.AMP_BANG:
+            self._advance()
+            return N.Ident(tok.span, "&!")
+        if tok.kind is TokenKind.AMP:
+            self._advance()
+            if self._at(TokenKind.BANG):
+                bang = self._advance()
+                return N.Ident(tok.span.merge(bang.span), "&!")
+            return N.Ident(tok.span, "&")
+        return self.parse_expr()
 
     # ---------------------------------------------------------------
     # special forms

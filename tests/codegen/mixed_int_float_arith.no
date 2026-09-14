@@ -1,0 +1,33 @@
+;; Mixed integer/float arithmetic and comparison used to hardcode `sitofp
+;; i32` for the int-side promotion regardless of the integer's real LLVM
+;; width, so any non-i32 integer operand (i64, i8, i16, u8..u64) mixed
+;; with a float in `+`/`-`/`*`/`/`/`%` or a comparison crashed clang
+;; outright with a type mismatch ('%tN' defined with type 'iM' but
+;; expected 'i32'). Separately, unsigned int<->float conversions (both
+;; the explicit `(as ...)` cast and this same implicit promotion) always
+;; used the signed sitofp/fptosi instructions instead of uitofp/fptoui,
+;; giving wrong results for any unsigned value outside i32's signed range.
+;; Expected:
+;;   i64 + float: 8.5
+;;   i64 > float: 1
+;;   u32 widened to f64: 4e+09
+;;   f64 narrowed to u32: 4000000000
+
+(fn test_i64_float_arith () -> unit
+  (do
+    (let x:i64 5)
+    (out (fmt "i64 + float: {}\n" (+ x 3.5)))
+    (out (fmt "i64 > float: {}\n" (> x 3.5)))))
+
+(fn test_unsigned_float_conversions () -> unit
+  (do
+    (let a:u32 4000000000)
+    (out (fmt "u32 widened to f64: {}\n" (as a f64)))
+    (let g:f64 4000000000.0)
+    (let b:u32 (as g u32))
+    (out (fmt "f64 narrowed to u32: {}\n" b))))
+
+(fn main () -> unit
+  (do
+    (test_i64_float_arith)
+    (test_unsigned_float_conversions)))

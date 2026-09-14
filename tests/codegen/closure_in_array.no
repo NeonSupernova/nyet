@@ -1,0 +1,14 @@
+;; Regression test: the same "container of closures" bug already fixed
+;; for Map[K V] (see closure_in_map.no), for Array[T] instead. Unlike
+;; the map case, `_lift_in` already recursed into `ArrayLit` elements
+;; (so the closure literals get hoisted fine) -- the remaining gap was
+;; purely `_fn_sig_of_value` never checking an array-index Call, so
+;; `(let h (handlers 1)) (h)` wasn't recognized as callable and was
+;; parsed as a call to an undefined function `h`.
+;; Expected: second
+
+(fn main () -> unit
+  (do
+    (var handlers [(fn () -> unit (out "first\n")) (fn () -> unit (out "second\n"))])
+    (let h (handlers 1))
+    (h)))

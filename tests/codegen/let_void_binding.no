@@ -1,0 +1,15 @@
+;; Regression test: `(let r (some_unit_fn))` -- binding an unannotated
+;; `let` to a bare call to a `-> unit` function -- crashed the same way
+;; an `if`/`match` branch shaped like that used to (see
+;; if_void_branch.no, match_void_arm.no): `_emit_let` sizes the
+;; binding's slot from `_infer_llvm_type(node.value)`, which for a
+;; direct call returns the callee's real return type "void" -- illegal
+;; as an `alloca` type. Needed for a `time_it`-style benchmarking macro
+;; that binds a caller-supplied body's result regardless of its type.
+;; Expected: did it / after
+
+(fn do_thing () -> unit (out "did it\n"))
+
+(fn main () -> unit
+  (let r (do_thing))
+  (out "after\n"))

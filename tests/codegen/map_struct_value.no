@@ -1,0 +1,19 @@
+;; Regression test: reading a struct value out of a `Map[K V]` into a
+;; `let` with no explicit `&T` annotation used to lose track of which
+;; struct type the binding held -- the same bug already fixed for
+;; `Array[T]` (see array_struct_field.no), but for `_env_map_val_ty`
+;; instead of `_env_array_elem`. `_infer_nyet_type_name` had no case
+;; for "a Call indexing a known map binding", so `_emit_let` never
+;; registered the binding in `_env_struct_name`, and `(. a field)` on
+;; it silently produced no field load.
+;; Expected: 0 / 1
+
+(struct Point x:i32 y:i32)
+
+(fn main () -> unit
+  (do
+    (var m:Map[string Point] {"origin" (Point x:0 y:0) "unit" (Point x:1 y:1)})
+    (let p (m "origin"))
+    (out (. p x)) (out "\n")
+    (let q (m "unit"))
+    (out (. q x)) (out "\n")))

@@ -1,0 +1,19 @@
+;; Regression test: binding a tuple-returning function's result with no
+;; explicit `#(T1 T2)` annotation (`(let p (make_pair))`) lost track of
+;; the tuple's synthesized struct type. Tuples have no user-given type
+;; name the way structs/sum types do (`_fn_ret_nyet_names` only ever
+;; holds a Nyet type name), so `_emit_let` never registered `p` in
+;; `_env_tuple_types`, and `(p 0)` was parsed as an ordinary call to an
+;; undefined function literally named `p` instead of a tuple index.
+;; Expected: 42 hi
+
+(fn make_pair () -> #(i32 string)
+  #(42 "hi"))
+
+(fn main () -> unit
+  (do
+    (let p (make_pair))
+    (out (p 0))
+    (out " ")
+    (out (p 1))
+    (out "\n")))

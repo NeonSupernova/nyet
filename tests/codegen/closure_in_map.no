@@ -1,0 +1,22 @@
+;; Regression test: two bugs in the "map of closures" dispatch-table
+;; pattern (`{"go" (fn () -> unit ...)}`, `on`-macro-style dispatch
+;; tables build exactly this shape).
+;;
+;; 1. `_lift_closures`' `_lift_in` walk is an explicit node-type
+;;    whitelist, not a generic recursive walk, and `N.MapLit` was
+;;    missing from it -- a closure literal used as a map *value*
+;;    never got hoisted to a top-level function at all, so the raw
+;;    `FnExpr` reached codegen and crashed (`_emit_expr` has no case
+;;    for it -- it's only ever valid post-lifting).
+;; 2. Even after lifting, binding a map-lookup result with no
+;;    annotation (`(let h (handlers "go"))`) didn't recognize `h` as
+;;    callable -- `(h)` was parsed as a call to an undefined function
+;;    `h` instead of an indirect call through the loaded fn pointer.
+;;
+;; Expected: inline going
+
+(fn main () -> unit
+  (do
+    (var handlers {"go" (fn () -> unit (out "inline going\n"))})
+    (let h (handlers "go"))
+    (h)))

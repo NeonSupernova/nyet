@@ -1,0 +1,31 @@
+;; Demo 2: structs, sum types, and pattern matching.
+;;
+;; `Shape` is a sum type (a "tagged union" in C terms). `area` pattern
+;; matches on which variant it got and destructures its fields in the
+;; same step -- no manual tag checks, no casts.
+;;
+;; Expected output:
+;;   circle r=5 area=78.5397
+;;   rect   4x6 area=24
+;;   tri    b=4 h=3 area=6
+
+(type Shape
+  (Circle f64)
+  (Rect f64 f64)
+  (Tri f64 f64))
+
+(fn area (s:Shape) -> f64
+  (match s
+    ((Circle r) (* 3.14159 (* r r)))
+    ((Rect w h) (* w h))
+    ((Tri b h) (* 0.5 (* b h)))))
+
+(fn main () -> unit
+  (let c:Shape (Circle 5.0))
+  (out "circle r=5 area=") (out (area c)) (out "\n")
+
+  (let r:Shape (Rect 4.0 6.0))
+  (out "rect   4x6 area=") (out (area r)) (out "\n")
+
+  (let t:Shape (Tri 4.0 3.0))
+  (out "tri    b=4 h=3 area=") (out (area t)) (out "\n"))

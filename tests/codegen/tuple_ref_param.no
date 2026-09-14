@@ -1,0 +1,20 @@
+;; Regression test: a tuple param passed by reference (`t:&#(T1 T2)`,
+;; the natural way to avoid copying one into a function) was not
+;; recognized as a tuple at all -- the param-type check was a bare
+;; `isinstance(p.type, N.TupleType)` with no `&`/`&!` unwrapping, unlike
+;; every other aggregate param shape (Array[T], struct/sum, dyn Trait),
+;; which all unwrap `RefType` internally. `(t i)` inside the function
+;; body was parsed as an ordinary call to an undefined function `t`.
+;; Expected: 7 / 8
+
+(fn first (t:&#(i32 i32)) -> i32
+  (t 0))
+
+(fn second (t:&#(i32 i32)) -> i32
+  (t 1))
+
+(fn main () -> unit
+  (do
+    (let t #(7 8))
+    (out (first &t)) (out "\n")
+    (out (second &t)) (out "\n")))

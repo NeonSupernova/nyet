@@ -1,0 +1,21 @@
+;; Regression test: a `Map[K V]` function parameter had no registration
+;; case at all in `_emit_fn`'s param-handling loop (unlike Array[T]/
+;; struct/tuple/dyn-Trait params, which each get their own) -- it fell
+;; into the generic scalar-`ptr` fallback, so `(m key)` inside the
+;; function body was parsed as an ordinary call to an undefined
+;; function literally named `m` instead of a map lookup, and `(=
+;; (m key) v)` similarly never dispatched to an insert/update.
+;; Expected: 9 / 42
+
+(fn lookup (m:&Map[string i32] key:string) -> i32
+  (m key))
+
+(fn insert (m:&!Map[string i32] key:string val:i32) -> unit
+  (= (m key) val))
+
+(fn main () -> unit
+  (do
+    (var m:Map[string i32] {"a" 9})
+    (out (lookup &m "a")) (out "\n")
+    (insert &!m "b" 42)
+    (out (lookup &m "b")) (out "\n")))

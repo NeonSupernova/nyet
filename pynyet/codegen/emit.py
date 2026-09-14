@@ -19,6 +19,8 @@ from pynyet.sema.borrow import compute_drop_names
 class Emitter:
     """Emit LLVM IR text from a Nyet AST."""
 
+    _UNSIGNED_NAMES = frozenset({"u8", "u16", "u32", "u64", "usize"})
+
     def __init__(self, target_triple: str = "") -> None:
         self._triple = target_triple
         self._lines: list[str] = []
@@ -40,9 +42,16 @@ class Emitter:
         self._fmt_i32: str | None = None
         self._fmt_i64: str | None = None
         self._fmt_f64: str | None = None
+        self._fmt_u32: str | None = None
+        self._fmt_u64: str | None = None
         self._tmp = 0
         self._label = 0
         self._env: dict[str, tuple[str, str]] = {}  # name → (llvm_ptr, llvm_type)
+        # Top-level `const` bindings — name → (llvm_immediate, llvm_type).
+        # Consts have no runtime address (see main.no's Constants section:
+        # "inlined at every use site"), so this is checked directly by
+        # _emit_ident/_infer_llvm_type instead of going through _env.
+        self._const_values: dict[str, tuple[str, str]] = {}
         self._str_lits: dict[str, str] = {}
         self._declared_externs: set[str] = set()
         self._fn_lines: list[str] = []
@@ -54,12 +63,36 @@ class Emitter:
         # v0.2: struct registry — name → [(field_name, llvm_type)]
         self._structs: dict[str, list[tuple[str, str]]] = {}
         self._struct_type_lines: list[str] = []
+        # struct name → set of field names whose Nyet type is `string`
+        # (as opposed to some other `ptr`-shaped field — nested struct,
+        # Array, tuple, Map). Used by `_is_string_operand` so `(. row
+        # name)` is recognized as a string for `==`/`</`>` comparisons.
+        self._struct_string_fields: dict[str, set[str]] = {}
+        # struct name → {field name: Nyet type name}, for every field
+        # whose type is a named type (primitives included). Used by
+        # `_struct_name_of`/`_infer_nyet_type_name` so `(let i (. o
+        # inner))` (binding a nested struct field with no `&T`
+        # annotation) keeps tracking which struct `i` is — without
+        # this, `(. i val)` on it silently produced no field load, the
+        # same bug already fixed for array/map reads and chained
+        # indexing (see _env_array_elem_nyet/_env_map_val_nyet).
+        self._struct_field_nyet: dict[str, dict[str, str]] = {}
 
         # v0.2: fn signature registry — name → (param_types, ret_type)
         self._fn_sigs: dict[str, tuple[list[str], str]] = {}
         # v0.3: nyet return-type names per fn — lets `?` / let bindings
         # recover the sum type when an expression is a fn call.
         self._fn_ret_nyet_names: dict[str, str] = {}
+        # Same idea, for a fn returning a tuple type (`#(T1 T2)`):
+        # tuples are structurally typed (synthesized anonymous struct
+        # names keyed by element LLVM types, not a user-given name like
+        # a struct/sum type), so `_fn_ret_nyet_names` — which only ever
+        # holds a Nyet type NAME — can't represent one. Without this,
+        # `(let p (make_pair))` (no `#(T1 T2)` annotation) never
+        # registered `p` in `_env_tuple_types`, so `(p 0)` was parsed as
+        # an ordinary call to an undefined function named `p` instead of
+        # a tuple index.
+        self._fn_ret_tuple_types: dict[str, str] = {}
 
         # v0.2: sum type registry — name → [(variant_name, payload_types)]
         self._sum_types: dict[str, list[tuple[str, list[str]]]] = {}
@@ -77,6 +110,21 @@ class Emitter:
         # `_emit_call` and `_emit_assign` to dispatch `(arr i)` and
         # `(= (arr i) v)` to indexed load/store instead of a function call.
         self._env_array_elem: dict[str, str] = {}
+        # Parallel to `_env_array_elem`, but the *Nyet* element type name
+        # (e.g. "Point") when `T` is a named type — only ever set when
+        # `_env_array_elem[name]` is "ptr" and the element is a known
+        # struct/sum type. Without this, `(let a (arr i))` (no `&T`
+        # annotation) loses track of which struct `a` is, so `(. a
+        # field)` silently fails: `_infer_nyet_type_name` had no case for
+        # "a Call indexing a known array binding" at all, so `_emit_let`
+        # took the scalar-`ptr` path instead of the aggregate path and
+        # never registered `_env_struct_name[a]`.
+        self._env_array_elem_nyet: dict[str, str] = {}
+        # Same idea, for an Array[T] whose elements are themselves
+        # closures/fn pointers (mirrors `_env_map_val_fn_sig`'s reasoning
+        # for the Map case) -- (param_llvm_types, ret_llvm_type), so
+        # `(let h (arr i)) (h ...)` recognizes `h` as callable.
+        self._env_array_elem_fn_sig: dict[str, tuple[list[str], str]] = {}
 
         # Char bindings — names of variables whose Nyet type is `char`.
         # Used by _emit_cast to detect char→int conversions at the call site.
@@ -87,6 +135,16 @@ class Emitter:
         # `_emit_call` to dispatch `(str i)` to an indexed byte load (a
         # `char`) instead of a function call, mirroring `_env_array_elem`.
         self._env_string_names: set[str] = set()
+
+        # Unsigned-integer bindings — names of let/var/params whose Nyet
+        # type is one of u8/u16/u32/u64/usize. LLVM integer types carry
+        # no signedness of their own (i8/i16/i32/i64 are used for both
+        # signed and unsigned Nyet types alike); this is the only place
+        # that distinction survives past `_llvm_type`, so every op that
+        # behaves differently for unsigned values (widening casts,
+        # comparisons, division/remainder, printing) needs to consult
+        # it via `_node_is_unsigned` instead of just the LLVM type.
+        self._env_unsigned_names: set[str] = set()
 
         # Tuple bindings — name -> synthesized tuple struct type name
         # (see `_get_or_register_tuple_type`). Used by `_emit_call` to
@@ -103,6 +161,18 @@ class Emitter:
         # dispatch `(= (m key) v)` to insert/update, mirroring
         # `_env_array_elem`.
         self._env_map_val_ty: dict[str, str] = {}
+        # Parallel to `_env_map_val_ty`, but the *Nyet* value type name
+        # (e.g. "Point") when `V` is a named type — mirrors
+        # `_env_array_elem_nyet`'s reasoning: without this, `(let a (m
+        # key))` (no `&T` annotation) loses track of which struct `a`
+        # is, so `(. a field)` on it silently produces no field load.
+        self._env_map_val_nyet: dict[str, str] = {}
+        # Same idea, for a Map[K V] whose values are closures/fn
+        # pointers (a dispatch-table pattern: `{"go" (fn () -> unit
+        # ...)}`) -- (param_llvm_types, ret_llvm_type), so `(let h (m
+        # key)) (h ...)` recognizes `h` as callable instead of `(h)`
+        # being parsed as a call to an undefined function `h`.
+        self._env_map_val_fn_sig: dict[str, tuple[list[str], str]] = {}
 
         # dyn Trait objects: `&dyn Trait` params are a 2-word fat
         # pointer `{data, vtable}`. `_traits` holds each trait's method
@@ -253,12 +323,33 @@ class Emitter:
             node.elements = [self._lift_in(e, lifted) for e in node.elements]
             return node
 
+        if isinstance(node, N.MapLit):
+            # A closure literal as a map value (e.g. a `{name (fn ...)}`
+            # dispatch table) was never recursed into -- this is an
+            # explicit node-type whitelist, not a generic walk, and
+            # `MapLit` was simply missing. The `FnExpr` reached
+            # `_emit_expr` un-lifted and hit its catch-all.
+            node.entries = [
+                (self._lift_in(k, lifted), self._lift_in(v, lifted)) for k, v in node.entries
+            ]
+            return node
+
         if isinstance(node, N.KeywordArg):
             if node.value is not None:
                 node.value = self._lift_in(node.value, lifted)
             return node
 
         if isinstance(node, (N.Try, N.Await, N.Spawn)):
+            if node.value is not None:
+                node.value = self._lift_in(node.value, lifted)
+            return node
+
+        if isinstance(node, N.FieldAccess):
+            if node.target is not None:
+                node.target = self._lift_in(node.target, lifted)
+            return node
+
+        if isinstance(node, N.Cast):
             if node.value is not None:
                 node.value = self._lift_in(node.value, lifted)
             return node
@@ -336,6 +427,11 @@ class Emitter:
                 self._traits[node.name] = [
                     item for item in node.items if isinstance(item, N.FnDecl)
                 ]
+            elif isinstance(node, N.ConstDecl):
+                # Registered up front (not appended to top_level) so a
+                # const is available to every function regardless of
+                # whether `main` exists — see _register_const.
+                self._register_const(node)
             else:
                 top_level.append(node)
 
@@ -385,10 +481,19 @@ class Emitter:
 
     def _register_struct(self, node: N.StructDecl) -> None:
         fields = []
+        string_fields: set[str] = set()
+        field_nyet: dict[str, str] = {}
         for p in node.fields:
             ty = self._llvm_type(p.type)
             fields.append((p.name, ty))
+            nyet_name = self._nyet_type_name(p.type)
+            if nyet_name == "string":
+                string_fields.add(p.name)
+            if nyet_name is not None:
+                field_nyet[p.name] = nyet_name
         self._structs[node.name] = fields
+        self._struct_string_fields[node.name] = string_fields
+        self._struct_field_nyet[node.name] = field_nyet
         llvm_fields = ", ".join(ty for _, ty in fields)
         self._struct_type_lines.append(f"%{node.name} = type {{ {llvm_fields} }}")
 
@@ -438,6 +543,46 @@ class Emitter:
             self._struct_type_lines.append(f"%{node.name} = type {{ i32 }}")
         else:
             self._struct_type_lines.append(f"%{node.name} = type {{ i32, [{max_payload} x i8] }}")
+
+    def _register_const(self, node: N.ConstDecl) -> None:
+        """Precompute a top-level `const`'s inlined value (see main.no's
+        Constants section: consts are compile-time values with no runtime
+        allocation or address). Only literal RHS values are supported,
+        matching every documented/tested `const` use. A non-literal
+        initializer raises rather than silently registering nothing --
+        that silent-nothing behavior is exactly the original bug this
+        method exists to fix (a dropped reference, not a clean error),
+        and this compiler has no general constant-expression evaluator
+        to honor a non-literal const value yet."""
+        val = self._const_literal_value(node.value)
+        if val is None:
+            got = "no initializer" if node.value is None else type(node.value).__name__
+            raise NotImplementedError(
+                f"const '{node.name}': only literal initializers "
+                f"(int/float/bool/string/keyword) are supported by this "
+                f"compiler; got {got}"
+            )
+        llvm_val, default_ty = val
+        llvm_ty = self._llvm_type(node.type) if node.type is not None else default_ty
+        self._const_values[node.name] = (llvm_val, llvm_ty)
+
+    def _const_literal_value(self, node: N.Expr | None) -> tuple[str, str] | None:
+        """Return (llvm_immediate, llvm_type) for a literal expression, or
+        None if it isn't one of the literal forms a `const` can hold."""
+        if isinstance(node, N.IntLit):
+            return str(node.value), self._infer_llvm_type(node)
+        if isinstance(node, N.FloatLit):
+            packed = _struct.pack("d", node.value)
+            as_int = _struct.unpack("Q", packed)[0]
+            return f"0x{as_int:016X}", "double"
+        if isinstance(node, N.BoolLit):
+            return ("1" if node.value else "0"), "i1"
+        if isinstance(node, N.StringLit):
+            name, _ = self._get_string(node.value)
+            return name, "ptr"
+        if isinstance(node, N.KeywordLit):
+            return str(self._keyword_id(node.name)), "i32"
+        return None
 
     # ==================================================================
     # v0.3: Monomorphization
@@ -736,6 +881,21 @@ class Emitter:
             return 8  # struct pointer
         return 8
 
+    @staticmethod
+    def _alignof(ty: str) -> int:
+        """Natural alignment in bytes of an LLVM type, mirroring _sizeof."""
+        if ty in ("i1", "i8"):
+            return 1
+        if ty == "i16":
+            return 2
+        if ty in ("i32", "float"):
+            return 4
+        if ty in ("i64", "double", "ptr"):
+            return 8
+        if ty.startswith("%"):
+            return 8  # struct pointer
+        return 8
+
     # ==================================================================
     # Helpers
     # ==================================================================
@@ -810,6 +970,16 @@ class Emitter:
             self._fmt_f64 = self._get_format_string("%g", "f64")
         return self._fmt_f64
 
+    def _get_fmt_u32(self) -> str:
+        if self._fmt_u32 is None:
+            self._fmt_u32 = self._get_format_string("%u", "u32")
+        return self._fmt_u32
+
+    def _get_fmt_u64(self) -> str:
+        if self._fmt_u64 is None:
+            self._fmt_u64 = self._get_format_string("%llu", "u64")
+        return self._fmt_u64
+
     @staticmethod
     def _escape_bytes(data: bytes) -> str:
         result = []
@@ -845,6 +1015,14 @@ class Emitter:
                 return "i8"
             if name in ("i16", "u16"):
                 return "i16"
+            if name == "u32":
+                return "i32"
+            if name in ("u64", "usize"):
+                # Falling through to the generic "i32" default below would
+                # silently store a 64-bit-wide Nyet type in a 32-bit LLVM
+                # int -- CLAUDE.md documents usize as "the indexing type",
+                # so this would truncate any array-length-scale value.
+                return "i64"
             if name == "char":
                 return "i32"  # Unicode scalar value stored as i32
             if name == "Keyword":
@@ -908,6 +1086,23 @@ class Emitter:
                 return self._llvm_type(tn.args[0])
         return None
 
+    def _array_elem_nyet_name(self, tn: N.TypeNode | None) -> str | None:
+        """Return the Nyet element type name if `tn` is `Array[T]` (or
+        `&Array[T]`) and `T` is a named type (e.g. a struct/sum type).
+        Mirrors `_array_elem_llvm_type`, but keeps the *Nyet* name so a
+        struct read out of an array can still be field-accessed -- see
+        `_env_array_elem_nyet`."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._array_elem_nyet_name(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Array" and tn.args:
+                return self._nyet_type_name(tn.args[0])
+        return None
+
     def _dyn_trait_name(self, tn: N.TypeNode | None) -> str | None:
         """Return the trait name if `tn` is `dyn Trait` (or `&dyn Trait`)."""
         if tn is None:
@@ -931,6 +1126,22 @@ class Emitter:
             base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
             if base_name == "Map" and len(tn.args) >= 2:
                 return self._llvm_type(tn.args[1])
+        return None
+
+    def _map_val_nyet_name(self, tn: N.TypeNode | None) -> str | None:
+        """Return the Nyet value type name if `tn` is `Map[K V]` (or
+        `&Map[K V]`) and `V` is a named type. Mirrors
+        `_array_elem_nyet_name` for the same reason — see
+        `_env_map_val_nyet`."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._map_val_nyet_name(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Map" and len(tn.args) >= 2:
+                return self._nyet_type_name(tn.args[1])
         return None
 
     def _llvm_ret_type(self, tn: N.TypeNode | None) -> str:
@@ -996,6 +1207,7 @@ class Emitter:
             "env_array_elem": dict(self._env_array_elem),
             "env_char_names": set(self._env_char_names),
             "env_string_names": set(self._env_string_names),
+            "env_unsigned_names": set(self._env_unsigned_names),
             "env_tuple_types": dict(self._env_tuple_types),
             "env_map_val_ty": dict(self._env_map_val_ty),
             "env_dyn_trait": dict(self._env_dyn_trait),
@@ -1015,6 +1227,7 @@ class Emitter:
         self._env_array_elem = saved["env_array_elem"]
         self._env_char_names = saved["env_char_names"]
         self._env_string_names = saved["env_string_names"]
+        self._env_unsigned_names = saved["env_unsigned_names"]
         self._env_tuple_types = saved["env_tuple_types"]
         self._env_map_val_ty = saved["env_map_val_ty"]
         self._env_dyn_trait = saved["env_dyn_trait"]
@@ -1033,6 +1246,12 @@ class Emitter:
         ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
         if ret_nyet:
             self._fn_ret_nyet_names[node.name] = ret_nyet
+        if isinstance(node.return_type, N.TupleType):
+            elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
+            elem_nyet = [self._nyet_type_name(et) for et in node.return_type.elements]
+            self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(
+                elem_tys, elem_nyet
+            )
         dyn_traits = [self._dyn_trait_name(p.type) for p in node.params]
         if any(t is not None for t in dyn_traits):
             self._fn_param_dyn_traits[node.name] = dyn_traits
@@ -1082,6 +1301,12 @@ class Emitter:
             ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
             if ret_nyet:
                 self._fn_ret_nyet_names[node.name] = ret_nyet
+            if isinstance(node.return_type, N.TupleType):
+                elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
+                elem_nyet = [self._nyet_type_name(et) for et in node.return_type.elements]
+                self._fn_ret_tuple_types[node.name] = self._get_or_register_tuple_type(
+                    elem_tys, elem_nyet
+                )
 
             params_str = ", ".join(
                 f"{t} %{n}" for t, n in zip(param_types, param_names, strict=False)
@@ -1099,15 +1324,26 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_array_elem[n] = arr_elem
-                elif isinstance(p.type, N.FnType):
-                    # Function-typed param: a pointer to a function. Track its
-                    # signature so calls like `(f x)` can be lowered as an
-                    # indirect call through the slot.
+                    arr_elem_nyet = self._array_elem_nyet_name(p.type)
+                    if arr_elem_nyet is not None:
+                        self._env_array_elem_nyet[n] = arr_elem_nyet
+                elif isinstance(
+                    p.type.inner if isinstance(p.type, N.RefType) else p.type, N.FnType
+                ):
+                    # Function-typed param: a pointer to a function. Track
+                    # its signature so calls like `(f x)` can be lowered as
+                    # an indirect call through the slot. Unwrap `&`/`&!`
+                    # first -- same fix as the tuple-param case just above,
+                    # same bug: a by-reference fn-typed param (`f:&(fn i32
+                    # -> i32)`) fell into the generic scalar-`ptr` fallback
+                    # below and `(f x)` was parsed as a call to an
+                    # undefined function `f`.
+                    fn_type = p.type.inner if isinstance(p.type, N.RefType) else p.type
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
-                    fn_param_tys = [self._llvm_type(pt) for pt in p.type.params]
-                    fn_ret_ty = self._llvm_ret_type(p.type.ret) if p.type.ret else "void"
+                    fn_param_tys = [self._llvm_type(pt) for pt in fn_type.params]
+                    fn_ret_ty = self._llvm_ret_type(fn_type.ret) if fn_type.ret else "void"
                     self._env_fn_sig[n] = (fn_param_tys, fn_ret_ty)
                 elif nyet_n and (nyet_n in self._structs or nyet_n in self._sum_types):
                     # Struct/sum params are already ptrs — register directly
@@ -1115,14 +1351,45 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_struct_name[n] = nyet_n
-                elif isinstance(p.type, N.TupleType):
+                elif isinstance(
+                    p.type.inner if isinstance(p.type, N.RefType) else p.type, N.TupleType
+                ):
                     # Tuple params are already ptrs — register their shape
-                    # so `(param i)` lowers to indexed field load.
+                    # so `(param i)` lowers to indexed field load. Unwrap
+                    # `&`/`&!` first (unlike the array/struct/sum/dyn-Trait
+                    # cases above, which already unwrap internally via
+                    # `_array_elem_llvm_type`/`_nyet_type_name`/
+                    # `_dyn_trait_name`) -- without it, a by-reference tuple
+                    # param (`t:&#(T1 T2)`, the natural way to avoid copying
+                    # one into a function) fell into the generic scalar-`ptr`
+                    # fallback below and `(t i)` was parsed as a call to an
+                    # undefined function `t`, the same bug already fixed for
+                    # Map[K V] params.
+                    tuple_type = p.type.inner if isinstance(p.type, N.RefType) else p.type
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
-                    tup_elem_tys = [self._llvm_type(et) for et in p.type.elements]
-                    self._env_tuple_types[n] = self._get_or_register_tuple_type(tup_elem_tys)
+                    tup_elem_tys = [self._llvm_type(et) for et in tuple_type.elements]
+                    tup_elem_nyet = [self._nyet_type_name(et) for et in tuple_type.elements]
+                    self._env_tuple_types[n] = self._get_or_register_tuple_type(
+                        tup_elem_tys, tup_elem_nyet
+                    )
+                elif self._map_val_llvm_type(p.type) is not None:
+                    # Map[K V] params arrive as `ptr` to the runtime hash
+                    # table, exactly like a local `let`/`var` — without
+                    # this case they fell into the generic `else` branch
+                    # below (an opaque scalar `ptr` param with no lookup
+                    # dispatch at all), so `(m key)` inside the function
+                    # body was misparsed as a call to an undefined
+                    # function literally named `m` instead of a map
+                    # lookup.
+                    ptr = self._emit_alloca("ptr")
+                    self._emit_line(f"store ptr %{n}, ptr {ptr}")
+                    self._env[n] = (ptr, "ptr")
+                    self._env_map_val_ty[n] = self._map_val_llvm_type(p.type)
+                    map_val_nyet = self._map_val_nyet_name(p.type)
+                    if map_val_nyet is not None:
+                        self._env_map_val_nyet[n] = map_val_nyet
                 elif self._dyn_trait_name(p.type) is not None:
                     # `dyn Trait` params arrive as an already-constructed
                     # fat pointer (the caller coerces -- see
@@ -1145,6 +1412,9 @@ class Emitter:
                 # reach here, so this only catches genuine `string` scalars.
                 if p.type is not None and self._nyet_type_name(p.type) == "string":
                     self._env_string_names.add(n)
+                # Track unsigned-typed params -- see `_env_unsigned_names`.
+                if p.type is not None and self._nyet_type_name(p.type) in self._UNSIGNED_NAMES:
+                    self._env_unsigned_names.add(n)
 
             if node.body is not None:
                 result = self._emit_expr(node.body)
@@ -1199,6 +1469,33 @@ class Emitter:
     # Type inference
     # ==================================================================
 
+    def _find_do_tail_let(self, node: N.Do) -> N.LetDecl | None:
+        """If `node`'s tail expression is a bare reference to a name
+        bound by an earlier `let`/`var` in that SAME `do` block, return
+        that declaration.
+
+        `_infer_llvm_type`/`_infer_nyet_type_name` run before the do's
+        contents are actually emitted (they size an `alloca`/determine a
+        Nyet type ahead of emission), so `self._env` does not have the
+        binding yet — a plain `self._env[name]` lookup inside those
+        functions' `N.Ident` case silently misses it and falls through
+        to the wrong default (`i32` / `None`). E.g. `(let total (do
+        (let r (returns_i64)) (out "...") r))` used to size `total` as
+        i32, silently truncating a real i64 result. Scans forward and
+        keeps the LAST match so shadowing (`(let r ...) ... (let r
+        ...))` resolves to the binding actually in scope at the tail.
+        """
+        if not node.exprs:
+            return None
+        tail = node.exprs[-1]
+        if not isinstance(tail, N.Ident):
+            return None
+        found: N.LetDecl | None = None
+        for prior in node.exprs[:-1]:
+            if isinstance(prior, N.LetDecl) and prior.name == tail.name:
+                found = prior
+        return found
+
     def _infer_llvm_type(self, node: N.Node | None) -> str:
         if isinstance(node, N.IntLit):
             # The parser drops any `i64` suffix, so magnitude is the only
@@ -1230,6 +1527,8 @@ class Emitter:
             return self._llvm_type(node.target_type)
         if isinstance(node, N.Ident) and node.name in self._env:
             return self._env[node.name][1]
+        if isinstance(node, N.Ident) and node.name in self._const_values:
+            return self._const_values[node.name][1]
         # v0.6: a bare reference to a top-level fn yields its function pointer.
         if isinstance(node, N.Ident) and node.name in self._fn_sigs:
             return "ptr"
@@ -1314,6 +1613,8 @@ class Emitter:
                 return self._infer_llvm_type(node.args[0])
             if op == "fmt":
                 return "ptr"
+            if op == "now":
+                return "double"
             if op in ("file_open", "file_read_all"):
                 return "ptr"
             if op == "in":
@@ -1362,6 +1663,15 @@ class Emitter:
                 return "ptr"
             if op in self._generic_variant_ctors:
                 return "ptr"
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Path)
+            and len(node.head.segments) == 2
+        ):
+            # `(Type/name ...)` — see `_emit_call`'s matching case.
+            mangled = self._method_impls.get(tuple(node.head.segments))
+            if mangled is not None and mangled in self._fn_sigs:
+                return self._fn_sigs[mangled][1]
         if isinstance(node, N.FieldAccess):
             return self._infer_field_type(node)
         if isinstance(node, N.If) and node.then_branch:
@@ -1371,6 +1681,12 @@ class Emitter:
             # mirror `_emit_match`, which sizes its result slot the same way.
             return self._infer_llvm_type(node.arms[0].body)
         if isinstance(node, N.Do) and node.exprs:
+            prior_let = self._find_do_tail_let(node)
+            if prior_let is not None:
+                if prior_let.type is not None:
+                    return self._llvm_type(prior_let.type)
+                if prior_let.value is not None:
+                    return self._infer_llvm_type(prior_let.value)
             return self._infer_llvm_type(node.exprs[-1])
         if isinstance(node, N.Try):
             # Payload type of the first (success) variant of the sum type.
@@ -1400,11 +1716,23 @@ class Emitter:
         return "i32"
 
     def _struct_name_of(self, node: N.Node | None) -> str | None:
-        """Try to determine which Nyet struct a node refers to."""
-        if isinstance(node, N.Ident) and node.name in self._env:
-            # Check if we've recorded the struct name for this binding
-            return self._env_struct_name.get(node.name)
-        return None
+        """Try to determine which Nyet struct a node refers to.
+
+        A thin `Node | None` wrapper around `_infer_nyet_type_name`,
+        which handles every shape this needs (a plain binding, array/
+        map-index reads, chained field access, if/match/do, direct
+        struct/variant construction, static/inherent method calls,
+        ...) and is kept as the single source of truth for "what Nyet
+        type does this expression have" rather than duplicating that
+        shape-by-shape here — a previous version of this method only
+        handled a subset of those shapes (missing, at various points,
+        direct constructor calls and if/match/do), which silently
+        broke field access chained directly onto any of them (e.g.
+        `(. (Point x:1 y:2) x)`, `(. (if cond a b) x)`).
+        """
+        if node is None:
+            return None
+        return self._infer_nyet_type_name(node)
 
     # ==================================================================
     # Expression emission
@@ -1481,7 +1809,17 @@ class Emitter:
             return self._emit_let(node)
 
         if isinstance(node, N.Return):
-            if node.value is not None:
+            # `(return ())` — an explicit unit value, e.g. from a macro
+            # that returns early with a caller-supplied "what to return"
+            # argument shared across `-> bool` and `-> unit` call sites —
+            # has a real `node.value` (a UnitLit, not Python None) but
+            # `_emit_expr` legitimately yields no SSA value for it (unit
+            # has no runtime representation). Falling into the branch
+            # below used to stringify that as the literal text "ret i32
+            # None" (Python's `None` interpolated straight into the IR).
+            # Both `(return)` and `(return ())` mean the same thing in a
+            # `-> unit` function, so treat them the same.
+            if node.value is not None and not isinstance(node.value, N.UnitLit):
                 val = self._emit_expr(node.value)
                 ty = self._infer_llvm_type(node.value)
                 self._emit_line(f"ret {ty} {val}")
@@ -1514,11 +1852,22 @@ class Emitter:
             tmp = self._fresh_tmp()
             self._emit_line(f"{tmp} = load {ty}, ptr {ptr}")
             return tmp
+        # Top-level `const` — inlined immediate, no load (no address).
+        if node.name in self._const_values:
+            return self._const_values[node.name][0]
         # v0.6: lifted lambda / top-level function used as a value yields
         # the global function pointer.
         if node.name in self._fn_sigs:
             return f"@{node.name}"
-        return None
+        raise NotImplementedError(
+            f"undefined identifier '{node.name}' at codegen time -- most likely a "
+            f"closure referencing a variable from its enclosing scope: "
+            f"`_lift_closures` hoists a `(fn ...)`/`(fn! ...)` literal to a "
+            f"top-level function with no access to the enclosing scope's locals "
+            f"('{node.name}' resolves fine at the sema level, where lexical "
+            f"scoping still applies, but not after lifting) -- variable capture "
+            f"in closures is not implemented yet (see CONTINUATION_PLAN.md)"
+        )
 
     # ==================================================================
     # Calls — builtins, operators, struct ctors, user fns
@@ -1551,6 +1900,8 @@ class Emitter:
                 return self._emit_fmt(node.args)
             if name == "panic":
                 return self._emit_panic(node.args)
+            if name == "now" and len(node.args) == 0:
+                return self._emit_now()
             if name == "len" and len(node.args) == 1:
                 return self._emit_array_len(node.args[0])
             if name == "file_open":
@@ -1607,6 +1958,15 @@ class Emitter:
                 return self._emit_cmp(name, node.args)
             if name in ("&&", "||", "!"):
                 return self._emit_bool_op(name, node.args)
+            # Bitwise ops. `&` is overloaded with borrow (see below) --
+            # disambiguated by arity, same convention typeck uses: 2 args
+            # is bitwise AND, 1 arg is a borrow.
+            if name in ("&", "|", "^") and len(node.args) == 2:
+                return self._emit_bitwise(name, node.args)
+            if name in ("<<", ">>") and len(node.args) == 2:
+                return self._emit_shift(name, node.args)
+            if name == "~" and len(node.args) == 1:
+                return self._emit_bitnot(node.args[0])
             # Borrow / mutable borrow — pass-through; struct/sum values are
             # already pointer-shaped, so `&x` is just `x`.
             if name in ("&", "&!") and len(node.args) == 1:
@@ -1665,6 +2025,20 @@ class Emitter:
                 return self._emit_indirect_call(name, node.args)
             # User function
             return self._emit_user_call(name, node.args)
+        if isinstance(node.head, N.Path) and len(node.head.segments) == 2:
+            # `(Type/name ...)` — a self-less `impl` function (an
+            # associated/"static" constructor, e.g. `(fn origin () ->
+            # Point ...)` inside `impl Point`) called by its
+            # type-qualified path. There's no receiver argument to
+            # dispatch inherent-method lookup from (that path only
+            # triggers for `(method receiver ...)`), so this is the
+            # only call syntax such a method has at all — without this,
+            # `_emit_call` fell through to the final `return None`
+            # below, silently producing no call whatsoever.
+            target_name, method_name = node.head.segments
+            mangled = self._method_impls.get((target_name, method_name))
+            if mangled is not None:
+                return self._emit_user_call(mangled, node.args)
         return None
 
     # ------------------------------------------------------------------
@@ -1741,12 +2115,46 @@ class Emitter:
     def _infer_type_args_for_struct(
         self, tmpl: N.StructDecl, args: list[N.Expr]
     ) -> tuple[str, ...] | None:
-        # Filter keyword args out for positional matching
-        pos_args: list[N.Expr] = []
+        # `_infer_type_args_from_params` unifies `tmpl.fields[i]` against
+        # `args[i]` purely positionally, so a keyword-style constructor
+        # call (`(Pair first:a second:b)` -- the primary documented
+        # struct-construction style, per main.no's own examples) needs
+        # its args reordered into declaration order first. A previous
+        # version of this method instead filtered keyword args out
+        # entirely, so a generic struct constructed with ALL keyword
+        # args (no positional args left at all) had nothing to unify
+        # against and could never infer its type args -- the call fell
+        # through every other dispatch case in `_emit_call` and was
+        # misparsed as an ordinary function call, whose args (still
+        # `KeywordArg` nodes) then hit the `_emit_expr` catch-all.
+        ordered_args = self._reorder_ctor_args(tmpl.fields, args)
+        return self._infer_type_args_from_params(tmpl.generics, tmpl.fields, ordered_args)
+
+    def _reorder_ctor_args(self, fields: list, args: list[N.Expr]) -> list[N.Expr]:
+        """Reorder a struct constructor's actual arguments (a mix of
+        positional and keyword-style) into declaration order, matching
+        `_emit_struct_construct`'s own by-name/by-position field
+        matching -- needed so callers that unify positionally (generic
+        type-arg inference) work regardless of whether the call used
+        keyword args, positional args, or a mix.
+        """
+        by_name: dict[str, N.Expr] = {}
+        positional: list[N.Expr] = []
         for a in args:
-            if not isinstance(a, N.KeywordArg):
-                pos_args.append(a)
-        return self._infer_type_args_from_params(tmpl.generics, tmpl.fields, pos_args)
+            if isinstance(a, N.KeywordArg):
+                if a.value is not None:
+                    by_name[a.name] = a.value
+            else:
+                positional.append(a)
+        ordered: list[N.Expr] = []
+        pos_i = 0
+        for f in fields:
+            if f.name in by_name:
+                ordered.append(by_name[f.name])
+            elif pos_i < len(positional):
+                ordered.append(positional[pos_i])
+                pos_i += 1
+        return ordered
 
     def _infer_type_args_for_variant(
         self,
@@ -1899,10 +2307,19 @@ class Emitter:
                     self._emit_line(f"{ext} = fpext float {val} to double")
                     val = ext
                 self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})")
+            elif ty == "i64" and self._node_is_unsigned(arg):
+                fmt = self._get_fmt_u64()
+                tmp = self._fresh_tmp()
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
             elif ty == "i64":
                 fmt = self._get_fmt_i64()
                 tmp = self._fresh_tmp()
                 self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
+            elif self._node_is_unsigned(arg):
+                fmt = self._get_fmt_u32()
+                tmp = self._fresh_tmp()
+                val = self._coerce_int_to(val, ty, "i32", unsigned=True)
+                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
             else:
                 fmt = self._get_fmt_i32()
                 tmp = self._fresh_tmp()
@@ -1933,23 +2350,118 @@ class Emitter:
         self._emit_label(dead)
         return None
 
+    def _emit_now(self) -> str:
+        """`(now)` -- CPU time consumed by this process so far, in
+        seconds, as an `f64`. Backed by libc `clock()` (`<time.h>`)
+        rather than a wall-clock call (`gettimeofday`/`clock_gettime`):
+        `clock()` is a single `clock_t` return value with no struct
+        layout or platform-specific clock-ID constant to get wrong,
+        making it the portable choice between macOS and Linux for a
+        first primitive. `CLOCKS_PER_SEC` is 1000000 on both glibc and
+        macOS libc. Intended for benchmarking CPU-bound Nyet code
+        (loops, arithmetic, struct/array operations) — not for measuring
+        real elapsed time around blocking I/O, which `clock()` doesn't
+        count.
+        """
+        self._declare_extern("declare i64 @clock()")
+        ticks = self._fresh_tmp()
+        self._emit_line(f"{ticks} = call i64 @clock()")
+        as_double = self._fresh_tmp()
+        self._emit_line(f"{as_double} = sitofp i64 {ticks} to double")
+        seconds = self._fresh_tmp()
+        self._emit_line(f"{seconds} = fdiv double {as_double}, 1000000.0")
+        return seconds
+
     # ------------------------------------------------------------------
     # in
     # ------------------------------------------------------------------
 
     def _emit_in(self, args: list[N.Expr]) -> str | None:
+        """`(in)` -- read one line from stdin.
+
+        The FILE* stdin handle is opened via `fdopen` at most ONCE per
+        process, cached in a global. A `(in)` call site inside a `loop`
+        only appears once in the emitted IR, but that block runs on
+        every iteration -- calling `fdopen(0, "r")` again on every one
+        of those runtime iterations used to open a brand new stdio
+        buffer on fd 0 each time. Because stdio's first `fgets` on a
+        fresh buffer greedily reads ahead past the first line, and that
+        buffered-but-unread remainder was discarded the moment the
+        FILE* was abandoned at the end of the call, this silently
+        dropped every line after the first. Once stdin was actually
+        exhausted, `fgets` returned NULL (previously unchecked here),
+        leaving `buf`'s stack memory untouched -- so every call after
+        the first replayed the first line forever instead of the loop
+        ever observing EOF. Caching the handle fixes the dropped-lines
+        half; the EOF check below (empty string on NULL) fixes the
+        replay-forever half.
+
+        The read buffer itself is heap- (not stack-) allocated for the
+        same reason every other Nyet `string` value is static or heap
+        data: a `string` is meant to survive a function return (stored,
+        passed on, returned again) like any other owned value. A stack
+        `alloca` here would hand back a pointer into the current
+        function's frame, which is a dangling pointer to the caller
+        the moment that frame is popped -- e.g. any `(fn read_line ()
+        -> string (in))`-style wrapper, an entirely ordinary pattern
+        for prompting on a line of input, would silently read
+        clobbered stack memory back out of it.
+        """
         self._declare_extern("declare ptr @fgets(ptr, i32, ptr)")
         self._declare_extern("declare ptr @fdopen(i32, ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        self._declare_extern("@__nyet_stdin = internal global ptr null")
         self._declare_printf()
 
-        buf = self._emit_alloca("[256 x i8]")
         buf_ptr = self._fresh_tmp()
-        self._emit_line(f"{buf_ptr} = getelementptr [256 x i8], ptr {buf}, i32 0, i32 0")
+        self._emit_line(f"{buf_ptr} = call ptr @malloc(i64 256)")
+
+        cached = self._fresh_tmp()
+        self._emit_line(f"{cached} = load ptr, ptr @__nyet_stdin")
+        need_open = self._fresh_tmp()
+        self._emit_line(f"{need_open} = icmp eq ptr {cached}, null")
+        open_label = self._fresh_label("in_open")
+        have_label = self._fresh_label("in_have")
+        self._emit_line(f"br i1 {need_open}, label %{open_label}, label %{have_label}")
+
+        self._emit_label(open_label)
         mode_name = self._get_format_string("r", "r_mode")
+        opened = self._fresh_tmp()
+        self._emit_line(f"{opened} = call ptr @fdopen(i32 0, ptr {mode_name})")
+        self._emit_line(f"store ptr {opened}, ptr @__nyet_stdin")
+        self._emit_line(f"br label %{have_label}")
+
+        self._emit_label(have_label)
         stdin_fp = self._fresh_tmp()
-        self._emit_line(f"{stdin_fp} = call ptr @fdopen(i32 0, ptr {mode_name})")
-        tmp = self._fresh_tmp()
-        self._emit_line(f"{tmp} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})")
+        self._emit_line(f"{stdin_fp} = load ptr, ptr @__nyet_stdin")
+        fgets_ret = self._fresh_tmp()
+        self._emit_line(f"{fgets_ret} = call ptr @fgets(ptr {buf_ptr}, i32 256, ptr {stdin_fp})")
+
+        is_eof = self._fresh_tmp()
+        self._emit_line(f"{is_eof} = icmp eq ptr {fgets_ret}, null")
+        eof_label = self._fresh_label("in_eof")
+        done_label = self._fresh_label("in_done")
+        self._emit_line(f"br i1 {is_eof}, label %{eof_label}, label %{done_label}")
+
+        self._emit_label(eof_label)
+        self._emit_line(f"store i8 0, ptr {buf_ptr}")
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(done_label)
+
+        # `fgets` keeps the trailing newline (and a preceding `\r` on
+        # CRLF input) in the buffer -- every line `(in)` read used to
+        # come back with it still attached, so `(== line "quit")`
+        # could never match a line actually typed as "quit". Truncate
+        # at the first line-ending byte, same as a real line-reading
+        # API would hand back.
+        self._declare_extern("declare i64 @strcspn(ptr, ptr)")
+        line_endings = self._get_format_string("\r\n", "in_line_endings")
+        cut_off = self._fresh_tmp()
+        self._emit_line(f"{cut_off} = call i64 @strcspn(ptr {buf_ptr}, ptr {line_endings})")
+        cut_ptr = self._fresh_tmp()
+        self._emit_line(f"{cut_ptr} = getelementptr i8, ptr {buf_ptr}, i64 {cut_off}")
+        self._emit_line(f"store i8 0, ptr {cut_ptr}")
 
         target_type = "ptr"
         if args and isinstance(args[0], N.Ident):
@@ -2093,12 +2605,12 @@ class Emitter:
         if template_val is None:
             return None
 
-        fmt_args: list[tuple[str, str]] = []
+        fmt_args: list[tuple[str, str, N.Expr]] = []
         for arg in args[1:]:
             val = self._emit_expr(arg)
             if val is not None:
                 ty = self._infer_llvm_type(arg)
-                fmt_args.append((ty, val))
+                fmt_args.append((ty, val, arg))
 
         template_text = None
         if isinstance(args[0], N.StringLit):
@@ -2108,8 +2620,30 @@ class Emitter:
 
         if template_text is not None:
             c_fmt = template_text
-            for llvm_ty, _ in fmt_args:
-                spec = "%s" if llvm_ty == "ptr" else "%g" if self._is_float(llvm_ty) else "%d"
+            for llvm_ty, _, arg_node in fmt_args:
+                # `%d` only matches a 32-bit vararg -- an i64 argument
+                # (passed at its real width just below, in the
+                # `snprintf_args` loop) read back through `%d` silently
+                # truncates to its low 32 bits instead of erroring,
+                # since C varargs have no type checking. `_emit_out`
+                # already gets this right per-argument; `fmt` here
+                # needs the same i64 case, not just ptr/float/else.
+                # Likewise an unsigned Nyet type (u32/u64/usize) needs
+                # `%u`/`%llu`, not `%d`/`%lld` -- see `_env_unsigned_names`.
+                unsigned = self._node_is_unsigned(arg_node)
+                spec = (
+                    "%s"
+                    if llvm_ty == "ptr"
+                    else "%g"
+                    if self._is_float(llvm_ty)
+                    else "%llu"
+                    if llvm_ty == "i64" and unsigned
+                    else "%lld"
+                    if llvm_ty == "i64"
+                    else "%u"
+                    if unsigned
+                    else "%d"
+                )
                 c_fmt = c_fmt.replace("{}", spec, 1)
             fmt_name = self._get_format_string(c_fmt, f"fmt_{id(args[0])}")
         else:
@@ -2119,7 +2653,10 @@ class Emitter:
         self._emit_line(f"{buf_ptr} = call ptr @malloc(i64 1024)")
         self._declare_extern("declare ptr @malloc(i64)")
         snprintf_args = f"ptr {buf_ptr}, i32 1024, ptr {fmt_name}"
-        for llvm_ty, val in fmt_args:
+        for llvm_ty, val, arg_node in fmt_args:
+            if llvm_ty not in ("i64", "double", "float") and self._node_is_unsigned(arg_node):
+                val = self._coerce_int_to(val, llvm_ty, "i32", unsigned=True)
+                llvm_ty = "i32"
             if llvm_ty == "float":
                 # Variadic callee (snprintf %g) expects double — promote
                 ext = self._fresh_tmp()
@@ -2207,7 +2744,8 @@ class Emitter:
             fty = "double" if "double" in (lty, rty) else "float"
             if not self._is_float(lty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {lhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[0]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {lty} {lhs} to {fty}")
                 lhs = conv
             elif lty != fty:
                 conv = self._fresh_tmp()
@@ -2215,7 +2753,8 @@ class Emitter:
                 lhs = conv
             if not self._is_float(rty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {rhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[1]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {rty} {rhs} to {fty}")
                 rhs = conv
             elif rty != fty:
                 conv = self._fresh_tmp()
@@ -2231,10 +2770,14 @@ class Emitter:
             # this path previously hardcoded i32 and miscompiled any
             # arithmetic on i64 operands (e.g. i64 loop counters).
             cty = self._common_cmp_type(args[0], args[1], lty, rty)
-            lhs = self._coerce_int_to(lhs, lty, cty)
-            rhs = self._coerce_int_to(rhs, rty, cty)
+            unsigned = self._node_is_unsigned(args[0]) or self._node_is_unsigned(args[1])
+            lhs = self._coerce_int_to(lhs, lty, cty, unsigned)
+            rhs = self._coerce_int_to(rhs, rty, cty, unsigned)
             tmp = self._fresh_tmp()
-            iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
+            if unsigned:
+                iops = {"+": "add", "-": "sub", "*": "mul", "/": "udiv", "%": "urem"}
+            else:
+                iops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
             self._emit_line(f"{tmp} = {iops[op]} {cty} {lhs}, {rhs}")
             return tmp
 
@@ -2267,6 +2810,75 @@ class Emitter:
         return buf
 
     # ------------------------------------------------------------------
+    # Bitwise operators — main.no documents `&`/`|`/`^`/`~`/`<<`/`>>`, and
+    # the lexer/parser already tokenize them into ordinary operator-named
+    # Call nodes (`_OPERATOR_TOKENS` in parser.py), but until this fix
+    # nothing in codegen handled them: `(& a b)` (2-arg bitwise AND, as
+    # opposed to the 1-arg borrow `&x`) fell through every dispatch case
+    # in `_emit_call` and silently evaluated to `None` (dropped output,
+    # no error); `|`/`^`/`~`/`<<`/`>>` aren't recognized as borrow syntax
+    # at all, so they fell all the way through to `_emit_user_call`,
+    # emitting an outright illegal `call i32 @|(...)` (clang: "expected
+    # value token") since `|`/`^`/`~`/`<`/`>` aren't valid characters in
+    # an LLVM identifier.
+    # ------------------------------------------------------------------
+
+    def _emit_bitwise(self, op: str, args: list[N.Expr]) -> str | None:
+        if len(args) < 2:
+            return None
+        lhs = self._emit_expr(args[0])
+        rhs = self._emit_expr(args[1])
+        if lhs is None or rhs is None:
+            return None
+        lty = self._infer_llvm_type(args[0])
+        rty = self._infer_llvm_type(args[1])
+        cty = self._common_cmp_type(args[0], args[1], lty, rty)
+        unsigned = self._node_is_unsigned(args[0]) or self._node_is_unsigned(args[1])
+        lhs = self._coerce_int_to(lhs, lty, cty, unsigned)
+        rhs = self._coerce_int_to(rhs, rty, cty, unsigned)
+        tmp = self._fresh_tmp()
+        iops = {"&": "and", "|": "or", "^": "xor"}
+        self._emit_line(f"{tmp} = {iops[op]} {cty} {lhs}, {rhs}")
+        return tmp
+
+    def _emit_shift(self, op: str, args: list[N.Expr]) -> str | None:
+        if len(args) < 2:
+            return None
+        lhs = self._emit_expr(args[0])
+        rhs = self._emit_expr(args[1])
+        if lhs is None or rhs is None:
+            return None
+        lty = self._infer_llvm_type(args[0])
+        rty = self._infer_llvm_type(args[1])
+        # LLVM's shift instructions require both operands at the same
+        # width -- coerce the shift-amount side to match the shifted
+        # value's type rather than the other way around, since the
+        # amount is conventionally a small plain int regardless of the
+        # shifted value's declared width.
+        rhs = self._coerce_int_to(rhs, rty, lty, self._node_is_unsigned(args[1]))
+        tmp = self._fresh_tmp()
+        if op == "<<":
+            instr = "shl"
+        else:
+            # `>>` is arithmetic (sign-preserving) for a signed source,
+            # logical (zero-filling) for an unsigned one -- see
+            # `_env_unsigned_names`.
+            instr = "lshr" if self._node_is_unsigned(args[0]) else "ashr"
+        self._emit_line(f"{tmp} = {instr} {lty} {lhs}, {rhs}")
+        return tmp
+
+    def _emit_bitnot(self, arg: N.Expr) -> str | None:
+        val = self._emit_expr(arg)
+        if val is None:
+            return None
+        ty = self._infer_llvm_type(arg)
+        tmp = self._fresh_tmp()
+        # LLVM has no dedicated bitwise-NOT instruction; `xor <val>, -1`
+        # is the standard idiom (every bit of -1 is set).
+        self._emit_line(f"{tmp} = xor {ty} {val}, -1")
+        return tmp
+
+    # ------------------------------------------------------------------
     # Comparisons (type-aware)
     # ------------------------------------------------------------------
 
@@ -2288,7 +2900,8 @@ class Emitter:
             fty = "double" if "double" in (lty, rty) else "float"
             if not self._is_float(lty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {lhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[0]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {lty} {lhs} to {fty}")
                 lhs = conv
             elif lty != fty:
                 conv = self._fresh_tmp()
@@ -2296,7 +2909,8 @@ class Emitter:
                 lhs = conv
             if not self._is_float(rty):
                 conv = self._fresh_tmp()
-                self._emit_line(f"{conv} = sitofp i32 {rhs} to {fty}")
+                iop = "uitofp" if self._node_is_unsigned(args[1]) else "sitofp"
+                self._emit_line(f"{conv} = {iop} {rty} {rhs} to {fty}")
                 rhs = conv
             elif rty != fty:
                 conv = self._fresh_tmp()
@@ -2306,16 +2920,38 @@ class Emitter:
             fconds = {"==": "oeq", "!=": "one", "<": "olt", ">": "ogt", "<=": "ole", ">=": "oge"}
             self._emit_line(f"{tmp} = fcmp {fconds[op]} {fty} {lhs}, {rhs}")
             return tmp
+        elif (
+            lty == "ptr"
+            and rty == "ptr"
+            and self._is_string_operand(args[0])
+            and self._is_string_operand(args[1])
+        ):
+            # `string` lowers to `ptr` same as structs/arrays/maps, but
+            # unlike those it's a primitive value type with no `impl Eq`
+            # to dispatch through -- so every string `==`/`!=`/`<` used to
+            # fall into the raw-pointer-identity branch below, comparing
+            # *addresses* instead of contents. Two runtime strings (e.g.
+            # a line read via `(in)` against a literal) are essentially
+            # never the same allocation, so `(== cmd "quit")` could never
+            # match what the user actually typed -- it only ever looked
+            # like it worked for two identical string *literals*, which
+            # get interned to the same global constant by `_get_string`
+            # and were therefore accidentally pointer-equal.
+            return self._emit_string_cmp(op, lhs, rhs)
         else:
             # Integer / bool / char / pointer comparison. Choose a common
             # operand type and coerce the narrower side up to it, so that
             # `bool == bool` (i1), `i64 == i64`, and `char == 65` all emit a
             # well-typed `icmp` instead of assuming i32.
             cty = self._common_cmp_type(args[0], args[1], lty, rty)
-            lhs = self._coerce_int_to(lhs, lty, cty)
-            rhs = self._coerce_int_to(rhs, rty, cty)
+            unsigned = self._node_is_unsigned(args[0]) or self._node_is_unsigned(args[1])
+            lhs = self._coerce_int_to(lhs, lty, cty, unsigned)
+            rhs = self._coerce_int_to(rhs, rty, cty, unsigned)
             tmp = self._fresh_tmp()
-            iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
+            if unsigned:
+                iconds = {"==": "eq", "!=": "ne", "<": "ult", ">": "ugt", "<=": "ule", ">=": "uge"}
+            else:
+                iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
             self._emit_line(f"{tmp} = icmp {iconds[op]} {cty} {lhs}, {rhs}")
             return tmp
 
@@ -2336,9 +2972,13 @@ class Emitter:
             return lty
         return lty if self._sizeof(lty) >= self._sizeof(rty) else rty
 
-    def _coerce_int_to(self, val: str, src: str, dst: str) -> str:
+    def _coerce_int_to(self, val: str, src: str, dst: str, unsigned: bool = False) -> str:
         """Widen/narrow an integer value from `src` to `dst` for comparison.
-        i1 widens via zext (so `true` → 1), other ints via sext."""
+        i1 widens via zext (so `true` → 1); other ints widen via zext when
+        `unsigned` is set (the source binding has a Nyet u8/u16/u32/u64/
+        usize type -- LLVM's plain iN carries no signedness of its own, so
+        this is the only place that distinction survives), otherwise
+        sext."""
         if src == dst or dst == "ptr" or src == "ptr":
             return val
         sb, db = self._sizeof(src), self._sizeof(dst)
@@ -2346,10 +2986,49 @@ class Emitter:
             return val
         tmp = self._fresh_tmp()
         if db > sb:
-            opc = "zext" if src == "i1" else "sext"
+            opc = "zext" if (src == "i1" or unsigned) else "sext"
             self._emit_line(f"{tmp} = {opc} {src} {val} to {dst}")
         else:
             self._emit_line(f"{tmp} = trunc {src} {val} to {dst}")
+        return tmp
+
+    def _is_string_operand(self, node: N.Node) -> bool:
+        """True if `node` is confidently known to be a Nyet `string`
+        (as opposed to some other `ptr`-shaped type -- struct, array,
+        tuple, Map -- that also needs comparison to fall through to
+        raw pointer identity). Deliberately conservative: covers string
+        literals, `string`-typed let/var/param bindings (tracked in
+        `_env_string_names`), `fmt` calls, and `string`-typed struct
+        fields, which is every shape a string reaches `_emit_cmp` in in
+        idiomatic code (bind-then-compare); an inline `(in)`/`(+ ...)`
+        concat result not yet bound to a variable falls through to the
+        old pointer-identity path rather than risk misclassifying an
+        unrelated pointer type.
+        """
+        if isinstance(node, N.StringLit):
+            return True
+        if isinstance(node, N.Ident):
+            return node.name in self._env_string_names
+        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
+            return node.head.name == "fmt"
+        if isinstance(node, N.FieldAccess):
+            struct_name = self._struct_name_of(node.target)
+            if struct_name is not None:
+                return node.field_name in self._struct_string_fields.get(struct_name, set())
+        return False
+
+    def _emit_string_cmp(self, op: str, lhs: str, rhs: str) -> str:
+        """Lower a string comparison to `strcmp`, comparing contents
+        instead of the addresses `_emit_cmp`'s default `ptr` path
+        would compare. `strcmp`'s sign convention (0 iff equal, `< 0`
+        iff lhs sorts first, `> 0` iff rhs does) maps directly onto
+        every comparison op, not just `==`/`!=`."""
+        self._declare_extern("declare i32 @strcmp(ptr, ptr)")
+        cmp_result = self._fresh_tmp()
+        self._emit_line(f"{cmp_result} = call i32 @strcmp(ptr {lhs}, ptr {rhs})")
+        tmp = self._fresh_tmp()
+        iconds = {"==": "eq", "!=": "ne", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge"}
+        self._emit_line(f"{tmp} = icmp {iconds[op]} i32 {cmp_result}, 0")
         return tmp
 
     # ------------------------------------------------------------------
@@ -2408,10 +3087,12 @@ class Emitter:
 
         # float conversions
         if self._is_float(dst_ty) and not self._is_float(src_ty):
-            self._emit_line(f"{tmp} = sitofp {src_ty} {src} to {dst_ty}")
+            op = "uitofp" if self._node_is_unsigned(value) else "sitofp"
+            self._emit_line(f"{tmp} = {op} {src_ty} {src} to {dst_ty}")
             return tmp
         if not self._is_float(dst_ty) and self._is_float(src_ty):
-            self._emit_line(f"{tmp} = fptosi {src_ty} {src} to {dst_ty}")
+            op = "fptoui" if self._type_is_unsigned(target_tn) else "fptosi"
+            self._emit_line(f"{tmp} = {op} {src_ty} {src} to {dst_ty}")
             return tmp
         if self._is_float(dst_ty) and self._is_float(src_ty):
             src_bits = self._sizeof(src_ty) * 8
@@ -2487,7 +3168,8 @@ class Emitter:
 
         # plain int → int
         if dst_bits > src_bits:
-            self._emit_line(f"{tmp} = sext {src_ty} {src} to {dst_ty}")
+            opc = "zext" if self._node_is_unsigned(value) else "sext"
+            self._emit_line(f"{tmp} = {opc} {src_ty} {src} to {dst_ty}")
         elif dst_bits < src_bits:
             self._emit_line(f"{tmp} = trunc {src_ty} {src} to {dst_ty}")
         else:
@@ -2498,6 +3180,32 @@ class Emitter:
         """Return True if node resolves to a char-typed binding."""
         if isinstance(node, N.Ident):
             return node.name in self._env_char_names
+        return False
+
+    def _node_is_unsigned(self, node: N.Node | None) -> bool:
+        """Return True if node resolves to an unsigned-integer-typed
+        binding (u8/u16/u32/u64/usize) -- see `_env_unsigned_names`."""
+        if isinstance(node, N.Ident):
+            return node.name in self._env_unsigned_names
+        # A struct field declared with an unsigned type, e.g. `(. c val)`
+        # where `val:u32` -- reuses `_struct_field_nyet` (the same
+        # per-field Nyet-type-name registry `_infer_nyet_type_name`'s own
+        # FieldAccess case reads) rather than a separate table.
+        if isinstance(node, N.FieldAccess):
+            outer = self._infer_nyet_type_name(node.target)
+            if outer is not None:
+                field_ty = self._struct_field_nyet.get(outer, {}).get(node.field_name)
+                return field_ty in self._UNSIGNED_NAMES
+        return False
+
+    def _type_is_unsigned(self, tn: N.TypeNode | None) -> bool:
+        """Return True if `tn` is itself a u8/u16/u32/u64/usize type
+        annotation -- for a cast's declared TARGET type, where there is
+        no binding/value node to consult `_node_is_unsigned` on."""
+        if isinstance(tn, N.RefType):
+            return self._type_is_unsigned(tn.inner)
+        if isinstance(tn, (N.PrimType, N.NamedType)):
+            return tn.name in self._UNSIGNED_NAMES
         return False
 
     # ------------------------------------------------------------------
@@ -2512,20 +3220,41 @@ class Emitter:
         return ptr
 
     def _struct_size_bytes(self, name: str) -> int:
-        """Approximate struct size (sum of field sizes, rounded up to 8)."""
+        """Struct size matching LLVM's natural (non-packed) layout: each
+        field is placed at its own alignment (inserting interior padding
+        as needed), then the total is rounded up to a multiple of 8."""
         fields = self._structs.get(name, [])
-        total = sum(self._sizeof(ty) for _, ty in fields)
-        if total == 0:
+        if not fields:
             return 8
-        # Round up to multiple of 8 for alignment
-        return (total + 7) & ~7
+        offset = 0
+        for _, ty in fields:
+            align = self._alignof(ty)
+            offset = (offset + align - 1) & ~(align - 1)
+            offset += self._sizeof(ty)
+        return (offset + 7) & ~7
+
+    def _field_offsets(self, types: list[str]) -> list[int]:
+        """Byte offsets of `types` laid out sequentially with natural
+        alignment/padding (mirrors LLVM's struct layout), so a sum type's
+        multi-field variant payload doesn't misalign its later fields."""
+        offset = 0
+        offsets = []
+        for ty in types:
+            align = self._alignof(ty)
+            offset = (offset + align - 1) & ~(align - 1)
+            offsets.append(offset)
+            offset += self._sizeof(ty)
+        return offsets
 
     def _sum_type_size_bytes(self, name: str) -> int:
-        """Size of a sum type = tag + max payload."""
+        """Size of a sum type = tag + max (padded) payload."""
         variants = self._sum_types.get(name, [])
         max_payload = 0
         for _, types in variants:
-            payload = sum(self._sizeof(t) for t in types)
+            if not types:
+                continue
+            offsets = self._field_offsets(types)
+            payload = offsets[-1] + self._sizeof(types[-1])
             if payload > max_payload:
                 max_payload = payload
         total = 4 + max_payload  # i32 tag + payload
@@ -2590,22 +3319,22 @@ class Emitter:
             self._emit_line(
                 f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 1"
             )
-            offset = 0
+            offsets = self._field_offsets(payload_types)
             for i, arg in enumerate(args):
                 if i >= len(payload_types):
                     break
                 val = self._emit_expr(arg)
                 if val is not None:
                     ftype = payload_types[i]
-                    if offset == 0:
+                    off = offsets[i]
+                    if off == 0:
                         field_ptr = payload_ptr
                     else:
                         field_ptr = self._fresh_tmp()
                         self._emit_line(
-                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {offset}"
+                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}"
                         )
                     self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
-                    offset += self._sizeof(ftype)
 
         return ptr
 
@@ -2671,6 +3400,7 @@ class Emitter:
 
         end_label = self._fresh_label("match_end")
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
+        result_ty = self._result_slot_type(result_ty)
         result_ptr = self._emit_alloca(result_ty)
 
         for arm in node.arms:
@@ -2773,23 +3503,23 @@ class Emitter:
                     f"{payload_ptr} = getelementptr inbounds %{actual_sum}, "
                     f"ptr {scrut_val}, i32 0, i32 1"
                 )
-                offset = 0
+                offsets = self._field_offsets(payload_types)
                 for pi, ppat in enumerate(pat.args):
                     if pi >= len(payload_types):
                         break
                     pty = payload_types[pi]
                     inner_nyet = nyet_names[pi] if pi < len(nyet_names) else None
-                    if offset == 0:
+                    off = offsets[pi]
+                    if off == 0:
                         fld_ptr = payload_ptr
                     else:
                         fld_ptr = self._fresh_tmp()
                         self._emit_line(
-                            f"{fld_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {offset}"
+                            f"{fld_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}"
                         )
                     val = self._fresh_tmp()
                     self._emit_line(f"{val} = load {pty}, ptr {fld_ptr}")
                     self._emit_pattern_test_value(val, pty, inner_nyet, ppat, fail_label)
-                    offset += self._sizeof(pty)
             return
         if isinstance(pat, N.LitPat):
             # Match a literal against the whole sum struct — treat as fail.
@@ -2829,11 +3559,19 @@ class Emitter:
                 dead = self._fresh_label("after_dead")
                 self._emit_label(dead)
                 return
-            cmp = self._fresh_tmp()
-            if llvm_ty in ("double", "float"):
-                self._emit_line(f"{cmp} = fcmp oeq {llvm_ty} {val}, {cmp_val}")
+            # A LitPat's own literal node tells us unambiguously whether
+            # this is a string comparison (unlike `llvm_ty`, which is
+            # just "ptr" for strings/structs/arrays/Maps alike) — no
+            # need for `_is_string_operand`'s more conservative,
+            # AST-shape-based guess.
+            if isinstance(pat.value, N.StringLit):
+                cmp = self._emit_string_cmp("==", val, cmp_val)
             else:
-                self._emit_line(f"{cmp} = icmp eq {llvm_ty} {val}, {cmp_val}")
+                cmp = self._fresh_tmp()
+                if llvm_ty in ("double", "float"):
+                    self._emit_line(f"{cmp} = fcmp oeq {llvm_ty} {val}, {cmp_val}")
+                else:
+                    self._emit_line(f"{cmp} = icmp eq {llvm_ty} {val}, {cmp_val}")
             ok_label = self._fresh_label("lit_ok")
             self._emit_line(f"br i1 {cmp}, label %{ok_label}, label %{fail_label}")
             self._emit_label(ok_label)
@@ -2861,10 +3599,21 @@ class Emitter:
         self._emit_label(dead)
 
     def _emit_match_simple(self, scrut: str, node: N.Match) -> str | None:
-        """Simple value-based match (integers, etc.)."""
+        """Simple value-based match — integers, floats, bools, and
+        strings. `scrut_ty`/`scrut_is_string` come from the scrutinee
+        expression itself (previously hardcoded to `i32` unconditionally,
+        which broke every non-int scrutinee: a `string` match emitted
+        `icmp eq i32` against a `ptr` value — a straight type mismatch —
+        and even where the width happened to still verify, e.g. `bool`,
+        it was comparing the wrong bit width by luck rather than by
+        design)."""
         end_label = self._fresh_label("match_end")
         result_ty = self._infer_llvm_type(node.arms[0].body) if node.arms else "i32"
+        result_ty = self._result_slot_type(result_ty)
         result_ptr = self._emit_alloca(result_ty)
+
+        scrut_ty = self._infer_llvm_type(node.scrutinee)
+        scrut_is_string = self._is_string_operand(node.scrutinee)
 
         next_label = self._fresh_label("match_next")
         for i, arm in enumerate(node.arms):
@@ -2875,9 +3624,11 @@ class Emitter:
                 # Default arm
                 if isinstance(pat, N.VarPat):
                     saved = dict(self._env)
-                    vptr = self._emit_alloca("i32")
-                    self._emit_line(f"store i32 {scrut}, ptr {vptr}")
-                    self._env[pat.name] = (vptr, "i32")
+                    vptr = self._emit_alloca(scrut_ty)
+                    self._emit_line(f"store {scrut_ty} {scrut}, ptr {vptr}")
+                    self._env[pat.name] = (vptr, scrut_ty)
+                    if scrut_is_string:
+                        self._env_string_names.add(pat.name)
 
                 body_val = self._emit_expr(arm.body)
                 if body_val is not None:
@@ -2890,8 +3641,14 @@ class Emitter:
 
             elif isinstance(pat, N.LitPat):
                 cmp_val = self._emit_expr(pat.value)
-                cmp = self._fresh_tmp()
-                self._emit_line(f"{cmp} = icmp eq i32 {scrut}, {cmp_val}")
+                if scrut_is_string:
+                    cmp = self._emit_string_cmp("==", scrut, cmp_val)
+                else:
+                    cmp = self._fresh_tmp()
+                    if scrut_ty in ("double", "float"):
+                        self._emit_line(f"{cmp} = fcmp oeq {scrut_ty} {scrut}, {cmp_val}")
+                    else:
+                        self._emit_line(f"{cmp} = icmp eq {scrut_ty} {scrut}, {cmp_val}")
 
                 arm_label = self._fresh_label("match_arm")
                 if is_last:
@@ -3063,6 +3820,23 @@ class Emitter:
     # If expression
     # ------------------------------------------------------------------
 
+    def _result_slot_type(self, inferred_ty: str) -> str:
+        """Sanitize an `_infer_llvm_type` result before it's used to size
+        an `alloca` for an `if`/`match` result slot.
+
+        A branch or arm that's a bare call to a `-> unit` function (not
+        wrapped in a `do` alongside other statements) makes
+        `_infer_llvm_type` return that callee's real LLVM return type,
+        "void" — which is only legal as a function's own result type,
+        never as a local/alloca type. `_emit_expr` never actually
+        produces an SSA value for such a call anyway (every caller
+        guards its store with `if val is not None`), so the slot's type
+        only has to be *some* valid one; `ptr` is what an untyped/
+        no-value branch already defaults to when there's nothing to
+        infer from at all (e.g. `if` with no `then_branch`).
+        """
+        return "ptr" if inferred_ty == "void" else inferred_ty
+
     def _emit_if(self, node: N.If) -> str | None:
         cond = self._emit_expr(node.cond)
         if cond is None:
@@ -3073,6 +3847,7 @@ class Emitter:
         end_label = self._fresh_label("ifend")
 
         result_ty = self._infer_llvm_type(node.then_branch) if node.then_branch else "ptr"
+        result_ty = self._result_slot_type(result_ty)
         result_ptr = self._emit_alloca(result_ty)
         # Zero-initialize
         if result_ty == "ptr":
@@ -3181,7 +3956,8 @@ class Emitter:
                     val_ty = self._infer_llvm_type(node.value)
                     if self._is_float(break_ty) and not self._is_float(val_ty):
                         conv = self._fresh_tmp()
-                        self._emit_line(f"{conv} = sitofp {val_ty} {val} to {break_ty}")
+                        iop = "uitofp" if self._node_is_unsigned(node.value) else "sitofp"
+                        self._emit_line(f"{conv} = {iop} {val_ty} {val} to {break_ty}")
                         val = conv
                     self._emit_line(f"store {break_ty} {val}, ptr {result_ptr}")
             self._emit_line(f"br label %{end_label}")
@@ -3196,7 +3972,14 @@ class Emitter:
             ty = self._llvm_type(node.type)
             nyet_name = self._nyet_type_name(node.type)
         elif node.value:
-            ty = self._infer_llvm_type(node.value)
+            # An unannotated `(let r (some_unit_fn))` -- e.g. a macro
+            # like `time_it` that binds a caller-supplied body's result
+            # regardless of its type -- makes this the same "void isn't
+            # a valid local type" trap `_emit_if`/`_emit_match` had:
+            # `_infer_llvm_type` reports the callee's real return type,
+            # "void" for a bare call to a `-> unit` fn, which `alloca`
+            # rejects outright. Route through the same sanitizer.
+            ty = self._result_slot_type(self._infer_llvm_type(node.value))
             nyet_name = self._infer_nyet_type_name(node.value)
         else:
             ty = "i32"
@@ -3213,6 +3996,14 @@ class Emitter:
         if elem_ty is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
             elem_ty = self._infer_llvm_type(node.value.elements[0])
         if elem_ty is not None:
+            elem_nyet: str | None = None
+            if node.type is not None:
+                elem_nyet = self._array_elem_nyet_name(node.type)
+            if elem_nyet is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
+                elem_nyet = self._infer_nyet_type_name(node.value.elements[0])
+            elem_fn_sig: tuple[list[str], str] | None = None
+            if isinstance(node.value, N.ArrayLit) and node.value.elements:
+                elem_fn_sig = self._fn_sig_of_value(node.value.elements[0])
             ptr = self._emit_alloca("ptr")
             if (
                 isinstance(node.value, N.Call)
@@ -3234,20 +4025,36 @@ class Emitter:
                 self._emit_line(f"store ptr null, ptr {ptr}")
             self._env[node.name] = (ptr, "ptr")
             self._env_array_elem[node.name] = elem_ty
+            if elem_nyet is not None:
+                self._env_array_elem_nyet[node.name] = elem_nyet
+            if elem_fn_sig is not None:
+                self._env_array_elem_fn_sig[node.name] = elem_fn_sig
             return None
 
         # Tuple bindings: store the heap pointer and remember the
         # synthesized tuple struct type so `(name i)` lowers correctly.
-        # Detected via either an explicit `#(T1 T2)` annotation (needed
-        # when the rhs isn't a literal, e.g. a call returning a tuple)
-        # or a literal `TupleLit` rhs.
+        # Detected via an explicit `#(T1 T2)` annotation, a literal
+        # `TupleLit` rhs, or a call to a fn registered in
+        # `_fn_ret_tuple_types` (needed when neither of the above holds,
+        # e.g. `(let p (make_pair))` with no annotation).
         tuple_elem_tys: list[str] | None = None
+        tuple_elem_nyet: list[str | None] | None = None
+        tname: str | None = None
         if isinstance(node.type, N.TupleType):
             tuple_elem_tys = [self._llvm_type(et) for et in node.type.elements]
+            tuple_elem_nyet = [self._nyet_type_name(et) for et in node.type.elements]
         elif isinstance(node.value, N.TupleLit):
             tuple_elem_tys = [self._infer_llvm_type(e) for e in node.value.elements]
-        if tuple_elem_tys is not None:
-            tname = self._get_or_register_tuple_type(tuple_elem_tys)
+            tuple_elem_nyet = [self._infer_nyet_type_name(e) for e in node.value.elements]
+        elif (
+            isinstance(node.value, N.Call)
+            and isinstance(node.value.head, N.Ident)
+            and node.value.head.name in self._fn_ret_tuple_types
+        ):
+            tname = self._fn_ret_tuple_types[node.value.head.name]
+        if tuple_elem_tys is not None or tname is not None:
+            if tname is None:
+                tname = self._get_or_register_tuple_type(tuple_elem_tys, tuple_elem_nyet)
             ptr = self._emit_alloca("ptr")
             if node.value is not None:
                 val = self._emit_expr(node.value)
@@ -3271,6 +4078,14 @@ class Emitter:
         if map_val_ty is None and isinstance(node.value, N.MapLit) and node.value.entries:
             map_val_ty = self._infer_llvm_type(node.value.entries[0][1])
         if map_val_ty is not None:
+            map_val_nyet: str | None = None
+            if node.type is not None:
+                map_val_nyet = self._map_val_nyet_name(node.type)
+            if map_val_nyet is None and isinstance(node.value, N.MapLit) and node.value.entries:
+                map_val_nyet = self._infer_nyet_type_name(node.value.entries[0][1])
+            map_val_fn_sig: tuple[list[str], str] | None = None
+            if isinstance(node.value, N.MapLit) and node.value.entries:
+                map_val_fn_sig = self._fn_sig_of_value(node.value.entries[0][1])
             ptr = self._emit_alloca("ptr")
             val = self._emit_expr(node.value) if node.value is not None else None
             if val is not None:
@@ -3279,6 +4094,10 @@ class Emitter:
                 self._emit_line(f"store ptr null, ptr {ptr}")
             self._env[node.name] = (ptr, "ptr")
             self._env_map_val_ty[node.name] = map_val_ty
+            if map_val_nyet is not None:
+                self._env_map_val_nyet[node.name] = map_val_nyet
+            if map_val_fn_sig is not None:
+                self._env_map_val_fn_sig[node.name] = map_val_fn_sig
             return None
 
         # For struct/sum-type bindings, the value is already a ptr (from construction)
@@ -3306,7 +4125,8 @@ class Emitter:
                     val_ty = self._infer_llvm_type(node.value)
                     if self._is_float(ty) and not self._is_float(val_ty):
                         conv = self._fresh_tmp()
-                        self._emit_line(f"{conv} = sitofp {val_ty} {val} to {ty}")
+                        iop = "uitofp" if self._node_is_unsigned(node.value) else "sitofp"
+                        self._emit_line(f"{conv} = {iop} {val_ty} {val} to {ty}")
                         val = conv
                     elif not self._is_float(ty) and not self._is_float(val_ty) and val_ty != ty:
                         # Integer width mismatch — coerce to match declared type
@@ -3314,7 +4134,8 @@ class Emitter:
                         dst_bits = self._sizeof(ty) * 8
                         conv = self._fresh_tmp()
                         if dst_bits > src_bits:
-                            self._emit_line(f"{conv} = sext {val_ty} {val} to {ty}")
+                            opc = "zext" if self._node_is_unsigned(node.value) else "sext"
+                            self._emit_line(f"{conv} = {opc} {val_ty} {val} to {ty}")
                         else:
                             self._emit_line(f"{conv} = trunc {val_ty} {val} to {ty}")
                         val = conv
@@ -3323,6 +4144,9 @@ class Emitter:
             # Track char bindings so _emit_cast can detect char→int conversions.
             if node.type is not None and self._nyet_type_name(node.type) == "char":
                 self._env_char_names.add(node.name)
+            # Track unsigned-typed bindings -- see `_env_unsigned_names`.
+            if node.type is not None and self._nyet_type_name(node.type) in self._UNSIGNED_NAMES:
+                self._env_unsigned_names.add(node.name)
             # Track string bindings so `(name i)` lowers to a byte index. A
             # `:string` annotation is authoritative; otherwise a bare string
             # literal RHS (`(let z "hi")`) infers the same shape.
@@ -3355,12 +4179,59 @@ class Emitter:
                 return self._fn_sigs[value.name]
             if value.name in self._env_fn_sig:
                 return self._env_fn_sig[value.name]
+        # A Map[K V] lookup `(m key)` where `m`'s values are themselves
+        # closures/fn pointers (a dispatch-table pattern) -- see
+        # `_env_map_val_fn_sig`.
+        if (
+            isinstance(value, N.Call)
+            and isinstance(value.head, N.Ident)
+            and value.head.name in self._env_map_val_fn_sig
+            and len(value.args) == 1
+            and value.head.name in self._env_map_val_ty
+        ):
+            return self._env_map_val_fn_sig[value.head.name]
+        # Same shape, for an Array[T] of closures/fn pointers.
+        if (
+            isinstance(value, N.Call)
+            and isinstance(value.head, N.Ident)
+            and value.head.name in self._env_array_elem_fn_sig
+            and len(value.args) == 1
+            and value.head.name in self._env_array_elem
+        ):
+            return self._env_array_elem_fn_sig[value.head.name]
         return None
 
     def _infer_nyet_type_name(self, node: N.Node) -> str | None:
         """Try to infer the Nyet type name from an expression."""
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
             name = node.head.name
+            # Array indexing `(arr i)` where `arr` holds struct/sum-type
+            # elements — a bound name shadows any same-named function,
+            # matching `_emit_call`'s own array-indexing precedence.
+            if (
+                name in self._env_array_elem_nyet
+                and len(node.args) == 1
+                and name in self._env_array_elem
+            ):
+                return self._env_array_elem_nyet[name]
+            # Same shape, for a Map[K V] lookup `(m key)`.
+            if (
+                name in self._env_map_val_nyet
+                and len(node.args) == 1
+                and name in self._env_map_val_ty
+            ):
+                return self._env_map_val_nyet[name]
+            # Tuple indexing `(t i)` where element `i` is itself a
+            # struct/sum type and `i` is a literal (the only case a
+            # specific field can be resolved at all, same restriction
+            # `_infer_llvm_type` already has for this shape).
+            if (
+                name in self._env_tuple_types
+                and len(node.args) == 1
+                and isinstance(node.args[0], N.IntLit)
+            ):
+                tname = self._env_tuple_types[name]
+                return self._struct_field_nyet.get(tname, {}).get(str(node.args[0].value))
             if name in self._structs:
                 return name
             if name in self._variant_ctors:
@@ -3378,8 +4249,62 @@ class Emitter:
                     mangled = self._method_impls[(sn, name)]
                     if mangled in self._fn_ret_nyet_names:
                         return self._fn_ret_nyet_names[mangled]
+            # Generic fn — mirrors `_infer_llvm_type`'s matching case.
+            # `_fn_ret_nyet_names[name]` above only ever holds a
+            # *template's* own (unsubstituted, generic-param-shaped)
+            # return type name, never a specific instantiation's, so a
+            # generic-returning call bound with no annotation
+            # (`(let p (make_pair 5 "hello"))`) needs its own type args
+            # inferred from this call's own arguments.
+            if name in self._fn_templates:
+                tmpl = self._fn_templates[name]
+                type_args = self._infer_type_args_for_fn(tmpl, node.args)
+                if type_args is not None:
+                    mangled = self._mangle(name, type_args)
+                    if mangled in self._fn_ret_nyet_names:
+                        return self._fn_ret_nyet_names[mangled]
+                    env: dict[str, N.TypeNode] = {}
+                    for gp, targ in zip(tmpl.generics, type_args, strict=False):
+                        env[gp.name] = N.NamedType(tmpl.span, targ)
+                    rt = self._subst_type(tmpl.return_type, env)
+                    return self._nyet_type_name(rt)
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Path)
+            and len(node.head.segments) == 2
+        ):
+            # `(Type/name ...)` — see `_emit_call`'s matching case.
+            mangled = self._method_impls.get(tuple(node.head.segments))
+            if mangled is not None:
+                return self._fn_ret_nyet_names.get(mangled)
         if isinstance(node, N.Ident) and node.name in self._env_struct_name:
             return self._env_struct_name[node.name]
+        # A struct field that itself holds a struct/sum-type value —
+        # `(. o inner)`, chained onto another field access or bound
+        # with no `&T` annotation.
+        if isinstance(node, N.FieldAccess):
+            outer = self._infer_nyet_type_name(node.target)
+            if outer is not None:
+                return self._struct_field_nyet.get(outer, {}).get(node.field_name)
+        # `if`/`match`/`do` yield the type of their tail expression —
+        # mirrors `_infer_llvm_type`'s matching cases (used to size an
+        # alloca), which already handle these; without this, binding a
+        # struct-returning `(let p (if cond (make_a) (make_b)))` with no
+        # `&T` annotation lost the Nyet name the same way every other
+        # case fixed in this session did, even though the *LLVM* type
+        # ("ptr") was already inferred correctly.
+        if isinstance(node, N.If) and node.then_branch:
+            return self._infer_nyet_type_name(node.then_branch)
+        if isinstance(node, N.Match) and node.arms:
+            return self._infer_nyet_type_name(node.arms[0].body)
+        if isinstance(node, N.Do) and node.exprs:
+            prior_let = self._find_do_tail_let(node)
+            if prior_let is not None:
+                if prior_let.type is not None:
+                    return self._nyet_type_name(prior_let.type)
+                if prior_let.value is not None:
+                    return self._infer_nyet_type_name(prior_let.value)
+            return self._infer_nyet_type_name(node.exprs[-1])
         return None
 
     def _emit_assign(self, node: N.Assign) -> str | None:
@@ -3414,6 +4339,22 @@ class Emitter:
             val = self._emit_expr(node.value)
             if val is not None:
                 self._emit_line(f"store {ty} {val}, ptr {ptr}")
+            return None
+        if isinstance(target, N.Ident):
+            # Same "undefined identifier at codegen time" case _emit_ident
+            # raises for a read -- most commonly a `(fn! ...)` closure
+            # writing a variable from its enclosing scope, which
+            # `_lift_closures` hoists to a function with no access to it.
+            # Falling through to the generic `return None` below used to
+            # silently skip the assignment (and never even evaluate
+            # `node.value`, so a read-then-write like `(= counter (+
+            # counter 1))` didn't hit _emit_ident's own check either).
+            raise NotImplementedError(
+                f"undefined identifier '{target.name}' at codegen time in an "
+                f"assignment -- most likely a `(fn! ...)` closure writing a "
+                f"variable from its enclosing scope: variable capture in "
+                f"closures is not implemented yet (see CONTINUATION_PLAN.md)"
+            )
         return None
 
     # ------------------------------------------------------------------
@@ -3594,11 +4535,32 @@ class Emitter:
         self._emit_line(f"{ch} = zext i8 {byte} to i32")
         return ch
 
-    def _get_or_register_tuple_type(self, elem_tys: list[str]) -> str:
+    def _get_or_register_tuple_type(
+        self, elem_tys: list[str], elem_nyet: list[str | None] | None = None
+    ) -> str:
         """Return the synthesized struct type name for a tuple shape,
         registering (and emitting a `%name = type {...}` line for) it on
         first use. Fields are named "0", "1", ... so the existing
-        struct-field GEP machinery applies unchanged."""
+        struct-field GEP machinery applies unchanged.
+
+        `elem_nyet`, when given, records each element's Nyet type name
+        in `_struct_field_nyet` (keyed like any other struct) so `(t i)`
+        on a tuple containing a struct/sum element keeps working for a
+        subsequent `(. (t i) field)` — see `_infer_nyet_type_name`'s
+        tuple-indexing case. Cached by LLVM shape only (`elem_tys`), so
+        two tuples that happen to share an LLVM shape (e.g. both a
+        single `ptr` field) but hold *different* Nyet element types
+        will share one synthesized type; whichever call registers it
+        first wins for this metadata. This can't cause a wrong field
+        *load* (the LLVM layout is genuinely identical either way,
+        which is why sharing the type is sound at all) — worst case, a
+        later caller's element is field-accessed as if it were the
+        earlier caller's struct type, which would only actually go
+        wrong if the two structs are unrelated types that happen to
+        share a field name with a different meaning. Accepted same as
+        the analogous existing limitation for `Array[T]` elements (see
+        CONTINUATION_PLAN.md's generics-inference note).
+        """
         key = tuple(elem_tys)
         if key in self._tuple_types:
             return self._tuple_types[key]
@@ -3607,6 +4569,10 @@ class Emitter:
         llvm_fields = ", ".join(elem_tys)
         self._struct_type_lines.append(f"%{name} = type {{ {llvm_fields} }}")
         self._tuple_types[key] = name
+        if elem_nyet is not None:
+            self._struct_field_nyet[name] = {
+                str(i): nyet for i, nyet in enumerate(elem_nyet) if nyet is not None
+            }
         return name
 
     def _emit_tuple_lit(self, node: N.TupleLit) -> str | None:
@@ -3614,14 +4580,16 @@ class Emitter:
         struct construction (heap-allocated so tuples can be returned)."""
         elem_vals: list[str] = []
         elem_tys: list[str] = []
+        elem_nyet: list[str | None] = []
         for e in node.elements:
             v = self._emit_expr(e)
             if v is None:
                 return None
             elem_vals.append(v)
             elem_tys.append(self._infer_llvm_type(e))
+            elem_nyet.append(self._infer_nyet_type_name(e))
 
-        tname = self._get_or_register_tuple_type(elem_tys)
+        tname = self._get_or_register_tuple_type(elem_tys, elem_nyet)
         ptr = self._heap_alloc_struct(tname, self._struct_size_bytes(tname))
         for i, (v, ty) in enumerate(zip(elem_vals, elem_tys, strict=False)):
             fptr = self._fresh_tmp()
@@ -3673,7 +4641,8 @@ class Emitter:
         val_ty = self._infer_llvm_type(value)
         if self._is_float(elem_ty) and not self._is_float(val_ty):
             conv = self._fresh_tmp()
-            self._emit_line(f"{conv} = sitofp {val_ty} {val} to {elem_ty}")
+            iop = "uitofp" if self._node_is_unsigned(value) else "sitofp"
+            self._emit_line(f"{conv} = {iop} {val_ty} {val} to {elem_ty}")
             val = conv
 
         base = self._array_data_base(arr)
@@ -3928,7 +4897,9 @@ class Emitter:
     def _emit_hof_zip(self, arr1_name: str, arr2_name: str) -> str | None:
         elem1_ty = self._env_array_elem[arr1_name]
         elem2_ty = self._env_array_elem[arr2_name]
-        tname = self._get_or_register_tuple_type([elem1_ty, elem2_ty])
+        elem1_nyet = self._env_array_elem_nyet.get(arr1_name)
+        elem2_nyet = self._env_array_elem_nyet.get(arr2_name)
+        tname = self._get_or_register_tuple_type([elem1_ty, elem2_ty], [elem1_nyet, elem2_nyet])
         tsize = self._struct_size_bytes(tname)
 
         arr1, len1 = self._array_ptr_and_len(arr1_name)

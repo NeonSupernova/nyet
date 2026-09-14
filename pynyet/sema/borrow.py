@@ -613,6 +613,75 @@ def _returned_idents(fn: N.FnDecl) -> set[str]:
     return acc
 
 
+def _is_array_type(tn: N.TypeNode | None) -> bool:
+    """True if `tn` is `Array[T]` (or `&Array[T]`/`&!Array[T]`)."""
+    if isinstance(tn, N.RefType):
+        return _is_array_type(tn.inner)
+    if isinstance(tn, N.GenericType):
+        base = tn.base
+        return isinstance(base, (N.NamedType, N.PrimType)) and base.name == "Array"
+    return False
+
+
+def _walk_array_local_names(node: N.Node | None, acc: set[str]) -> None:
+    """Recursively collect every `let`/`var` name whose declared type is
+    `Array[T]`, or whose value is an array literal -- i.e. every local
+    that codegen (`_env_array_elem` in emit.py) will treat as an array
+    binding. Flat, not scope-aware, same tradeoff as
+    `_walk_by_value_call_args` -- adequate for drop-insertion's purposes."""
+    if node is None or not is_dataclass(node):
+        return
+    if isinstance(node, N.LetDecl):
+        if _is_array_type(node.type) or isinstance(node.value, N.ArrayLit):
+            acc.add(node.name)
+    for f in fields(node):
+        v = getattr(node, f.name, None)
+        if isinstance(v, N.Node):
+            _walk_array_local_names(v, acc)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, N.Node):
+                    _walk_array_local_names(item, acc)
+
+
+def _walk_array_index_reads(node: N.Node | None, array_names: set[str], acc: set[str]) -> None:
+    """Recursively collect every `let`/`var` name whose value is
+    `(arr i)` for some `arr` in `array_names` -- i.e. a struct read out
+    of an array by value, never wrapped in `&`/`&!`.
+
+    Indexing an `Array[T]` never clones `T` (arrays of struct/sum
+    elements store the same pointers `_emit_struct_construct` already
+    handed out — see emit.py's array-of-`ptr` layout), so such a
+    binding aliases storage the array still owns regardless of what
+    type annotation it's given. Excluding these from drop-insertion is
+    the general fix for what was previously only a documented
+    workaround ("bind with an explicit `&T` annotation instead"): a
+    plain, non-`&`-annotated `(let a:Point (pts i))` used to still get
+    a `free` inserted for `a` at scope exit, corrupting/double-freeing
+    the array's own live element the moment two such reads (or two
+    calls to a function doing one read) existed at once.
+    """
+    if node is None or not is_dataclass(node):
+        return
+    if isinstance(node, N.LetDecl):
+        val = node.value
+        if (
+            isinstance(val, N.Call)
+            and isinstance(val.head, N.Ident)
+            and val.head.name in array_names
+            and len(val.args) == 1
+        ):
+            acc.add(node.name)
+    for f in fields(node):
+        v = getattr(node, f.name, None)
+        if isinstance(v, N.Node):
+            _walk_array_index_reads(v, array_names, acc)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, N.Node):
+                    _walk_array_index_reads(item, array_names, acc)
+
+
 def compute_drop_names(program: list[N.Node]) -> dict[str, list[str]]:
     """For each function, the names of local (non-param) struct-typed
     bindings that are still alive (not moved) and not returned when the
@@ -631,7 +700,13 @@ def compute_drop_names(program: list[N.Node]) -> dict[str, list[str]]:
     legitimately Copy at the language level, but codegen still passes
     it as an aliased pointer, never a true bitwise duplicate, so
     freeing the original after handing that pointer to another
-    function would be unsound regardless of Copy-ness.
+    function would be unsound regardless of Copy-ness. For the same
+    reason, also excludes any binding whose value is a struct read out
+    of a known `Array[T]` local by index (see
+    `_walk_array_index_reads`) -- indexing never clones, so a plain
+    (non-`&`) `(let a:Point (pts i))` used to still get a `free`
+    inserted, double-freeing storage the array still owns the moment a
+    second such read (or a second call doing one) existed.
 
     Runs its own BorrowChecker pass rather than threading state through
     `check_borrows` -- keeps this additive and isolated from the
@@ -649,6 +724,10 @@ def compute_drop_names(program: list[N.Node]) -> dict[str, list[str]]:
         returned = _returned_idents(fn)
         by_value_args: set[str] = set()
         _walk_by_value_call_args(fn.body, by_value_args)
+        array_names: set[str] = {p.name for p in fn.params if _is_array_type(p.type)}
+        _walk_array_local_names(fn.body, array_names)
+        array_index_reads: set[str] = set()
+        _walk_array_index_reads(fn.body, array_names, array_index_reads)
         param_names = {p.name for p in fn.params}
         names = []
         for name, b in final.items():
@@ -661,6 +740,8 @@ def compute_drop_names(program: list[N.Node]) -> dict[str, list[str]]:
             if name in returned:
                 continue
             if name in by_value_args:
+                continue
+            if name in array_index_reads:
                 continue
             if b.type_name is None or b.type_name not in bc._struct_fields:
                 continue

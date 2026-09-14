@@ -1,0 +1,20 @@
+;; Regression test: `(in)` used to re-open a brand new stdio handle on
+;; fd 0 (via `fdopen`) on every call -- not just every call SITE, but
+;; every runtime iteration of a loop containing one -- which silently
+;; dropped all but the first line of real input, and once input was
+;; exhausted, an unchecked `fgets` NULL (EOF) return left the read
+;; buffer's stale contents untouched, so a REPL kept "reading" the
+;; first line forever instead of ever observing end of input.
+;;
+;; This harness doesn't pipe any stdin to the compiled binary, so both
+;; calls below hit EOF immediately -- which is exactly what exercises
+;; the fix: the stdin handle must be cached (not re-opened) across the
+;; two calls, and each must come back as an empty string rather than
+;; hanging, crashing, or replaying garbage.
+;; Expected: "eof" printed twice, both times with an empty line after.
+
+(fn main () -> unit
+  (let a:string (in))
+  (out "eof[") (out a) (out "]\n")
+  (let b:string (in))
+  (out "eof[") (out b) (out "]\n"))

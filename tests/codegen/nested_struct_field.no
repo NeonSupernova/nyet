@@ -1,0 +1,18 @@
+;; Regression test: a struct field that itself holds a struct value --
+;; `(. o inner)` -- lost track of which struct type it was, whether
+;; bound to a `let` with no `&T` annotation or chained directly onto
+;; another field access. `_struct_name_of`/`_infer_nyet_type_name` had
+;; no case for a `FieldAccess` node at all (only a plain bound `Ident`
+;; or the array/map-index Call shapes fixed earlier), so `(. i val)` /
+;; `(. (. o inner) val)` silently produced no field load.
+;; Expected: 42 / 42
+
+(struct Inner val:i32)
+(struct Outer inner:Inner)
+
+(fn main () -> unit
+  (do
+    (let o (Outer inner:(Inner val:42)))
+    (let i (. o inner))
+    (out (. i val)) (out "\n")
+    (out (. (. o inner) val)) (out "\n")))

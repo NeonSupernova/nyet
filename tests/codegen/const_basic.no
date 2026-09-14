@@ -1,0 +1,24 @@
+;;;; Top-level `const` must be inlined at every use site: referencing it
+;;;; in arithmetic, comparisons, and a loop guard should all see the real
+;;;; value, not silently emit nothing (see main.no's Constants section).
+
+(const MAX:i32 5)
+(const GREETING:string "hi")
+(const PI:f64 3.5)
+
+(fn main () -> unit
+  (do
+    (out MAX)
+    (out "\n")
+    (out (+ MAX 1))
+    (out "\n")
+    (out GREETING)
+    (out "\n")
+    (out PI)
+    (out "\n")
+    (var i:i32 0)
+    (loop
+      (if (== i MAX) (break) pass)
+      (out i)
+      (= i (+ i 1)))
+    (out "done\n")))

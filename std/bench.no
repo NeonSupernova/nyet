@@ -1,0 +1,32 @@
+;;;; std/bench.no
+;;;
+;;; Real Nyet source, not a Python compiler builtin -- built on `now`,
+;;; the one core primitive that lets user-space Nyet code read elapsed
+;;; CPU time (see pynyet/codegen/emit.py's `_emit_now`); everything
+;;; here is ordinary Nyet, in the same spirit as `std/collections.no`
+;;; being built on `array_new`.
+;;;
+;;; `now` returns CPU time in seconds as an `f64`, backed by libc
+;;; `clock()` -- process CPU time, not wall-clock time. That makes
+;;; this module a good fit for timing CPU-bound Nyet code (loops,
+;;; arithmetic, struct/array/string operations); it will not correctly
+;;; measure time spent blocked on I/O.
+
+(module std/bench)
+
+;;; `(elapsed_ms start)` -- milliseconds between `start` (an earlier
+;;; `(now)` reading) and this call.
+(pub fn elapsed_ms (start:f64) -> f64
+  (* (- (now) start) 1000.0))
+
+;;; `(time_it label body)` -- runs `body`, prints `"<label>: <N> ms"`,
+;;; and evaluates to `body`'s own result (so it composes transparently
+;;; with a surrounding `let`, `out`, etc. -- see examples/macro_variadic.no's
+;;; `show` for the same "measure, report, pass the value through"
+;;; shape). Works whether `body` returns a value or is `-> unit`.
+(macro time_it (label body)
+  (do
+    (let time_it_start (now))
+    (let time_it_result body)
+    (out (fmt "{}: {} ms\n" label (elapsed_ms time_it_start)))
+    time_it_result))

@@ -1,0 +1,32 @@
+;; Regression test: `(let total (do (let r (returns_i64)) (out "...") r))`
+;; used to silently size `total` as `i32` instead of `i64`, truncating
+;; a genuine i64 result. `_infer_llvm_type`/`_infer_nyet_type_name`'s
+;; `N.Do` case just recursed into the tail expression, but at the time
+;; those functions run (before the do's contents are actually emitted)
+;; `self._env` doesn't have the do-block's own `let`/`var` bindings yet
+;; -- so a bare `Ident` tail referencing one of them fell through to
+;; the wrong default. Found while benchmarking (a `time_it`-style
+;; macro binds its own internal result the same way).
+;; Expected: in between / 199999990000000
+
+(fn big_sum (n:i32) -> i64
+  (var i:i32 0)
+  (var sum:i64 0)
+  (loop
+    (if (>= i n) (break) pass)
+    (= sum (+ sum (as i i64)))
+    (= i (+ i 1)))
+  sum)
+
+(fn main () -> unit
+  (let total
+    (do
+      (let start (now))
+      (let r (big_sum 20000000))
+      (out "in between\n")
+      r))
+  ;; `out` (unlike `fmt` before its own fix in this same session) always
+  ;; got i64 right, so this isolates the do-tail-let inference bug
+  ;; specifically rather than conflating it with the fmt one.
+  (out total)
+  (out "\n"))

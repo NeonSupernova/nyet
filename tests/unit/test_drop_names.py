@@ -129,3 +129,50 @@ def test_non_struct_locals_are_not_dropped():
 
 def test_function_with_no_locals_has_no_drops():
     assert _drop_names("(fn main () -> unit (out 1))") == {}
+
+
+def test_struct_read_out_of_array_by_index_is_not_dropped():
+    # Regression: indexing an `Array[T]` never clones `T` -- every slot
+    # already holds the same pointer `_emit_struct_construct` handed
+    # out, so `a` here aliases storage the array itself still owns. A
+    # plain (non-`&`) `(let a:Point (pts i))` used to still be flagged
+    # for a `free` despite that, so two such reads of the same slot (or
+    # two calls each doing one) would double-free it at runtime. See
+    # tests/codegen/array_struct_no_double_free.no for the end-to-end
+    # crash this caused before the fix.
+    names = _drop_names("""
+        (struct Point x:i32 y:i32)
+        (fn scratch () -> unit
+          (do
+            (let pts:Array[Point] [(Point x:1 y:2)])
+            (let a:Point (pts 0))
+            (out (. a x))))
+    """)
+    assert "a" not in names.get("scratch", [])
+
+
+def test_struct_read_out_of_array_param_by_index_is_not_dropped():
+    names = _drop_names("""
+        (struct Point x:i32 y:i32)
+        (fn scratch (pts:&Array[Point]) -> unit
+          (do
+            (let a:Point (pts 0))
+            (out (. a x))))
+    """)
+    assert "a" not in names.get("scratch", [])
+
+
+def test_ordinary_struct_constructor_local_is_still_dropped_alongside_an_array():
+    # The array-index exclusion must be scoped to bindings whose value
+    # actually came from indexing a known array -- an unrelated struct
+    # constructed the normal way in the same function must still be
+    # dropped exactly as before.
+    names = _drop_names("""
+        (struct Point x:i32 y:i32)
+        (fn scratch () -> unit
+          (do
+            (let pts:Array[Point] [(Point x:1 y:2)])
+            (let p (Point x:9 y:9))
+            (out (. p x))))
+    """)
+    assert names.get("scratch") == ["p"]
