@@ -1,0 +1,52 @@
+;; Regression test: type aliases, newtypes, a user type made callable through
+;; the Index trait, and several codegen fixes main.no needed.
+;;
+;;   - `(alias Duration f64)` used to lower `Duration` to codegen's default
+;;     i32; `(newtype Meters f64)` had no constructor or unwrap at all.
+;;   - `(impl Index Palette (fn () ...))` mangled to an invalid LLVM name
+;;     (`@Palette__()`), and `(palette 1)` never dispatched to it.
+;;   - A `...` placeholder body emitted `ret ptr 0` (invalid IR). It now
+;;     compiles, and panics "not yet implemented" if it is ever reached.
+;;   - `(let e:f32 3.14)` stored a double constant that isn't a valid float.
+;;   - `(let u:unit ())` allocated a `void` slot.
+;;
+;; Expected:
+;;   3.5 7
+;;   true
+;;   green
+;;   3.14 done
+
+(alias Duration f64)
+(alias Check (fn i32 -> bool))
+
+(newtype Meters f64)
+(newtype UserId i32)
+
+(trait Index[I O]
+  (fn () (self:&Self idx:I) -> &O))
+
+(struct Palette colors:Array[string])
+
+(impl Index Palette
+  (fn () (self:&Palette idx:i32) -> &string ((. self colors) idx)))
+
+(struct Config host:string)
+(type Outcome (Done) (Failed string))
+
+(fn connect (cfg:&Config) -> Outcome ...)
+
+(fn wait (d:Duration) -> f64 d)
+
+(fn move_to (dist:Meters) -> f64 (dist 0))
+
+(fn main () -> unit
+  (do
+    (let id (UserId 7))
+    (out (fmt "{} {}\n" (move_to (Meters (wait 3.5))) (id 0)))
+    (let positive:Check (fn (x:i32) -> bool (> x 0)))
+    (if (positive 5) (out "true\n") (out "false\n"))
+    (let palette (Palette colors:["red" "green"]))
+    (out (palette 1)) (out "\n")
+    (let e:f32 3.14)
+    (let u:unit ())
+    (out (fmt "{} done\n" e))))

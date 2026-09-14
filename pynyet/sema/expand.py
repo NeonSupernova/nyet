@@ -188,15 +188,22 @@ class MacroExpander:
             )
             return self._expand_node(node.value, depth)
 
-        if (
-            isinstance(node, N.Call)
-            and isinstance(node.head, N.Ident)
-            and node.head.name in self.macros
-        ):
+        if isinstance(node, N.Call) and self._macro_name(node.head) in self.macros:
             return self._expand_macro_call(node, depth)
 
         self._walk_children(node, depth)
         return node
+
+    @staticmethod
+    def _macro_name(head: N.Node | None) -> str | None:
+        """The macro name a call head refers to: a plain name like `unless`, or
+        a slash name like `log/debug`, which the parser produces as a Path (so
+        slash-named macros used to never expand)."""
+        if isinstance(head, N.Ident):
+            return head.name
+        if isinstance(head, N.Path):
+            return "/".join(head.segments)
+        return None
 
     def _expand_macro_call(self, call: N.Call, depth: int) -> N.Node:
         if depth >= MAX_MACRO_DEPTH:
@@ -210,8 +217,8 @@ class MacroExpander:
             )
             return call
 
-        assert isinstance(call.head, N.Ident)
-        name = call.head.name
+        name = self._macro_name(call.head)
+        assert name is not None
         macro = self.macros[name]
 
         params = macro.params
@@ -510,4 +517,144 @@ def expand_macros(program: list[N.Node]) -> tuple[list[N.Node], list[Diagnostic]
     """
     expander = MacroExpander()
     expanded = expander.expand(program)
-    return expanded, expander.errors
+    expanded = _desugar_aliases_and_newtypes(expanded)
+    return _apply_trait_default_methods(expanded), expander.errors
+
+
+def _desugar_aliases_and_newtypes(program: list[N.Node]) -> list[N.Node]:
+    """Lower `alias` and `newtype` declarations to forms every later pass
+    already understands.
+
+    - `(alias Duration f64)`: every `Duration` type is replaced by `f64`, so
+      the alias and its target are the same type everywhere.
+    - `(newtype Meters f64)`: becomes `(struct Meters value:f64)` plus
+      `(impl Index Meters (fn () (self:&Meters idx:i32) -> f64 (. self value)))`,
+      so `(Meters 3.0)` wraps and `(m 0)` unwraps -- main.no documents
+      newtypes as implementing `Index[i32 InnerType]`.
+
+    Previously both parsed but no pass handled them: an alias fell back to
+    codegen's default `i32`, and a newtype had no constructor. Generic
+    aliases/newtypes are left alone.
+    """
+    aliases = {
+        n.name: n.target
+        for n in program
+        if isinstance(n, N.AliasDecl) and not n.generics and n.target is not None
+    }
+    result: list[N.Node] = []
+    for node in program:
+        if isinstance(node, N.AliasDecl) and node.name in aliases:
+            continue
+        if isinstance(node, N.NewtypeDecl) and not node.generics and node.inner is not None:
+            span = node.span
+            struct = N.StructDecl(
+                span, name=node.name, fields=[N.Param(span, "value", copy.deepcopy(node.inner))]
+            )
+            unwrap = N.FnDecl(
+                span,
+                name="()",
+                params=[
+                    N.Param(span, "self", N.RefType(span, N.NamedType(span, node.name))),
+                    N.Param(span, "idx", N.PrimType(span, "i32")),
+                ],
+                return_type=copy.deepcopy(node.inner),
+                body=N.FieldAccess(span, N.Ident(span, "self"), "value"),
+            )
+            impl = N.ImplDecl(
+                span,
+                target=N.NamedType(span, node.name),
+                trait=N.NamedType(span, "Index"),
+                items=[unwrap],
+            )
+            for decl in (struct, impl):
+                decl.is_public = node.is_public
+                decl.module = node.module
+            result.extend([struct, impl])
+            continue
+        result.append(node)
+    # Resolve alias-to-alias chains (bounded, in case of a cycle).
+    for _ in range(8):
+        changed = False
+        for name, target in list(aliases.items()):
+            if isinstance(target, N.NamedType) and target.name in aliases:
+                aliases[name] = aliases[target.name]
+                changed = True
+        if not changed:
+            break
+    for node in result:
+        _replace_named_types(node, aliases)
+    return result
+
+
+def _replace_named_types(node: object, replacements: dict[str, N.TypeNode]) -> None:
+    """Replace every `NamedType` whose name is in `replacements` under `node`
+    with a copy of its replacement, in place."""
+    if not isinstance(node, N.Node):
+        return
+    for f in fields(node):
+        value = getattr(node, f.name)
+        if isinstance(value, N.NamedType) and value.name in replacements:
+            setattr(node, f.name, copy.deepcopy(replacements[value.name]))
+        elif isinstance(value, list):
+            for i, elem in enumerate(value):
+                if isinstance(elem, N.NamedType) and elem.name in replacements:
+                    value[i] = copy.deepcopy(replacements[elem.name])
+                elif isinstance(elem, tuple):
+                    for sub in elem:
+                        _replace_named_types(sub, replacements)
+                else:
+                    _replace_named_types(elem, replacements)
+        else:
+            _replace_named_types(value, replacements)
+
+
+def _apply_trait_default_methods(program: list[N.Node]) -> list[N.Node]:
+    """Copy each trait method's default body into every impl that doesn't
+    define that method itself.
+
+    `(trait Greeter (fn greeting (self:&Self) -> string) (fn introduce
+    (self:&Self) -> string (+ (greeting self) "!")))` gives `introduce` a
+    default body; `(impl Greeter Person (fn greeting ...))` then gets its
+    own copy of `introduce` with `Self` replaced by `Person`, so every
+    later pass (resolve, typeck, borrow, codegen) just sees an ordinary
+    impl method. Runs after macro expansion so macro-generated traits and
+    impls are covered too.
+    """
+    traits = {n.name: n for n in program if isinstance(n, N.TraitDecl)}
+    for node in program:
+        if not isinstance(node, N.ImplDecl) or not isinstance(node.trait, N.NamedType):
+            continue
+        trait = traits.get(node.trait.name)
+        if trait is None or node.target is None:
+            continue
+        defined = {item.name for item in node.items if isinstance(item, N.FnDecl)}
+        for item in trait.items:
+            if isinstance(item, N.FnDecl) and item.body is not None and item.name not in defined:
+                method = copy.deepcopy(item)
+                _replace_self_type(method, node.target)
+                node.items.append(method)
+    return program
+
+
+def _is_self_type(value: object) -> bool:
+    return isinstance(value, N.SelfType) or (
+        isinstance(value, N.NamedType) and value.name == "Self"
+    )
+
+
+def _replace_self_type(node: object, target: N.TypeNode) -> None:
+    """Replace every `Self` type under `node` with a copy of `target`, in place."""
+    if not isinstance(node, N.Node):
+        return
+    for f in fields(node):
+        value = getattr(node, f.name)
+        if _is_self_type(value):
+            setattr(node, f.name, copy.deepcopy(target))
+        elif isinstance(value, list):
+            for i, elem in enumerate(value):
+                if _is_self_type(elem):
+                    value[i] = copy.deepcopy(target)
+                else:
+                    _replace_self_type(elem, target)
+        else:
+            _replace_self_type(value, target)

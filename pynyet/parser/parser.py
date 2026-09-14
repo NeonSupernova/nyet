@@ -41,10 +41,17 @@ _PRIM_TYPE_TOKENS: dict[TokenKind, str] = {
 }
 
 
+class _SpliceDo(N.Do):
+    """A `Do` produced by desugaring one form into several statements (a
+    destructuring `let`) whose statements belong to the *enclosing* block
+    rather than a new scope -- see `Parser._append_body_expr`."""
+
+
 class Parser:
     def __init__(self, tokens: list[Token]) -> None:
         self.tokens = tokens
         self.pos = 0
+        self._destructure_count = 0
 
     # ---------------------------------------------------------------
     # cursor helpers
@@ -197,7 +204,7 @@ class Parser:
         # as a Splice — bare standalone form means "to be filled in".
         if tok.kind is TokenKind.ELLIPSIS:
             self._advance()
-            return N.Pass(tok.span)
+            return N.Todo(tok.span)
         # Spread operator ..ident
         if tok.kind is TokenKind.DOT_DOT:
             self._advance()
@@ -311,10 +318,11 @@ class Parser:
     def _parse_binding(self, lparen: Token, mutable: bool) -> N.Node:
         # Destructuring: (let #(a b) expr)
         if self._at(TokenKind.HASH_LPAREN):
-            _pat = self.parse_expr()
+            pattern = self.parse_expr()
             value = self.parse_expr()
             self._expect(TokenKind.RPAREN)
-            return N.LetDecl(self._span_from(lparen), "_destructure", None, value, mutable)
+            span = self._span_from(lparen)
+            return _SpliceDo(span, self._desugar_tuple_destructure(span, pattern, value, mutable))
 
         name, ty = self._parse_name_maybe_type()
         value = self.parse_expr()
@@ -329,6 +337,47 @@ class Parser:
         self._expect(TokenKind.RPAREN)
         return N.LetDecl(self._span_from(lparen), name, ty, value, mutable)
 
+    def _desugar_tuple_destructure(
+        self, span: Span, pattern: N.Node, value: N.Expr, mutable: bool
+    ) -> list[N.Node]:
+        """`(let #(a b) expr)` -> `(let __destructureN expr)`, `(let a
+        (__destructureN 0))`, `(let b (__destructureN 1))`.
+
+        A plain name as the value is indexed directly, with no temporary
+        (so destructuring a tuple binding doesn't move it). `_` skips a
+        position; a nested `#(...)` pattern recurses. The parser used to
+        discard the pattern entirely and bind a dummy `_destructure` name,
+        so none of the pattern's names existed afterwards."""
+        if not isinstance(pattern, N.TupleLit):
+            raise self._error("a destructuring `let` needs a `#(...)` pattern", pattern.span)
+        lets: list[N.Node] = []
+        if isinstance(value, N.Ident):
+            source = value.name
+        else:
+            self._destructure_count += 1
+            source = f"__destructure{self._destructure_count}"
+            lets.append(N.LetDecl(span, source, None, value, False))
+        for i, elem in enumerate(pattern.elements):
+            item = N.Call(span, N.Ident(span, source), [N.IntLit(span, i)])
+            if isinstance(elem, N.TupleLit):
+                lets.extend(self._desugar_tuple_destructure(span, elem, item, mutable))
+            elif isinstance(elem, N.Ident):
+                if elem.name != "_":
+                    lets.append(N.LetDecl(span, elem.name, None, item, mutable))
+            else:
+                raise self._error(
+                    "destructuring pattern elements must be names, `_`, or `#(...)`", elem.span
+                )
+        return lets
+
+    @staticmethod
+    def _append_body_expr(exprs: list[N.Expr], expr: N.Expr) -> None:
+        """Append a block statement, splicing a `_SpliceDo`'s statements in."""
+        if isinstance(expr, _SpliceDo):
+            exprs.extend(expr.exprs)
+        else:
+            exprs.append(expr)
+
     def _parse_const(self, lparen: Token) -> N.ConstDecl:
         self._advance()  # consume 'const'
         name, ty = self._parse_name_maybe_type()
@@ -337,7 +386,7 @@ class Parser:
         return N.ConstDecl(self._span_from(lparen), name, ty, value)
 
     def _parse_fn(self, lparen: Token) -> N.Node:
-        self._advance()  # consume 'fn' or 'fn!'
+        fn_tok = self._advance()  # consume 'fn' or 'fn!'
         # Named fn if next token is IDENT or operator (for operator overloading)
         if self._at(TokenKind.IDENT):
             return self._parse_fn_decl(lparen)
@@ -354,7 +403,9 @@ class Parser:
             self._advance()  # consume (
             self._advance()  # consume )
             return self._parse_fn_decl_named(lparen, "()")
-        return self._parse_fn_expr(lparen)
+        if fn_tok.kind is TokenKind.FN_BANG:
+            return self._parse_fn_expr(lparen, N.CaptureMode.BORROW_MUT)
+        return self._parse_fn_expr(lparen, N.CaptureMode.BORROW)
 
     def _parse_fn_decl(self, lparen: Token) -> N.FnDecl:
         name = self._expect(TokenKind.IDENT).value
@@ -391,17 +442,17 @@ class Parser:
             return None
         exprs: list[N.Expr] = []
         while not self._at(TokenKind.RPAREN):
-            exprs.append(self.parse_expr())
+            self._append_body_expr(exprs, self.parse_expr())
         if len(exprs) == 1:
             return exprs[0]
         return N.Do(self._span_from(lparen), exprs)
 
-    def _parse_fn_expr(self, lparen: Token) -> N.FnExpr:
+    def _parse_fn_expr(self, lparen: Token, mode: N.CaptureMode = N.CaptureMode.BORROW) -> N.FnExpr:
         params = self._parse_param_list()
         ret = self._parse_optional_return_type()
         body = self._parse_implicit_body(lparen)
         self._expect(TokenKind.RPAREN)
-        return N.FnExpr(self._span_from(lparen), params, ret, body)
+        return N.FnExpr(self._span_from(lparen), params, ret, body, capture_mode=mode)
 
     def _parse_move(self, lparen: Token) -> N.FnExpr:
         self._advance()  # consume 'move'
@@ -410,7 +461,7 @@ class Parser:
         ret = self._parse_optional_return_type()
         body = self._parse_implicit_body(lparen)
         self._expect(TokenKind.RPAREN)
-        return N.FnExpr(self._span_from(lparen), params, ret, body)
+        return N.FnExpr(self._span_from(lparen), params, ret, body, capture_mode=N.CaptureMode.MOVE)
 
     def _parse_if(self, lparen: Token) -> N.If:
         self._advance()  # consume 'if'
@@ -503,7 +554,7 @@ class Parser:
         self._advance()
         exprs: list[N.Expr] = []
         while not self._at(TokenKind.RPAREN):
-            exprs.append(self.parse_expr())
+            self._append_body_expr(exprs, self.parse_expr())
         self._expect(TokenKind.RPAREN)
         return N.Do(self._span_from(lparen), exprs)
 
@@ -885,17 +936,18 @@ class Parser:
             bounds: list[N.TypeNode] = []
             if self._at(TokenKind.COLON):
                 self._advance()
-                while self._at(TokenKind.IDENT) and not self._is_next_generic_param():
+                # `[T: Add Zero Display]`: every name after the colon is a bound,
+                # up to one that is itself followed by `:` (the next constrained
+                # param, as in `[K: Hash V: Display]`). The last bound used to be
+                # taken as a new, unconstrained generic param instead.
+                while self._at(TokenKind.IDENT) and not (
+                    self.pos + 1 < len(self.tokens)
+                    and self.tokens[self.pos + 1].kind is TokenKind.COLON
+                ):
                     bounds.append(self._parse_type())
             params.append(N.GenericParam(self._span_from(start), name, bounds))
         self._expect(TokenKind.RBRACKET)
         return params
-
-    def _is_next_generic_param(self) -> bool:
-        if self.pos + 1 >= len(self.tokens):
-            return False
-        nxt = self.tokens[self.pos + 1]
-        return nxt.kind in (TokenKind.COLON, TokenKind.RBRACKET)
 
     def _parse_optional_return_type(self) -> N.TypeNode | None:
         if self._at(TokenKind.ARROW):

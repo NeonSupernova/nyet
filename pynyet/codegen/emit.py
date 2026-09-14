@@ -71,9 +71,29 @@ class Emitter:
         # fn name -> per-param LLVM scalar type for `&!T` scalar params
         # (None for every other param) -- see `_mut_ref_scalar_type`.
         self._fn_param_mut_ref: dict[str, list[str | None]] = {}
+        # fn name -> LLVM element type T for a fn declared `-> Array[T]`.
+        self._fn_ret_array_elem: dict[str, str] = {}
+        # (tuple type name, field index) -> tuple type name of that field,
+        # for tuples nested inside tuples -- see `_record_nested_tuple_fields`.
+        self._tuple_field_tuple: dict[tuple[str, int], str] = {}
+        # Lifted lambda name -> (captured names, capture mode) -- see `_lift_in`.
+        self._closure_info: dict[str, tuple[list[str], N.CaptureMode]] = {}
+        # Lifted lambda name -> one (name, llvm type, by_ref, binding metadata)
+        # per capture, snapshotted where the closure is created.
+        self._closure_capture_meta: dict[str, list[tuple[str, str, bool, dict]]] = {}
+        # Lifted lambda name -> LLVM literal struct type of its closure record.
+        self._closure_layout: dict[str, str] = {}
+        # fn name -> (param llvm types, ret llvm type) of a fn-typed return.
+        self._fn_ret_fn_sig: dict[str, tuple[list[str], str]] = {}
+        # Names that are never function locals -- see `_collect_global_names`.
+        self._lift_globals: set[str] = set()
+        # Lifted lambda name -> its FnDecl -- see `_infer_untyped_lambda`.
+        self._lifted_decls: dict[str, N.FnDecl] = {}
+        # Lifted lambdas not emitted yet -- see `_emit_closures`.
+        self._pending_closures: list[N.FnDecl] = []
         self._fn_lines: list[str] = []
         # Stack of (end_label, result_ptr | None, result_ty | None) for loop/break
-        self._loop_stack: list[tuple[str, str | None, str | None]] = []
+        self._loop_stack: list[list] = []
         # Alloca instructions hoisted to the function entry block
         self._fn_alloca_lines: list[str] = []
 
@@ -276,14 +296,64 @@ class Emitter:
         The lifted name is later treated as a function pointer at call
         sites (see `_emit_call`'s indirect-call path).
 
-        Captures are not yet supported: any free variable in the lambda
-        body will fail later as an undefined identifier. That's fine for
-        the v0.6 milestone goal, which exercises non-capturing lambdas
-        through higher-order functions.
+        A lambda's captures are the names it uses that it doesn't bind
+        itself and that aren't global (functions, types, variants, consts,
+        builtins) -- i.e. locals of an enclosing function. See
+        `_emit_closure_value` for how the closure record is built where the
+        lambda appears, and `_bind_closure_captures` for how the lifted
+        function reads its captures back.
         """
+        self._lift_globals = self._collect_global_names(program)
         lifted: list[N.FnDecl] = []
         new_program = [self._lift_in(n, lifted) for n in program]
         return new_program + lifted
+
+    def _collect_global_names(self, program: list[N.Node]) -> set[str]:
+        """Every name that can't be a function-local binding."""
+        from pynyet.sema.resolve import BUILTINS, PRIM_TYPE_NAMES
+
+        names: set[str] = set(BUILTINS) | set(PRIM_TYPE_NAMES) | {"true", "false", "self", "_"}
+        for node in program:
+            if isinstance(node, (N.FnDecl, N.StructDecl, N.ConstDecl, N.LetDecl)):
+                names.add(node.name)
+            elif isinstance(node, N.TypeDecl):
+                names.add(node.name)
+                names.update(vname for vname, _ in node.variants)
+            elif isinstance(node, (N.TraitDecl, N.ImplDecl)):
+                if isinstance(node, N.TraitDecl):
+                    names.add(node.name)
+                names.update(item.name for item in node.items if isinstance(item, N.FnDecl))
+        return names
+
+    def _free_names(self, fn: N.FnDecl) -> list[str]:
+        """Locals of an enclosing function that lifted lambda `fn` refers to."""
+        used: set[str] = set()
+        bound: set[str] = {p.name for p in fn.params}
+        self._scan_names(fn.body, used, bound)
+        return sorted(
+            name
+            for name in used - bound - self._lift_globals
+            if name.isidentifier() and not name.startswith("__closure_")
+        )
+
+    def _scan_names(self, node: object, used: set[str], bound: set[str]) -> None:
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                self._scan_names(item, used, bound)
+            return
+        if not isinstance(node, N.Node):
+            return
+        if isinstance(node, N.Ident):
+            used.add(node.name)
+            # A nested lambda (already lifted to an Ident by now) is created
+            # inside this one, so whatever it captures must be available
+            # here too.
+            if node.name in self._closure_info:
+                used.update(self._closure_info[node.name][0])
+        elif isinstance(node, (N.LetDecl, N.ConstDecl, N.VarPat, N.Param)):
+            bound.add(node.name)
+        for value in vars(node).values():
+            self._scan_names(value, used, bound)
 
     def _lift_in(self, node: N.Node, lifted: list[N.FnDecl]) -> N.Node:
         if node is None:
@@ -296,10 +366,14 @@ class Emitter:
             self._closure_counter += 1
             decl = N.FnDecl(node.span, name, list(node.params), node.return_type, inner_body)
             lifted.append(decl)
+            self._closure_info[name] = (self._free_names(decl), node.capture_mode)
+            self._lifted_decls[name] = decl
             return N.Ident(node.span, name)
 
         if isinstance(node, N.FnDecl):
-            if node.body is not None:
+            # A generic function's lambdas mention its type parameters, so
+            # they're lifted per instantiation instead -- see `_monomorphize_fn`.
+            if node.body is not None and not node.generics:
                 node.body = self._lift_in(node.body, lifted)
             return node
 
@@ -483,10 +557,13 @@ class Emitter:
             self._register_fn_sig(fn)
 
         for fn in fns:
-            self._emit_fn(fn)
+            if fn.name not in self._closure_info:
+                self._emit_fn(fn)
+        self._pending_closures.extend(fn for fn in fns if fn.name in self._closure_info)
 
         if not has_main and top_level:
             self._emit_implicit_main(top_level)
+        self._emit_closures()
 
         # Assemble module
         out: list[str] = []
@@ -742,6 +819,19 @@ class Emitter:
             return N.GenericType(tn.span, new_base, new_args)
         if isinstance(tn, N.UnitType):
             return tn
+        # Compound types: `&T`, `#(A B)`, and `(fn T -> U)` used to come back
+        # unsubstituted, so e.g. `swap[A B] (p:#(A B)) -> #(B A)` kept `A`/`B`
+        # in its monomorphized signature.
+        if isinstance(tn, N.RefType):
+            return N.RefType(tn.span, self._subst_type(tn.inner, env) or tn.inner, tn.mutable)
+        if isinstance(tn, N.TupleType):
+            return N.TupleType(tn.span, [self._subst_type(e, env) or e for e in tn.elements])
+        if isinstance(tn, N.FnType):
+            return N.FnType(
+                tn.span,
+                [self._subst_type(p, env) or p for p in tn.params],
+                self._subst_type(tn.ret, env),
+            )
         return tn
 
     def _subst_body(self, node: N.Node, env: dict[str, N.TypeNode]) -> N.Node:
@@ -794,6 +884,36 @@ class Emitter:
         if isinstance(node, N.Call):
             n = _copy.copy(node)
             n.args = [self._subst_body(a, env) for a in node.args]
+            if node.head is not None:
+                n.head = self._subst_body(node.head, env)
+            return n
+        if isinstance(node, N.Path) and node.segments and node.segments[0] in env:
+            # `(T/zero)` inside a generic body -> `(i32/zero)`.
+            target = self._nyet_type_name_of_node(env[node.segments[0]])
+            if target is None:
+                return node
+            n = _copy.copy(node)
+            n.segments = [target, *node.segments[1:]]
+            return n
+        if isinstance(node, N.FnExpr):
+            n = _copy.copy(node)
+            n.params = []
+            for p in node.params:
+                np = _copy.copy(p)
+                np.type = self._subst_type(p.type, env)
+                n.params.append(np)
+            n.return_type = self._subst_type(node.return_type, env)
+            if node.body is not None:
+                n.body = self._subst_body(node.body, env)
+            return n
+        if isinstance(node, (N.ArrayLit, N.TupleLit)):
+            n = _copy.copy(node)
+            n.elements = [self._subst_body(e, env) for e in node.elements]
+            return n
+        if isinstance(node, (N.KeywordArg, N.Try, N.Await, N.Spawn, N.Cast)):
+            n = _copy.copy(node)
+            if node.value is not None:
+                n.value = self._subst_body(node.value, env)
             return n
         if isinstance(node, N.Loop):
             n = _copy.copy(node)
@@ -849,7 +969,14 @@ class Emitter:
             clone.params.append(np)
         clone.return_type = self._subst_type(tmpl.return_type, env)
         if tmpl.body is not None:
-            clone.body = self._subst_body(tmpl.body, env)
+            # Deep-copied so lifting below never mutates the shared template.
+            clone.body = self._subst_body(_copy.deepcopy(tmpl.body), env)
+            # Lift this instantiation's lambdas, now that their types are concrete.
+            lifted: list[N.FnDecl] = []
+            clone.body = self._lift_in(clone.body, lifted)
+            for decl in lifted:
+                self._register_fn_sig(decl)
+            self._pending_closures.extend(lifted)
 
         # Emit the specialized function
         self._emit_fn(clone)
@@ -1093,6 +1220,8 @@ class Emitter:
             if base_name in ("Map", "Set"):
                 # Hash table lowers to a heap pointer (see runtime/map.c).
                 return "ptr"
+            if base_name in ("Fn", "FnMut", "FnOnce"):
+                return "ptr"  # a closure record -- see `_emit_closure_value`
             if base_name is not None:
                 # Force inner generic args to monomorphize first so any
                 # nested sum/struct types are registered before we use
@@ -1332,6 +1461,58 @@ class Emitter:
         if any(k is not None for k in kinds):
             self._fn_param_mut_ref[node.name] = kinds
 
+    def _receiver_method(self, receiver: N.Expr, name: str) -> str | None:
+        """The mangled impl method `name` on `receiver`'s type, if any."""
+        probe = self._unwrap_borrow(receiver)
+        type_name = self._infer_nyet_type_name(probe)
+        if type_name is None and isinstance(probe, N.Ident):
+            type_name = self._env_struct_name.get(probe.name)
+        if type_name is None:
+            return None
+        return self._method_impls.get((type_name, name))
+
+    def _record_nested_tuple_fields(self, tname: str, node: N.LetDecl | N.ConstDecl) -> None:
+        """Remember which fields of tuple type `tname` hold tuples themselves
+        (from a `#(...)` annotation or literal), so indexing one out and
+        binding it keeps its tuple shape."""
+        if isinstance(node.type, N.TupleType):
+            for i, et in enumerate(node.type.elements):
+                if isinstance(et, N.TupleType):
+                    self._tuple_field_tuple[(tname, i)] = self._get_or_register_tuple_type(
+                        [self._llvm_type(t) for t in et.elements],
+                        [self._nyet_type_name(t) for t in et.elements],
+                    )
+        elif isinstance(node.value, N.TupleLit):
+            for i, e in enumerate(node.value.elements):
+                if isinstance(e, N.TupleLit):
+                    self._tuple_field_tuple[(tname, i)] = self._get_or_register_tuple_type(
+                        [self._infer_llvm_type(x) for x in e.elements],
+                        [self._infer_nyet_type_name(x) for x in e.elements],
+                    )
+
+    def _call_operator_impl(self, head: N.Expr | None) -> str | None:
+        """The mangled `()` impl for a local binding whose struct type
+        implements the call operator (the Index trait), if any."""
+        if not isinstance(head, N.Ident) or head.name not in self._env:
+            return None
+        type_name = self._env_struct_name.get(head.name)
+        if type_name is None:
+            return None
+        return self._method_impls.get((type_name, "()"))
+
+    def _record_array_return(self, node: N.FnDecl) -> None:
+        """Record an `Array[T]` or function-typed return, so binding the call's
+        result keeps it indexable / callable."""
+        ret_elem = self._array_elem_llvm_type(node.return_type)
+        if ret_elem is not None:
+            self._fn_ret_array_elem[node.name] = ret_elem
+        fn_ret = self._as_fn_type(node.return_type)
+        if fn_ret is not None:
+            self._fn_ret_fn_sig[node.name] = (
+                [self._llvm_type(pt) for pt in fn_ret.params],
+                self._llvm_ret_type(fn_ret.ret) if fn_ret.ret else "void",
+            )
+
     def _emit_place_ptr(self, arg: N.Expr) -> str:
         """Address of the storage an `&!x` argument names, for passing to
         a `&!T` scalar parameter."""
@@ -1355,6 +1536,7 @@ class Emitter:
             return
         param_types = [self._param_llvm_type(p.type) for p in node.params]
         self._record_mut_ref_scalar_params(node)
+        self._record_array_return(node)
         ret_type = self._llvm_ret_type(node.return_type)
         self._fn_sigs[node.name] = (param_types, ret_type)
         ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
@@ -1439,6 +1621,7 @@ class Emitter:
                 param_names.append(p.name)
                 param_nyet_names.append(self._nyet_type_name(p.type))
             self._record_mut_ref_scalar_params(node)
+            self._record_array_return(node)
 
             ret_type = self._llvm_ret_type(node.return_type)
             self._fn_sigs[node.name] = (param_types, ret_type)
@@ -1460,8 +1643,15 @@ class Emitter:
             params_str = ", ".join(
                 f"{t} %{n}" for t, n in zip(param_types, param_names, strict=False)
             )
+            if node.name in self._closure_info:
+                # A lifted lambda takes its closure record as a hidden first
+                # parameter -- see `_emit_closure_value`.
+                params_str = "ptr %__env" + (", " + params_str if params_str else "")
             body_lines.append(f"define {ret_type} @{node.name}({params_str}) {{")
             self._emit_label("entry")
+            if node.name in self._closure_info:
+                # Before params, so a param shadows a same-named capture.
+                self._bind_closure_captures(node.name)
 
             for p, t, n, nyet_n in zip(
                 node.params, param_types, param_names, param_nyet_names, strict=False
@@ -1476,9 +1666,7 @@ class Emitter:
                     arr_elem_nyet = self._array_elem_nyet_name(p.type)
                     if arr_elem_nyet is not None:
                         self._env_array_elem_nyet[n] = arr_elem_nyet
-                elif isinstance(
-                    p.type.inner if isinstance(p.type, N.RefType) else p.type, N.FnType
-                ):
+                elif self._as_fn_type(p.type) is not None:
                     # Function-typed param: a pointer to a function. Track
                     # its signature so calls like `(f x)` can be lowered as
                     # an indirect call through the slot. Unwrap `&`/`&!`
@@ -1487,7 +1675,7 @@ class Emitter:
                     # -> i32)`) fell into the generic scalar-`ptr` fallback
                     # below and `(f x)` was parsed as a call to an
                     # undefined function `f`.
-                    fn_type = p.type.inner if isinstance(p.type, N.RefType) else p.type
+                    fn_type = self._as_fn_type(p.type)
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
@@ -1586,10 +1774,13 @@ class Emitter:
                     elif result is not None:
                         self._emit_line(f"ret {ret_type} {result}")
                     else:
-                        self._emit_line(f"ret {ret_type} 0")
+                        self._emit_line(f"ret {ret_type} {self._zero_value(ret_type)}")
             else:
                 self._emit_drops()
-                self._emit_line("ret void" if ret_type == "void" else f"ret {ret_type} 0")
+                if ret_type == "void":
+                    self._emit_line("ret void")
+                else:
+                    self._emit_line(f"ret {ret_type} {self._zero_value(ret_type)}")
 
         # Splice this fn's body into body_lines, then append all at once
         if self._fn_lines:
@@ -1601,6 +1792,193 @@ class Emitter:
 
         self._restore_fn_state(saved)
         self._lines.extend(body_lines)
+
+    def _emit_closures(self) -> None:
+        """Emit lifted lambdas (`_pending_closures`) after the code that
+        creates them.
+
+        A capturing lambda's body needs the types of its captures, which are
+        snapshotted where the closure is created (`_emit_closure_value`); a
+        lambda nested in another is only created while the outer lambda's body
+        is emitted; and monomorphizing a generic function lifts new lambdas --
+        so emit in rounds until nothing is ready. A capturing lambda that is
+        never created anywhere is unreachable, and is skipped."""
+        while True:
+            pending = self._pending_closures
+            ready = [
+                fn
+                for fn in pending
+                if not self._closure_info[fn.name][0] or fn.name in self._closure_capture_meta
+            ]
+            if not ready:
+                return
+            ready_ids = {id(fn) for fn in ready}
+            self._pending_closures = [fn for fn in pending if id(fn) not in ready_ids]
+            for fn in ready:
+                self._emit_fn(fn)
+
+    # Per-binding side tables copied into a lambda for each captured name.
+    _BINDING_META_DICTS = (
+        "_env_struct_name",
+        "_env_array_elem",
+        "_env_array_elem_nyet",
+        "_env_array_elem_fn_sig",
+        "_env_array_elem_of_array",
+        "_env_tuple_types",
+        "_env_map_val_ty",
+        "_env_map_val_nyet",
+        "_env_map_val_fn_sig",
+        "_env_dyn_trait",
+        "_env_fn_sig",
+        "_str_lits",
+    )
+    _BINDING_META_SETS = ("_env_char_names", "_env_string_names", "_env_unsigned_names")
+
+    def _snapshot_binding_meta(self, name: str) -> dict:
+        meta: dict = {}
+        for attr in self._BINDING_META_DICTS:
+            table = getattr(self, attr)
+            if name in table:
+                meta[attr] = table[name]
+        for attr in self._BINDING_META_SETS:
+            if name in getattr(self, attr):
+                meta[attr] = True
+        return meta
+
+    def _restore_binding_meta(self, name: str, meta: dict) -> None:
+        for attr, value in meta.items():
+            if attr in self._BINDING_META_SETS:
+                getattr(self, attr).add(name)
+            else:
+                getattr(self, attr)[name] = value
+
+    def _emit_closure_value(self, name: str) -> str:
+        """The value of lifted lambda `name`, built where the lambda appears.
+
+        Every function value is a pointer to a closure record whose first
+        field is the code pointer; calls pass the record itself as a hidden
+        first argument (`_emit_indirect_call_raw`). A lambda with no captures
+        uses a static record. Otherwise the record is heap-allocated with one
+        field per capture: its value for `move fn`, or the address of the
+        enclosing binding for `fn` / `fn!`, so a borrowing closure sees (and
+        a `fn!` closure makes) later changes to it. A borrowing closure must
+        not outlive the function that created it; that isn't checked yet."""
+        captures, mode = self._closure_info[name]
+        if not captures:
+            return self._static_closure_record(name)
+        by_ref = mode is not N.CaptureMode.MOVE
+        field_tys = ["ptr"]
+        metas: list[tuple[str, str, bool, dict]] = []
+        for cname in captures:
+            if cname not in self._env:
+                raise NotImplementedError(
+                    f"codegen: closure {name} captures '{cname}', which isn't a local "
+                    f"variable where the closure is created"
+                )
+            _, ty = self._env[cname]
+            field_tys.append("ptr" if by_ref else ty)
+            metas.append((cname, ty, by_ref, self._snapshot_binding_meta(cname)))
+        layout = "{ " + ", ".join(field_tys) + " }"
+        self._closure_layout.setdefault(name, layout)
+        self._closure_capture_meta.setdefault(name, metas)
+
+        self._declare_extern("declare ptr @malloc(i64)")
+        record = self._fresh_tmp()
+        self._emit_line(f"{record} = call ptr @malloc(i64 {8 * len(field_tys)})")
+        self._emit_line(f"store ptr @{name}, ptr {record}")
+        for k, cname in enumerate(captures):
+            slot, ty = self._env[cname]
+            field_ptr = self._fresh_tmp()
+            self._emit_line(
+                f"{field_ptr} = getelementptr inbounds {layout}, ptr {record}, i32 0, i32 {k + 1}"
+            )
+            if by_ref:
+                self._emit_line(f"store ptr {slot}, ptr {field_ptr}")
+            else:
+                val = self._fresh_tmp()
+                self._emit_line(f"{val} = load {ty}, ptr {slot}")
+                self._emit_line(f"store {ty} {val}, ptr {field_ptr}")
+        return record
+
+    def _bind_closure_captures(self, name: str) -> None:
+        """Inside lifted lambda `name`, bind each captured name from `%__env`."""
+        layout = self._closure_layout.get(name)
+        for k, (cname, ty, by_ref, meta) in enumerate(self._closure_capture_meta.get(name, [])):
+            field_ptr = self._fresh_tmp()
+            self._emit_line(
+                f"{field_ptr} = getelementptr inbounds {layout}, ptr %__env, i32 0, i32 {k + 1}"
+            )
+            if by_ref:
+                slot = self._fresh_tmp()
+                self._emit_line(f"{slot} = load ptr, ptr {field_ptr}")
+            else:
+                slot = field_ptr
+            self._env[cname] = (slot, ty)
+            self._restore_binding_meta(cname, meta)
+
+    def _static_closure_record(self, fn_symbol: str) -> str:
+        """A constant closure record `{ ptr @fn_symbol }` for a function value
+        with no captures. `fn_symbol` must take the hidden record parameter."""
+        key = f"{fn_symbol}.closure"
+        if key not in self._synth_fns:
+            self._synth_fns[key] = f"@{key} = internal constant {{ ptr }} {{ ptr @{fn_symbol} }}\n"
+        return f"@{key}"
+
+    def _fn_value_record(self, name: str) -> str:
+        """The closure value for named function `name` used as a value: a
+        thunk that takes (and ignores) the hidden record parameter and
+        forwards to the function, in a static record."""
+        thunk = f"{name}.thunk"
+        if thunk not in self._synth_fns:
+            param_tys, ret_ty = self._fn_sigs[name]
+            params = ", ".join(["ptr %__env"] + [f"{t} %a{i}" for i, t in enumerate(param_tys)])
+            args = ", ".join(f"{t} %a{i}" for i, t in enumerate(param_tys))
+            if ret_ty == "void":
+                body = [f"  call void @{name}({args})", "  ret void"]
+            else:
+                body = [f"  %r = call {ret_ty} @{name}({args})", f"  ret {ret_ty} %r"]
+            self._synth_fns[thunk] = "\n".join(
+                [f"define internal {ret_ty} @{thunk}({params}) {{", "entry:", *body, "}", ""]
+            )
+        return self._static_closure_record(thunk)
+
+    def _as_fn_type(self, tn: N.TypeNode | None) -> N.FnType | None:
+        """`(fn A -> R)`, `&(fn ...)`, or `Fn[(A) R]` / `FnMut[...]` / `FnOnce[...]`
+        as an `FnType`; None for any other type."""
+        if isinstance(tn, N.RefType):
+            tn = tn.inner
+        if isinstance(tn, N.FnType):
+            return tn
+        if (
+            isinstance(tn, N.GenericType)
+            and isinstance(tn.base, (N.NamedType, N.PrimType))
+            and tn.base.name in ("Fn", "FnMut", "FnOnce")
+        ):
+            params_node = tn.args[0] if tn.args else None
+            if params_node is None or isinstance(params_node, N.UnitType):
+                params: list[N.TypeNode] = []
+            elif isinstance(params_node, N.TupleType):
+                params = list(params_node.elements)
+            else:
+                params = [params_node]
+            return N.FnType(tn.span, params, tn.args[1] if len(tn.args) > 1 else None)
+        return None
+
+    @staticmethod
+    def _float_const(value: float, ty: str) -> str:
+        """An LLVM hex float constant for `value` as `ty` ("float" or "double")."""
+        if ty == "float":
+            value = _struct.unpack("f", _struct.pack("f", value))[0]
+        return f"0x{_struct.unpack('Q', _struct.pack('d', value))[0]:016X}"
+
+    def _zero_value(self, ty: str) -> str:
+        """A literal zero of LLVM type `ty` -- for a body that yields no value
+        (e.g. a `...` placeholder). `ret ptr 0` is invalid IR."""
+        if ty == "ptr":
+            return "null"
+        if self._is_float(ty):
+            return "0.0"
+        return "0"
 
     def _emit_implicit_main(self, stmts: list[N.Node]) -> None:
         saved = self._save_fn_state()
@@ -1694,8 +2072,15 @@ class Emitter:
         # v0.6: a bare reference to a top-level fn yields its function pointer.
         if isinstance(node, N.Ident) and node.name in self._fn_sigs:
             return "ptr"
+        if isinstance(node, N.Ident) and (
+            node.name in self._variant_ctors or node.name in self._generic_variant_ctors
+        ):
+            return "ptr"  # a bare nullary variant value -- see `_emit_ident`
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
             op = node.head.name
+            call_impl = self._call_operator_impl(node.head)
+            if call_impl is not None and call_impl in self._fn_sigs:
+                return self._fn_sigs[call_impl][1]
             # Array indexing: shadows any same-named function.
             if op in self._env_array_elem and len(node.args) == 1:
                 return self._env_array_elem[op]
@@ -1762,7 +2147,7 @@ class Emitter:
             # (e.g. `(print_array (map f arr))`) rather than through a
             # `let` with an explicit type annotation, which has its own
             # separate, correct type-driven path.
-            if op in ("map", "filter", "zip"):
+            if op in ("map", "filter", "flat_map", "zip"):
                 return "ptr"
             if op in ("any", "all"):
                 return "i1"
@@ -1786,6 +2171,8 @@ class Emitter:
                 return "double"
             if op == "sqrt" and len(node.args) == 1 and op not in self._fn_sigs:
                 return "double"
+            if op == "parse" and len(node.args) == 1 and op not in self._fn_sigs:
+                return "ptr"  # a Result -- see `_emit_parse`
             if op in ("file_open", "file_read_all"):
                 return "ptr"
             if op == "in":
@@ -1936,6 +2323,10 @@ class Emitter:
         if isinstance(node, N.UnitLit):
             return None
 
+        if isinstance(node, N.Todo):
+            # A bare `...` placeholder: panic if it's ever reached.
+            return self._emit_panic([N.StringLit(node.span, "not yet implemented")])
+
         if isinstance(node, N.Pass):
             return None
 
@@ -2033,10 +2424,16 @@ class Emitter:
         # Top-level `const` — inlined immediate, no load (no address).
         if node.name in self._const_values:
             return self._const_values[node.name][0]
-        # v0.6: lifted lambda / top-level function used as a value yields
-        # the global function pointer.
+        # A lifted lambda or a named function used as a value yields a
+        # closure record -- see `_emit_closure_value`.
+        if node.name in self._closure_info:
+            return self._emit_closure_value(node.name)
         if node.name in self._fn_sigs:
-            return f"@{node.name}"
+            return self._fn_value_record(node.name)
+        # A bare nullary variant used as a value, e.g. `(Err DivisionByZero)`:
+        # the same as calling its constructor with no arguments.
+        if node.name in self._variant_ctors or node.name in self._generic_variant_ctors:
+            return self._emit_call(N.Call(node.span, node, []))
         raise NotImplementedError(
             f"undefined identifier '{node.name}' at codegen time -- most likely a "
             f"closure referencing a variable from its enclosing scope: "
@@ -2070,6 +2467,11 @@ class Emitter:
     def _emit_call(self, node: N.Call) -> str | None:
         if isinstance(node.head, N.Ident):
             name = node.head.name
+            # A value whose type implements the call operator `()` -- the Index
+            # trait's `(fn () (self:&T idx:I) -> &O)` -- is callable: `(palette 1)`.
+            call_impl = self._call_operator_impl(node.head)
+            if call_impl is not None:
+                return self._emit_user_call(call_impl, [node.head, *node.args])
             # Array indexing: `(arr i)` where `arr` is a local Array[T].
             # A bound name shadows any same-named function, matching scoping.
             if name in self._env_array_elem and len(node.args) == 1:
@@ -2085,9 +2487,22 @@ class Emitter:
             # Map lookup: `(m key)` where `m` is a local Map[string V].
             if name in self._env_map_val_ty and len(node.args) == 1:
                 return self._emit_map_get(name, node.args[0])
+            # A method on the receiver shadows a builtin of the same name --
+            # `(len &v)` on a `Vec2` with its own inherent `len`. Without this
+            # the builtin array `len` ran on the struct pointer.
+            # (Operators are excluded: they dispatch to impls in _emit_arith /
+            # _emit_cmp, which also handle the variadic forms.)
+            if node.args and name.isidentifier() and name not in self._fn_sigs:
+                receiver_method = self._receiver_method(node.args[0], name)
+                if receiver_method is not None:
+                    return self._emit_user_call(receiver_method, node.args)
             # Builtins
             if name == "out":
                 return self._emit_out(node.args)
+            if name == "err":
+                # `(err "msg")` -- main.no's builtin stderr channel. It used to
+                # have no codegen and compiled to a call to an undefined `@err`.
+                return self._emit_out(node.args, fd=2)
             if name == "in":
                 return self._emit_in(node.args)
             if name == "fmt":
@@ -2098,6 +2513,8 @@ class Emitter:
                 return self._emit_now()
             if name == "sqrt" and len(node.args) == 1 and name not in self._fn_sigs:
                 return self._emit_sqrt(node.args[0])
+            if name == "parse" and len(node.args) == 1 and name not in self._fn_sigs:
+                return self._emit_parse(node.args[0])
             if name == "len" and len(node.args) == 1:
                 return self._emit_array_len(node.args[0])
             if name == "file_open":
@@ -2116,13 +2533,15 @@ class Emitter:
             # nested HOF call from a `|>` pipeline), not only a named
             # binding -- see `_hof_array_arg`. A user function of the same
             # name shadows the builtin.
-            if name in ("map", "filter", "any", "all") and len(node.args) == 2:
+            if name in ("map", "filter", "flat_map", "any", "all") and len(node.args) == 2:
                 arr_name = None if name in self._fn_sigs else self._hof_array_arg(node.args[1])
                 if arr_name is not None:
                     if name == "map":
                         return self._emit_hof_map(node.args[0], arr_name)
                     if name == "filter":
                         return self._emit_hof_filter(node.args[0], arr_name)
+                    if name == "flat_map":
+                        return self._emit_hof_flat_map(node.args[0], arr_name)
                     return self._emit_hof_any_all(node.args[0], arr_name, is_all=(name == "all"))
             if name == "fold" and len(node.args) == 3 and name not in self._fn_sigs:
                 arr_name = self._hof_array_arg(node.args[2])
@@ -2164,14 +2583,22 @@ class Emitter:
             # last-registered sum type wins in `_variant_ctors[name]` for
             # multi-instantiation programs (e.g. Option[i32] AND
             # Option[Option[i32]]).
+            # A variant's payload may be passed by field name, as main.no
+            # declares them -- `(Math inner:e)` for `(Math inner:MathError)` --
+            # in declaration order. Keyword args used to reach `_emit_expr`
+            # as-is and crash.
+            variant_args = [
+                a.value if isinstance(a, N.KeywordArg) and a.value is not None else a
+                for a in node.args
+            ]
             if name in self._generic_variant_ctors:
-                mangled_vname = self._resolve_generic_variant(name, node.args)
+                mangled_vname = self._resolve_generic_variant(name, variant_args)
                 if mangled_vname:
-                    return self._emit_variant_construct(mangled_vname, node.args)
+                    return self._emit_variant_construct(mangled_vname, variant_args)
             # Sum type variant constructor (already monomorphized or
             # belonging to a non-generic sum type)
             if name in self._variant_ctors:
-                return self._emit_variant_construct(name, node.args)
+                return self._emit_variant_construct(name, variant_args)
             # v0.3: Generic struct constructor
             if name in self._struct_templates:
                 mangled = self._monomorphize_struct_from_args(name, node.args)
@@ -2472,13 +2899,36 @@ class Emitter:
             # element types (i32/i64/f64/f32/bool/i8/i16) round-trip
             # exactly, which covers main.no's own generic-HOF examples.
             unwrapped = self._unwrap_borrow(arg)
-            if isinstance(unwrapped, N.Ident) and unwrapped.name in self._env_array_elem:
-                elem_llvm_ty = self._env_array_elem[unwrapped.name]
+            elem_nyet = (
+                self._env_array_elem_nyet.get(unwrapped.name)
+                if isinstance(unwrapped, N.Ident)
+                else None
+            )
+            elem_llvm_ty = self._array_expr_elem_ty(unwrapped)
+            if elem_nyet is not None:
+                self._unify_type_against_nyet(pattern.args[0], elem_nyet, generic_names, resolved)
+            elif elem_llvm_ty is not None:
                 self._unify_type_against_llvm(
                     pattern.args[0], elem_llvm_ty, generic_names, resolved
                 )
             return
         if isinstance(pattern, N.FnType):
+            # A lambda's declared types are Nyet types, which -- unlike its
+            # LLVM signature -- tell a struct or sum type apart from a string.
+            decl = self._lifted_decls.get(arg.name) if isinstance(arg, N.Ident) else None
+            if decl is not None:
+                for pp, param in zip(pattern.params, decl.params, strict=False):
+                    self._unify_type_against_nyet(
+                        pp, self._nyet_type_name(param.type), generic_names, resolved
+                    )
+                if pattern.ret is not None and decl.return_type is not None:
+                    self._unify_type_against_nyet(
+                        pattern.ret,
+                        self._nyet_type_name(decl.return_type),
+                        generic_names,
+                        resolved,
+                    )
+                return
             callee_sig = None
             if isinstance(arg, N.Ident):
                 if arg.name in self._fn_sigs:
@@ -2492,6 +2942,62 @@ class Emitter:
                 if pattern.ret is not None:
                     self._unify_type_against_llvm(pattern.ret, ret_ty, generic_names, resolved)
             return
+        if isinstance(pattern, N.TupleType):
+            unwrapped = self._unwrap_borrow(arg)
+            if isinstance(unwrapped, N.TupleLit):
+                for pe, ae in zip(pattern.elements, unwrapped.elements, strict=False):
+                    self._unify_param_type(pe, ae, generic_names, resolved)
+            elif isinstance(unwrapped, N.Ident) and unwrapped.name in self._env_tuple_types:
+                self._unify_type_against_nyet(
+                    pattern, self._env_tuple_types[unwrapped.name], generic_names, resolved
+                )
+            return
+        if isinstance(pattern, N.GenericType):
+            # e.g. `result:Result[T E]` against a value of a monomorphized
+            # generic type such as `Result__f64_MathError`.
+            self._unify_type_against_nyet(
+                pattern,
+                self._infer_nyet_type_name(self._unwrap_borrow(arg)),
+                generic_names,
+                resolved,
+            )
+            return
+
+    def _unify_type_against_nyet(
+        self,
+        pattern: N.TypeNode | None,
+        nyet: str | None,
+        generic_names: set[str],
+        resolved: dict[str, str],
+    ) -> None:
+        """Like `_unify_param_type`, against a concrete Nyet type name --
+        which, unlike an LLVM type, distinguishes struct/sum/string types and
+        (for a monomorphized generic type) still carries its type arguments."""
+        if pattern is None or nyet is None:
+            return
+        if isinstance(pattern, N.RefType):
+            self._unify_type_against_nyet(pattern.inner, nyet, generic_names, resolved)
+            return
+        if isinstance(pattern, N.NamedType) and pattern.name in generic_names:
+            resolved.setdefault(pattern.name, nyet)
+            return
+        if isinstance(pattern, N.GenericType) and isinstance(
+            pattern.base, (N.NamedType, N.PrimType)
+        ):
+            origin = next(
+                (key for key, mangled in self._mono_types.items() if mangled == nyet), None
+            )
+            if origin is not None and origin[0] == pattern.base.name:
+                for pa, targ in zip(pattern.args, origin[1], strict=False):
+                    self._unify_type_against_nyet(pa, targ, generic_names, resolved)
+            return
+        if isinstance(pattern, N.TupleType) and nyet in self._structs:
+            fields = self._structs[nyet]
+            field_nyet = self._struct_field_nyet.get(nyet, {})
+            for i, pe in enumerate(pattern.elements):
+                if i < len(fields):
+                    elem = field_nyet.get(fields[i][0]) or self._nyet_from_llvm(fields[i][1])
+                    self._unify_type_against_nyet(pe, elem, generic_names, resolved)
 
     def _unify_type_against_llvm(
         self,
@@ -2517,7 +3023,9 @@ class Emitter:
     # out
     # ------------------------------------------------------------------
 
-    def _emit_out(self, args: list[N.Expr]) -> str | None:
+    def _emit_out(self, args: list[N.Expr], fd: int | None = None) -> str | None:
+        """Print each argument to stdout -- or to file descriptor `fd`, which
+        `err` uses for stderr."""
         for arg in args:
             sn = self._infer_nyet_type_name(self._unwrap_borrow(arg))
             if sn is not None and sn in self._structs and (sn, "display") in self._method_impls:
@@ -2527,7 +3035,7 @@ class Emitter:
                     self._declare_printf()
                     fmt = self._get_fmt_str()
                     tmp = self._fresh_tmp()
-                    self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})")
+                    self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},ptr {val})")
                 continue
             val = self._emit_expr(arg)
             if val is None:
@@ -2542,7 +3050,7 @@ class Emitter:
             if ty == "ptr":
                 fmt = self._get_fmt_str()
                 tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})")
+                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},ptr {val})")
             elif self._is_float(ty):
                 fmt = self._get_fmt_f64()
                 tmp = self._fresh_tmp()
@@ -2550,30 +3058,38 @@ class Emitter:
                     ext = self._fresh_tmp()
                     self._emit_line(f"{ext} = fpext float {val} to double")
                     val = ext
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})")
+                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},double {val})")
             elif ty == "i64" and self._node_is_unsigned(arg):
                 fmt = self._get_fmt_u64()
                 tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
+                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i64 {val})")
             elif ty == "i64":
                 fmt = self._get_fmt_i64()
                 tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
+                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i64 {val})")
             elif self._node_is_unsigned(arg):
                 fmt = self._get_fmt_u32()
                 tmp = self._fresh_tmp()
                 val = self._coerce_int_to(val, ty, "i32", unsigned=True)
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
+                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i32 {val})")
             else:
                 fmt = self._get_fmt_i32()
                 tmp = self._fresh_tmp()
                 val = self._coerce_int_to(val, ty, "i32")
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
+                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i32 {val})")
         return None
 
     # ------------------------------------------------------------------
     # panic — print all args and exit(1). Terminates control flow.
     # ------------------------------------------------------------------
+
+    def _print_call_prefix(self, fd: int | None) -> str:
+        """`call ... @printf(` for stdout, or `call ... @dprintf(i32 fd, ` for
+        another file descriptor (stderr, for `err`)."""
+        if fd is None:
+            return "call i32 (ptr, ...) @printf("
+        self._declare_extern("declare i32 @dprintf(i32, ptr, ...)")
+        return f"call i32 (i32, ptr, ...) @dprintf(i32 {fd}, "
 
     def _emit_panic(self, args: list[N.Expr]) -> str | None:
         # Reuse the same per-type printf logic as `out` for the message.
@@ -2939,6 +3455,7 @@ class Emitter:
             "&&": "and",
             "||": "or",
             "!": "not",
+            "()": "call",
         }
         if op in op_words:
             return f"{struct_name}__op__{op_words[op]}"
@@ -3196,8 +3713,14 @@ class Emitter:
         elif (
             lty == "ptr"
             and rty == "ptr"
-            and self._is_string_operand(args[0])
-            and self._is_string_operand(args[1])
+            and (
+                (self._is_string_operand(args[0]) and self._is_string_operand(args[1]))
+                # Comparing any pointer to a string literal by address is never
+                # meaningful, so a literal on either side means a string compare
+                # (e.g. an `(await handle)` result against "expected").
+                or isinstance(args[0], N.StringLit)
+                or isinstance(args[1], N.StringLit)
+            )
         ):
             # `string` lowers to `ptr` same as structs/arrays/maps, but
             # unlike those it's a primitive value type with no `impl Eq`
@@ -3283,7 +3806,23 @@ class Emitter:
         if isinstance(node, N.Ident):
             return node.name in self._env_string_names
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
-            return node.head.name == "fmt"
+            name = node.head.name
+            if name == "fmt":
+                return True
+            if name in ("+", "/") and node.args:
+                # String concatenation / path join -- see `_emit_arith`.
+                return all(self._is_string_operand(a) for a in node.args)
+            # A call whose declared return type is `string`: a method, a
+            # plain function, or a generic function.
+            if node.args and name.isidentifier():
+                method = self._receiver_method(node.args[0], name)
+                if method is not None:
+                    return self._fn_ret_nyet_names.get(method) == "string"
+            if name in self._fn_ret_nyet_names:
+                return self._fn_ret_nyet_names[name] == "string"
+            if name in self._fn_templates:
+                return self._nyet_type_name(self._fn_templates[name].return_type) == "string"
+            return False
         if isinstance(node, N.FieldAccess):
             struct_name = self._struct_name_of(node.target)
             if struct_name is not None:
@@ -3546,6 +4085,18 @@ class Emitter:
         # Match args to fields — support both positional and keyword
         vals: dict[str, str] = {}
         positional = 0
+        # Struct update: `(Person ..me age:37)`. The parser yields `..` as its
+        # own Ident argument followed by the source expression; every field
+        # not given explicitly is copied from the source below.
+        spread_src: str | None = None
+        spread_at = next(
+            (i for i, a in enumerate(args) if isinstance(a, N.Ident) and a.name == ".."), None
+        )
+        if spread_at is not None:
+            if spread_at + 1 >= len(args):
+                raise NotImplementedError("codegen: `..` in a struct constructor needs a source")
+            spread_src = self._emit_expr(args[spread_at + 1])
+            args = args[:spread_at] + args[spread_at + 2 :]
         for arg in args:
             if isinstance(arg, N.KeywordArg) and arg.value is not None:
                 elem_ty = field_array_elem.get(arg.name)
@@ -3565,6 +4116,18 @@ class Emitter:
                 if v is not None and positional < len(fields):
                     vals[fields[positional][0]] = v
                 positional += 1
+
+        if spread_src is not None:
+            for i, (fname, ftype) in enumerate(fields):
+                if fname not in vals:
+                    src_fptr = self._fresh_tmp()
+                    self._emit_line(
+                        f"{src_fptr} = getelementptr inbounds %{name}, ptr {spread_src}, "
+                        f"i32 0, i32 {i}"
+                    )
+                    loaded = self._fresh_tmp()
+                    self._emit_line(f"{loaded} = load {ftype}, ptr {src_fptr}")
+                    vals[fname] = loaded
 
         for i, (fname, ftype) in enumerate(fields):
             if fname in vals:
@@ -4066,6 +4629,8 @@ class Emitter:
         """Return the (possibly mangled) sum type name for a scrutinee."""
         if isinstance(node, N.Ident):
             return self._env_struct_name.get(node.name)
+        if self._is_parse_call(node):
+            return self._parse_result_type()
         if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
             name = node.head.name
             if name in self._variant_ctors:
@@ -4200,22 +4765,16 @@ class Emitter:
         top_label = self._fresh_label("loop_top")
         end_label = self._fresh_label("loop_end")
 
-        # Allocate result slot for break-with-value
-        break_ty = self._find_break_type(node.body)
-        result_ptr: str | None = None
-        if break_ty is not None:
-            result_ptr = self._emit_alloca(break_ty)
-            if break_ty == "ptr":
-                self._emit_line(f"store ptr null, ptr {result_ptr}")
-            elif self._is_float(break_ty):
-                self._emit_line(f"store {break_ty} 0.0, ptr {result_ptr}")
-            else:
-                self._emit_line(f"store {break_ty} 0, ptr {result_ptr}")
-
         self._emit_line(f"br label %{top_label}")
         self._emit_label(top_label)
 
-        self._loop_stack.append((end_label, result_ptr, break_ty))
+        # [end_label, result_ptr, result_ty]. The result slot is created by the
+        # first `(break value)` -- see `_emit_break` -- since only there is the
+        # value's type known with the right names in scope, e.g. a match arm's
+        # pattern bindings. Sizing it before emitting the body used to see an
+        # unrelated outer binding of the same name and pick the wrong type.
+        frame: list = [end_label, None, None]
+        self._loop_stack.append(frame)
         if node.body is not None:
             self._emit_expr(node.body)
         self._loop_stack.pop()
@@ -4224,6 +4783,7 @@ class Emitter:
         self._emit_line(f"br label %{top_label}")
         self._emit_label(end_label)
 
+        _, result_ptr, break_ty = frame
         if result_ptr is not None and break_ty is not None:
             result = self._fresh_tmp()
             self._emit_line(f"{result} = load {break_ty}, ptr {result_ptr}")
@@ -4232,11 +4792,16 @@ class Emitter:
 
     def _emit_break(self, node: N.Break) -> str | None:
         if self._loop_stack:
-            end_label, result_ptr, break_ty = self._loop_stack[-1]
-            if node.value is not None and result_ptr is not None and break_ty is not None:
+            frame = self._loop_stack[-1]
+            end_label = frame[0]
+            if node.value is not None:
                 val = self._emit_expr(node.value)
                 if val is not None:
                     val_ty = self._infer_llvm_type(node.value)
+                    if frame[1] is None:
+                        frame[2] = self._result_slot_type(val_ty)
+                        frame[1] = self._emit_alloca(frame[2])
+                    result_ptr, break_ty = frame[1], frame[2]
                     if self._is_float(break_ty) and not self._is_float(val_ty):
                         conv = self._fresh_tmp()
                         iop = "uitofp" if self._node_is_unsigned(node.value) else "sitofp"
@@ -4268,6 +4833,13 @@ class Emitter:
             ty = "i32"
             nyet_name = None
 
+        if ty == "void":
+            # `(let i:unit ())`: a unit value has no runtime representation, so
+            # there is nothing to store -- just evaluate the initializer.
+            if node.value is not None:
+                self._emit_expr(node.value)
+            return None
+
         # Array bindings: store the heap pointer and remember its element
         # type so `(name i)` and `(= (name i) v)` lower correctly. We
         # detect via either a `Array[T]` annotation (needed when the rhs
@@ -4292,6 +4864,10 @@ class Emitter:
         ):
             elem_of_array_src = node.value.head.name
             elem_ty = self._env_array_elem_of_array[elem_of_array_src]
+        if elem_ty is None and isinstance(node.value, N.Call):
+            # `(let xs (map f nums))` / `(let xs (make_list))` with no
+            # annotation: a HOF, or a function declared `-> Array[T]`.
+            elem_ty = self._array_expr_elem_ty(node.value)
         if elem_ty is not None:
             elem_nyet: str | None = None
             if node.type is not None:
@@ -4347,9 +4923,31 @@ class Emitter:
             and node.value.head.name in self._fn_ret_tuple_types
         ):
             tname = self._fn_ret_tuple_types[node.value.head.name]
+        elif (
+            isinstance(node.value, N.Call)
+            and isinstance(node.value.head, N.Ident)
+            and node.value.head.name in self._fn_templates
+        ):
+            # A generic function returning a tuple: `(let s (swap #(1 "x")))`.
+            mangled = self._monomorphize_fn_from_args(node.value.head.name, node.value.args)
+            if mangled is not None:
+                tname = self._fn_ret_tuple_types.get(mangled)
+        elif (
+            isinstance(node.value, N.Call)
+            and isinstance(node.value.head, N.Ident)
+            and node.value.head.name in self._env_tuple_types
+            and len(node.value.args) == 1
+            and isinstance(node.value.args[0], N.IntLit)
+        ):
+            # `(let inner (outer 1))` where element 1 is itself a tuple, as a
+            # nested destructuring `(let #(a #(b c)) ...)` produces.
+            tname = self._tuple_field_tuple.get(
+                (self._env_tuple_types[node.value.head.name], node.value.args[0].value)
+            )
         if tuple_elem_tys is not None or tname is not None:
             if tname is None:
                 tname = self._get_or_register_tuple_type(tuple_elem_tys, tuple_elem_nyet)
+                self._record_nested_tuple_fields(tname, node)
             ptr = self._emit_alloca("ptr")
             if node.value is not None:
                 val = self._emit_expr(node.value)
@@ -4428,7 +5026,17 @@ class Emitter:
                 val = self._emit_expr(node.value)
                 if val is not None:
                     val_ty = self._infer_llvm_type(node.value)
-                    if self._is_float(ty) and not self._is_float(val_ty):
+                    if ty == "float" and isinstance(node.value, N.FloatLit):
+                        # `(let e:f32 3.14)`: a double constant is only a valid
+                        # `float` constant if it's exactly representable, so
+                        # round the literal to f32 first.
+                        val = self._float_const(node.value.value, "float")
+                    elif self._is_float(ty) and self._is_float(val_ty) and val_ty != ty:
+                        conv = self._fresh_tmp()
+                        fop = "fptrunc" if ty == "float" else "fpext"
+                        self._emit_line(f"{conv} = {fop} {val_ty} {val} to {ty}")
+                        val = conv
+                    elif self._is_float(ty) and not self._is_float(val_ty):
                         conv = self._fresh_tmp()
                         iop = "uitofp" if self._node_is_unsigned(node.value) else "sitofp"
                         self._emit_line(f"{conv} = {iop} {val_ty} {val} to {ty}")
@@ -4456,7 +5064,12 @@ class Emitter:
             # `:string` annotation is authoritative; otherwise a bare string
             # literal RHS (`(let z "hi")`) infers the same shape.
             declared_string = node.type is not None and self._nyet_type_name(node.type) == "string"
-            if declared_string or (node.type is None and isinstance(node.value, N.StringLit)):
+            # Unannotated: a literal, or anything `_is_string_operand` knows is
+            # a string (`(let msg (fmt ...))`, a call returning `string`).
+            inferred_string = (
+                node.type is None and node.value is not None and self._is_string_operand(node.value)
+            )
+            if declared_string or inferred_string:
                 self._env_string_names.add(node.name)
             elif node.name in self._env_string_names:
                 # A rebinding to a non-string shadows an earlier string of the
@@ -4484,6 +5097,13 @@ class Emitter:
                 return self._fn_sigs[value.name]
             if value.name in self._env_fn_sig:
                 return self._env_fn_sig[value.name]
+        # A call to a function that returns a function: `(let add5 (make_adder 5))`.
+        if (
+            isinstance(value, N.Call)
+            and isinstance(value.head, N.Ident)
+            and value.head.name in self._fn_ret_fn_sig
+        ):
+            return self._fn_ret_fn_sig[value.head.name]
         # A Map[K V] lookup `(m key)` where `m`'s values are themselves
         # closures/fn pointers (a dispatch-table pattern) -- see
         # `_env_map_val_fn_sig`.
@@ -4584,6 +5204,8 @@ class Emitter:
                 return self._fn_ret_nyet_names.get(mangled)
         if isinstance(node, N.Call) and (unq := self._unqualify_module_call(node)) is not None:
             return self._infer_nyet_type_name(unq)
+        if self._is_parse_call(node):
+            return self._parse_result_type()
         if isinstance(node, N.Ident) and node.name in self._env_struct_name:
             return self._env_struct_name[node.name]
         # A struct field that itself holds a struct/sum-type value —
@@ -5109,19 +5731,66 @@ class Emitter:
         xs)`, `(fold min (xs 0) xs)`) a concrete signature."""
         if not isinstance(node, N.Ident):
             return None
+        # The first element returned is a closure value -- see
+        # `_emit_closure_value`. A local fn-typed binding shadows a global.
+        if node.name in self._env_fn_sig and node.name in self._env:
+            ptr, _ = self._env[node.name]
+            closure = self._fresh_tmp()
+            self._emit_line(f"{closure} = load ptr, ptr {ptr}")
+            sig_types, ret_type = self._env_fn_sig[node.name]
+            return closure, list(sig_types), ret_type
+        if node.name in self._closure_info:
+            self._infer_untyped_lambda(node.name, elem_ty)
         if node.name in self._fn_sigs:
             param_tys, ret_ty = self._fn_sigs[node.name]
-            return f"@{node.name}", list(param_tys), ret_ty
-        if node.name in self._env_fn_sig:
-            ptr, _ = self._env[node.name]
-            fnptr = self._fresh_tmp()
-            self._emit_line(f"{fnptr} = load ptr, ptr {ptr}")
-            sig_types, ret_type = self._env_fn_sig[node.name]
-            return fnptr, list(sig_types), ret_type
+            closure_val = self._emit_ident(node)
+            if closure_val is None:
+                return None
+            return closure_val, list(param_tys), ret_ty
         if elem_ty is not None and node.name in self._OP_CALLABLES and node.name not in self._env:
             name = self._get_or_emit_op_fn(node.name, elem_ty)
-            return f"@{name}", [elem_ty, elem_ty], elem_ty
+            return self._static_closure_record(name), [elem_ty, elem_ty], elem_ty
         return None
+
+    def _infer_untyped_lambda(self, name: str, elem_ty: str | None) -> None:
+        """Fill in a lifted lambda's missing types from the HOF it's passed
+        to: untyped params take the array's element type, and a missing
+        return type is inferred from the body -- `(filter (fn (x) (> x 2))
+        nums)`. Without this, untyped params defaulted to i32 and a missing
+        return type to void."""
+        decl = self._lifted_decls.get(name)
+        if decl is None or elem_ty is None:
+            return
+        untyped = [p for p in decl.params if p.type is None]
+        if not untyped and decl.return_type is not None:
+            return
+        for p in untyped:
+            p.type = self._type_node_for_llvm(elem_ty, decl.span)
+        if decl.return_type is None and decl.body is not None:
+            saved_env = dict(self._env)
+            for p in decl.params:
+                self._env[p.name] = ("%__infer", self._llvm_type(p.type))
+            try:
+                ret_ty = self._infer_llvm_type(decl.body)
+            finally:
+                self._env = saved_env
+            decl.return_type = self._type_node_for_llvm(ret_ty, decl.span)
+        self._register_fn_sig(decl)
+
+    @staticmethod
+    def _type_node_for_llvm(ty: str, span: N.Span) -> N.TypeNode:
+        names = {
+            "i1": "bool",
+            "i8": "u8",
+            "i16": "i16",
+            "i32": "i32",
+            "i64": "i64",
+            "float": "f32",
+            "double": "f64",
+            "ptr": "string",
+            "void": "unit",
+        }
+        return N.PrimType(span, names.get(ty, "i32"))
 
     # Operators (and min/max) usable as a two-argument function value.
     _OP_CALLABLES = {
@@ -5161,7 +5830,7 @@ class Emitter:
             body = [f"  %r = {ops[op]} {ty} %a, %b"]
         self._synth_fns[name] = "\n".join(
             [
-                f"define internal {ty} @{name}({ty} %a, {ty} %b) {{",
+                f"define internal {ty} @{name}(ptr %__env, {ty} %a, {ty} %b) {{",
                 "entry:",
                 *body,
                 f"  ret {ty} %r",
@@ -5218,8 +5887,109 @@ class Emitter:
         rhs = self._convert_numeric(rhs, self._infer_llvm_type(args[1]), ty, args[1])
         fn = self._get_or_emit_op_fn(op, ty)
         tmp = self._fresh_tmp()
-        self._emit_line(f"{tmp} = call {ty} @{fn}({ty} {lhs}, {ty} {rhs})")
+        self._emit_line(f"{tmp} = call {ty} @{fn}(ptr null, {ty} {lhs}, {ty} {rhs})")
         return tmp
+
+    def _is_parse_call(self, node: N.Node | None) -> bool:
+        return (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name == "parse"
+            and len(node.args) == 1
+            and "parse" not in self._fn_sigs
+        )
+
+    def _parse_result_type(self) -> str:
+        """`Result[i32 string]`, the type `parse` returns, monomorphized from
+        the program's own `Result[T E]` (main.no declares it)."""
+        mangled = (
+            self._monomorphize_sum_type("Result", ("i32", "string"))
+            if "Result" in self._sum_templates
+            else None
+        )
+        if mangled is None:
+            raise NotImplementedError(
+                "codegen: `parse` returns `Result[i32 string]`, which needs a generic "
+                "`Result[T E]` sum type with `Ok` and `Err` variants"
+            )
+        return mangled
+
+    def _emit_sum_raw(self, sum_name: str, tag: int, payload_vals: list[str]) -> str:
+        """Construct a sum value from already-emitted payload values, laid out
+        exactly like `_emit_variant_construct`."""
+        _, payload_types = self._sum_types[sum_name][tag]
+        ptr = self._heap_alloc_struct(sum_name, self._sum_type_size_bytes(sum_name))
+        tag_ptr = self._fresh_tmp()
+        self._emit_line(f"{tag_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 0")
+        self._emit_line(f"store i32 {tag}, ptr {tag_ptr}")
+        if payload_types:
+            payload_ptr = self._fresh_tmp()
+            self._emit_line(
+                f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 1"
+            )
+            offsets = self._field_offsets(payload_types)
+            for ftype, off, val in zip(payload_types, offsets, payload_vals, strict=False):
+                field_ptr = payload_ptr
+                if off != 0:
+                    field_ptr = self._fresh_tmp()
+                    self._emit_line(f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}")
+                self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
+        return ptr
+
+    def _emit_parse(self, arg: N.Expr) -> str:
+        """`(parse s)` -> `(Ok n)` if the whole string (optionally followed by a
+        newline, as `(in)` returns it) is a decimal i32, else `(Err message)`.
+        It used to compile to a call to an undefined `@parse`."""
+        sum_name = self._parse_result_type()
+        tags = {vname: i for i, (vname, _) in enumerate(self._sum_types[sum_name])}
+        if "Ok" not in tags or "Err" not in tags:
+            raise NotImplementedError("codegen: `parse` needs `Result`'s `Ok` and `Err` variants")
+        text = self._emit_expr(arg)
+        if text is None:
+            raise NotImplementedError(
+                f"codegen: the `parse` argument ({arg.span}) produced no value"
+            )
+        self._declare_extern("declare i64 @strtol(ptr, ptr, i32)")
+        end_slot = self._emit_alloca("ptr")
+        result_slot = self._emit_alloca("ptr")
+        value64 = self._fresh_tmp()
+        self._emit_line(f"{value64} = call i64 @strtol(ptr {text}, ptr {end_slot}, i32 10)")
+        end = self._fresh_tmp()
+        self._emit_line(f"{end} = load ptr, ptr {end_slot}")
+        consumed = self._fresh_tmp()
+        self._emit_line(f"{consumed} = icmp ne ptr {end}, {text}")
+        last = self._fresh_tmp()
+        self._emit_line(f"{last} = load i8, ptr {end}")
+        at_nul = self._fresh_tmp()
+        self._emit_line(f"{at_nul} = icmp eq i8 {last}, 0")
+        at_newline = self._fresh_tmp()
+        self._emit_line(f"{at_newline} = icmp eq i8 {last}, 10")
+        at_end = self._fresh_tmp()
+        self._emit_line(f"{at_end} = or i1 {at_nul}, {at_newline}")
+        ok = self._fresh_tmp()
+        self._emit_line(f"{ok} = and i1 {consumed}, {at_end}")
+        ok_label = self._fresh_label("parse_ok")
+        err_label = self._fresh_label("parse_err")
+        done_label = self._fresh_label("parse_done")
+        self._emit_line(f"br i1 {ok}, label %{ok_label}, label %{err_label}")
+
+        self._emit_label(ok_label)
+        value32 = self._fresh_tmp()
+        self._emit_line(f"{value32} = trunc i64 {value64} to i32")
+        ok_val = self._emit_sum_raw(sum_name, tags["Ok"], [value32])
+        self._emit_line(f"store ptr {ok_val}, ptr {result_slot}")
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(err_label)
+        message, _ = self._get_string("invalid integer")
+        err_val = self._emit_sum_raw(sum_name, tags["Err"], [message])
+        self._emit_line(f"store ptr {err_val}, ptr {result_slot}")
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(done_label)
+        result = self._fresh_tmp()
+        self._emit_line(f"{result} = load ptr, ptr {result_slot}")
+        return result
 
     def _emit_sqrt(self, arg: N.Expr) -> str:
         """`(sqrt x)` -> `f64`, via the `llvm.sqrt` intrinsic."""
@@ -5246,13 +6016,23 @@ class Emitter:
         if (
             isinstance(node, N.Call)
             and isinstance(node.head, N.Ident)
+            and node.head.name in self._fn_ret_array_elem
+        ):
+            return self._fn_ret_array_elem[node.head.name]
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
             and node.head.name not in self._fn_sigs
             and len(node.args) == 2
         ):
             if node.head.name == "filter":
                 return self._array_expr_elem_ty(node.args[1])
+            if node.head.name == "flat_map" and isinstance(node.args[0], N.Ident):
+                return self._fn_ret_array_elem.get(node.args[0].name)
             if node.head.name == "map" and isinstance(node.args[0], N.Ident):
                 f = node.args[0].name
+                if f in self._closure_info:
+                    self._infer_untyped_lambda(f, self._array_expr_elem_ty(node.args[1]))
                 if f in self._fn_sigs:
                     return self._fn_sigs[f][1]
                 if f in self._env_fn_sig:
@@ -5287,13 +6067,19 @@ class Emitter:
     def _emit_indirect_call_raw(
         self, fnptr: str, arg_tys: list[str], arg_vals: list[str], ret_ty: str
     ) -> str | None:
-        """Like `_emit_indirect_call`, but over already-materialized values."""
-        args_str = ", ".join(f"{t} {v}" for t, v in zip(arg_tys, arg_vals, strict=False))
+        """Call closure value `fnptr` -- a closure record, see
+        `_emit_closure_value` -- with already-materialized arguments: load the
+        code pointer from the record and pass the record as the hidden first
+        argument."""
+        code = self._fresh_tmp()
+        self._emit_line(f"{code} = load ptr, ptr {fnptr}")
+        args = [f"ptr {fnptr}"] + [f"{t} {v}" for t, v in zip(arg_tys, arg_vals, strict=False)]
+        args_str = ", ".join(args)
         if ret_ty == "void":
-            self._emit_line(f"call void {fnptr}({args_str})")
+            self._emit_line(f"call void {code}({args_str})")
             return None
         tmp = self._fresh_tmp()
-        self._emit_line(f"{tmp} = call {ret_ty} {fnptr}({args_str})")
+        self._emit_line(f"{tmp} = call {ret_ty} {code}({args_str})")
         return tmp
 
     def _array_ptr_and_len(self, arr_name: str) -> tuple[str, str]:
@@ -5335,6 +6121,24 @@ class Emitter:
         arr, len64 = self._array_ptr_and_len(arr_name)
         base = self._array_data_base(arr)
 
+        if ret_ty == "void":
+            # `(map (fn (item:&T) -> unit ...) items)` for its side effects, as
+            # main.no's `print_all` does: call f on each element, with no result
+            # array. This used to allocate and store into an array of `void`.
+            i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
+            src_ptr = self._fresh_tmp()
+            self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
+            elem = self._fresh_tmp()
+            self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
+            arg_ty = param_tys[0] if param_tys else elem_ty
+            self._emit_indirect_call_raw(fnptr, [arg_ty], [elem], "void")
+            i_next = self._fresh_tmp()
+            self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+            self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+            self._emit_line(f"br label %{cond_label}")
+            self._emit_label(end_label)
+            return None
+
         out_size = self._fresh_tmp()
         self._emit_line(f"{out_size} = mul i64 {len64}, {self._sizeof(ret_ty)}")
         total = self._fresh_tmp()
@@ -5360,6 +6164,100 @@ class Emitter:
         self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
         self._emit_line(f"br label %{cond_label}")
         self._emit_label(end_label)
+        return out
+
+    def _emit_hof_flat_map(self, f_arg: N.Expr, arr_name: str) -> str | None:
+        """`(flat_map f arr)`: call `f` -- which returns an `Array[U]` -- on
+        every element and concatenate the results into one `Array[U]`."""
+        callable_ = self._resolve_callable(f_arg, self._env_array_elem[arr_name])
+        if callable_ is None:
+            raise NotImplementedError(self._unresolved_callable_msg(f_arg))
+        fnptr, param_tys, _ = callable_
+        out_elem = self._fn_ret_array_elem.get(f_arg.name) if isinstance(f_arg, N.Ident) else None
+        if out_elem is None:
+            raise NotImplementedError(
+                "codegen: `flat_map`'s function must be declared to return an `Array[T]`"
+            )
+        elem_ty = self._env_array_elem[arr_name]
+        elem_size = self._sizeof(out_elem)
+        self._declare_extern("declare ptr @malloc(i64)")
+        self._declare_extern("declare ptr @memcpy(ptr, ptr, i64)")
+
+        arr, len64 = self._array_ptr_and_len(arr_name)
+        base = self._array_data_base(arr)
+
+        # Pass 1: call f on every element, keeping each result array and a
+        # running total of their lengths.
+        parts_bytes = self._fresh_tmp()
+        self._emit_line(f"{parts_bytes} = mul i64 {len64}, 8")
+        parts = self._fresh_tmp()
+        self._emit_line(f"{parts} = call ptr @malloc(i64 {parts_bytes})")
+        total_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {total_slot}")
+        i_slot, i_val, cond_label, end_label = self._emit_counted_loop(len64)
+        src_ptr = self._fresh_tmp()
+        self._emit_line(f"{src_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {i_val}")
+        elem = self._fresh_tmp()
+        self._emit_line(f"{elem} = load {elem_ty}, ptr {src_ptr}")
+        arg_ty = param_tys[0] if param_tys else elem_ty
+        part = self._emit_indirect_call_raw(fnptr, [arg_ty], [elem], "ptr")
+        part_slot = self._fresh_tmp()
+        self._emit_line(f"{part_slot} = getelementptr ptr, ptr {parts}, i64 {i_val}")
+        self._emit_line(f"store ptr {part}, ptr {part_slot}")
+        part_len = self._fresh_tmp()
+        self._emit_line(f"{part_len} = load i64, ptr {part}")
+        total = self._fresh_tmp()
+        self._emit_line(f"{total} = load i64, ptr {total_slot}")
+        new_total = self._fresh_tmp()
+        self._emit_line(f"{new_total} = add i64 {total}, {part_len}")
+        self._emit_line(f"store i64 {new_total}, ptr {total_slot}")
+        i_next = self._fresh_tmp()
+        self._emit_line(f"{i_next} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_next}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond_label}")
+        self._emit_label(end_label)
+
+        # Pass 2: allocate the result and copy every part into it in order.
+        final_total = self._fresh_tmp()
+        self._emit_line(f"{final_total} = load i64, ptr {total_slot}")
+        data_bytes = self._fresh_tmp()
+        self._emit_line(f"{data_bytes} = mul i64 {final_total}, {elem_size}")
+        out_bytes = self._fresh_tmp()
+        self._emit_line(f"{out_bytes} = add i64 {data_bytes}, 8")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {out_bytes})")
+        self._emit_line(f"store i64 {final_total}, ptr {out}")
+        out_base = self._array_data_base(out)
+        off_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {off_slot}")
+        j_slot, j_val, cond2_label, end2_label = self._emit_counted_loop(len64)
+        part_ptr = self._fresh_tmp()
+        self._emit_line(f"{part_ptr} = getelementptr ptr, ptr {parts}, i64 {j_val}")
+        part2 = self._fresh_tmp()
+        self._emit_line(f"{part2} = load ptr, ptr {part_ptr}")
+        part2_len = self._fresh_tmp()
+        self._emit_line(f"{part2_len} = load i64, ptr {part2}")
+        part2_base = self._array_data_base(part2)
+        off = self._fresh_tmp()
+        self._emit_line(f"{off} = load i64, ptr {off_slot}")
+        off_bytes = self._fresh_tmp()
+        self._emit_line(f"{off_bytes} = mul i64 {off}, {elem_size}")
+        dst = self._fresh_tmp()
+        self._emit_line(f"{dst} = getelementptr i8, ptr {out_base}, i64 {off_bytes}")
+        copy_bytes = self._fresh_tmp()
+        self._emit_line(f"{copy_bytes} = mul i64 {part2_len}, {elem_size}")
+        copied = self._fresh_tmp()
+        self._emit_line(
+            f"{copied} = call ptr @memcpy(ptr {dst}, ptr {part2_base}, i64 {copy_bytes})"
+        )
+        new_off = self._fresh_tmp()
+        self._emit_line(f"{new_off} = add i64 {off}, {part2_len}")
+        self._emit_line(f"store i64 {new_off}, ptr {off_slot}")
+        j_next = self._fresh_tmp()
+        self._emit_line(f"{j_next} = add i64 {j_val}, 1")
+        self._emit_line(f"store i64 {j_next}, ptr {j_slot}")
+        self._emit_line(f"br label %{cond2_label}")
+        self._emit_label(end2_label)
         return out
 
     def _emit_hof_filter(self, f_arg: N.Expr, arr_name: str) -> str | None:
@@ -5689,12 +6587,44 @@ class Emitter:
             mangled = self._method_impls.get((concrete_type, m.name))
             if mangled is None:
                 return None
-            fn_ptrs.append(f"ptr @{mangled}")
+            fn_ptrs.append(f"ptr @{self._dyn_entry(mangled)}")
         name = f"@vtable.{concrete_type}.{trait_name}"
         n = len(fn_ptrs)
         self._struct_type_lines.append(f"{name} = constant [{n} x ptr] [{', '.join(fn_ptrs)}]")
         self._vtables[key] = name
         return name
+
+    def _dyn_entry(self, mangled: str) -> str:
+        """The function a vtable slot points at for impl method `mangled`.
+
+        A call through a vtable passes `self` as the fat pointer's data
+        pointer. A method on a scalar type (`impl Display i32`) takes `self` by
+        value, so it gets a thunk that loads the value from that pointer first
+        -- see `_emit_dyn_coerce`, which boxes scalars."""
+        sig = self._fn_sigs.get(mangled)
+        if sig is None or not sig[0] or sig[0][0] == "ptr":
+            return mangled
+        param_tys, ret_ty = sig
+        thunk = f"{mangled}.dyn"
+        if thunk not in self._synth_fns:
+            self_ty, rest = param_tys[0], param_tys[1:]
+            params = ", ".join(["ptr %self"] + [f"{t} %a{i}" for i, t in enumerate(rest)])
+            args = ", ".join([f"{self_ty} %v"] + [f"{t} %a{i}" for i, t in enumerate(rest)])
+            if ret_ty == "void":
+                call = [f"  call void @{mangled}({args})", "  ret void"]
+            else:
+                call = [f"  %r = call {ret_ty} @{mangled}({args})", f"  ret {ret_ty} %r"]
+            self._synth_fns[thunk] = "\n".join(
+                [
+                    f"define internal {ret_ty} @{thunk}({params}) {{",
+                    "entry:",
+                    f"  %v = load {self_ty}, ptr %self",
+                    *call,
+                    "}",
+                    "",
+                ]
+            )
+        return thunk
 
     def _emit_dyn_coerce(self, arg_node: N.Expr, trait_name: str) -> str | None:
         """Coerce a concrete value (typically `&some_struct`) into a
@@ -5707,10 +6637,20 @@ class Emitter:
         if concrete_ty is None and isinstance(inner, N.Ident):
             concrete_ty = self._env_struct_name.get(inner.name)
         if concrete_ty is None:
-            return None
+            # A primitive, e.g. main.no's `(log_value &42)`.
+            concrete_ty = self._infer_nyet_type_from_arg(inner)
         vtable_name = self._get_or_register_vtable(concrete_ty, trait_name)
         if vtable_name is None:
             return None
+        value_ty = self._infer_llvm_type(inner)
+        if value_ty != "ptr":
+            # Box a scalar so the fat pointer's data field is a pointer; the
+            # vtable's thunk loads it back -- see `_dyn_entry`.
+            self._declare_extern("declare ptr @malloc(i64)")
+            box = self._fresh_tmp()
+            self._emit_line(f"{box} = call ptr @malloc(i64 8)")
+            self._emit_line(f"store {value_ty} {concrete_val}, ptr {box}")
+            concrete_val = box
 
         dyn_struct = self._get_or_register_dyn_type(trait_name)
         fat_ptr = self._heap_alloc_struct(dyn_struct, 16)
@@ -5820,8 +6760,15 @@ class Emitter:
             trait_name = dyn_traits[i] if dyn_traits and i < len(dyn_traits) else None
             if trait_name is not None:
                 v = self._emit_dyn_coerce(arg, trait_name)
-                if v is not None:
-                    arg_vals.append(("ptr", v))
+                if v is None:
+                    # This used to drop the argument silently, calling the
+                    # function with too few arguments (a crash at runtime).
+                    raise NotImplementedError(
+                        f"codegen: can't pass the argument at {arg.span} as a `dyn "
+                        f"{trait_name}` -- its type doesn't implement every method of "
+                        f"{trait_name}"
+                    )
+                arg_vals.append(("ptr", v))
                 continue
             elem_ty = array_elems[i] if array_elems and i < len(array_elems) else None
             if elem_ty is not None:
@@ -5856,23 +6803,18 @@ class Emitter:
         """
         sig_types, ret_type = self._env_fn_sig[name]
         ptr, _slot_ty = self._env[name]
-        fnptr = self._fresh_tmp()
-        self._emit_line(f"{fnptr} = load ptr, ptr {ptr}")
+        closure = self._fresh_tmp()
+        self._emit_line(f"{closure} = load ptr, ptr {ptr}")
 
-        arg_vals: list[tuple[str, str]] = []
+        arg_tys: list[str] = []
+        arg_vals: list[str] = []
         for i, arg in enumerate(args):
             v = self._emit_expr(arg)
             if v is None:
                 continue
-            ty = sig_types[i] if i < len(sig_types) else self._infer_llvm_type(arg)
-            arg_vals.append((ty, v))
-        args_str = ", ".join(f"{t} {v}" for t, v in arg_vals)
-        if ret_type == "void":
-            self._emit_line(f"call void {fnptr}({args_str})")
-            return None
-        tmp = self._fresh_tmp()
-        self._emit_line(f"{tmp} = call {ret_type} {fnptr}({args_str})")
-        return tmp
+            arg_tys.append(sig_types[i] if i < len(sig_types) else self._infer_llvm_type(arg))
+            arg_vals.append(v)
+        return self._emit_indirect_call_raw(closure, arg_tys, arg_vals, ret_type)
 
     # ==================================================================
     # env_struct_name: tracks which Nyet struct/sum type a binding holds

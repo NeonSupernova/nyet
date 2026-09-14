@@ -1,0 +1,85 @@
+;; Regression test: builtins, macro forms, and codegen fixes main.no needed.
+;;
+;;   - `(parse s)` compiled to a call to an undefined `@parse`. It now returns
+;;     `Result[i32 string]`, built from the program's own `Result`.
+;;   - `(err "msg")` compiled to a call to an undefined `@err`.
+;;   - A slash-named macro like `log/debug` never expanded: its call head
+;;     parses as a path.
+;;   - `==` between a computed string -- a `fmt` result, a call returning
+;;     `string`, a concatenation, an awaited task result -- and a literal
+;;     compared addresses, not contents.
+;;   - `(map f xs)` with a unit-returning `f` allocated an array of `void`.
+;;   - A `dyn Trait` argument of a primitive type (`&42`) was silently
+;;     dropped, calling the function with a missing argument.
+;;   - A loop's break-value slot was sized using an unrelated outer binding
+;;     with the same name as a match arm's pattern variable.
+;;   - A variant payload passed by field name, `(Wrap inner:3)`, crashed.
+;;
+;; Expected:
+;;   42 invalid integer 7
+;;   DEBUG (+ 2 3) = 5
+;;   true true true true
+;;   item 1
+;;   item 2
+;;   42 hi
+;;   parsed 12
+;;   wrapped 3
+
+(type Result[T E]
+  (Ok value:T)
+  (Err error:E))
+
+(type Holder (Wrap inner:i32))
+
+(trait Display (fn display (self:&Self) -> string))
+
+(impl Display i32 (fn display (self:&i32) -> string (fmt "{}" self)))
+(impl Display string (fn display (self:&string) -> string self))
+
+(macro log/debug (expr)
+  (do
+    (let result expr)
+    (out (fmt "DEBUG {} = {}\n" (quote expr) result))
+    result))
+
+(fn greet (name:string) -> string (+ "hi " name))
+(fn shout (msg:string) -> string (+ msg "!"))
+(fn show (val:&dyn Display) -> string (display val))
+(fn print_item (x:i32) -> unit (out (fmt "item {}\n" x)))
+
+(fn main () -> unit
+  (do
+    (let bad (match (parse "4x2") ((Ok n) "?") ((Err e) e)))
+    (match (parse "42") ((Ok n) (out (fmt "{} {} " n bad))) ((Err _) (out "? ")))
+    (match (parse "7\n") ((Ok n) (out (fmt "{}\n" n))) ((Err _) (out "?\n")))
+    (err "this goes to stderr\n")
+
+    (let five (log/debug (+ 2 3)))
+    (let msg (fmt "n={}" five))
+    (let handle (spawn (shout "go")))
+    (let awaited (await handle))
+    (out (fmt "{} {} {} {}\n"
+              (if (== msg "n=5") "true" "false")
+              (if (== (greet "Ada") "hi Ada") "true" "false")
+              (if (== (+ "a" "b" "c") "abc") "true" "false")
+              (if (== awaited "go!") "true" "false")))
+
+    (let items:Array[i32] [1 2])
+    (map (fn (x:i32) -> unit (print_item x)) items)
+
+    (out (fmt "{} {}\n" (show &42) (show &"hi")))
+
+    (let n "an unrelated outer n")
+    (let inputs:Array[string] ["x" "12"])
+    (var i:i32 0)
+    (let parsed:i32
+      (loop
+        (let s (inputs i))
+        (= i (+ i 1))
+        (match (parse s)
+          ((Ok n)  (break n))
+          ((Err _) pass))))
+    (out (fmt "parsed {}\n" parsed))
+
+    (let w (Wrap inner:3))
+    (match w ((Wrap v) (out (fmt "wrapped {}\n" v))))))

@@ -1,0 +1,78 @@
+;; Regression test: closures that capture variables from their environment,
+;; with main.no's three capture modes.
+;;
+;;   (fn ...)       -- borrows: sees later changes to the captured variable
+;;   (fn! ...)      -- borrows mutably: can change the captured variable
+;;   (move fn ...)  -- moves: keeps the value it captured when created
+;;
+;; Also: a function returning a closure (`make_adder`), a named function used
+;; as a function value, `Fn[...]`/`FnOnce[...]` parameter types, a HOF lambda
+;; capturing a parameter, a nested lambda capturing through its enclosing
+;; lambda, and untyped lambda params inferred from the array in a pipeline.
+;;
+;; Before the fix, any reference to an enclosing variable from a closure was
+;; a codegen error (and before that, silently read garbage).
+;;
+;; Expected:
+;;   read 2
+;;   moved 2 now 100 borrowed 100
+;;   adders 8 13
+;;   apply named 2 lambda 6 closure 6
+;;   runs 2 once 7
+;;   above 3
+;;   nested 1007
+;;   pipeline 50
+
+(fn make_adder (n:i32) -> (fn i32 -> i32)
+  (move fn (x:i32) -> i32 (+ x n)))
+
+(fn apply (f:(fn i32 -> i32) x:i32) -> i32 (f x))
+
+(fn inc (x:i32) -> i32 (+ x 1))
+
+(fn run_twice (f:Fn[() unit]) -> unit (do (f) (f)))
+
+(fn run_once (f:FnOnce[() i32]) -> i32 (f))
+
+(fn count_above (xs:Array[i32] threshold:i32) -> i32
+  (len (filter (fn (x:i32) -> bool (> x threshold)) xs)))
+
+(fn main () -> unit
+  (do
+    (var counter:i32 0)
+    (let inc_count (fn! () -> unit (= counter (+ counter 1))))
+    (inc_count)
+    (inc_count)
+    (let read_count (fn () -> i32 counter))
+    (out (fmt "read {}\n" (read_count)))
+
+    (let take (move fn () -> i32 counter))
+    (= counter 100)
+    (out (fmt "moved {} now {} borrowed {}\n" (take) counter (read_count)))
+
+    (let add5 (make_adder 5))
+    (let add10 (make_adder 10))
+    (out (fmt "adders {} {}\n" (add5 3) (add10 3)))
+
+    (out (fmt "apply named {} lambda {} closure {}\n"
+              (apply inc 1) (apply (fn (x:i32) -> i32 (* x 3)) 2) (apply add5 1)))
+
+    (var runs:i32 0)
+    (run_twice (fn! () -> unit (= runs (+ runs 1))))
+    (out (fmt "runs {} once {}\n" runs (run_once (fn () -> i32 7))))
+
+    (out (fmt "above {}\n" (count_above [1 5 9 12] 4)))
+
+    (let base 1000)
+    (let outer (fn (x:i32) -> i32
+      (do
+        (let inner (fn (y:i32) -> i32 (+ y base)))
+        (inner x))))
+    (out (fmt "nested {}\n" (outer 7)))
+
+    (let nums:Array[i32] [1 2 3 4 5])
+    (out (fmt "pipeline {}\n"
+              (|> nums
+                (filter (fn (x) (> x 2)))
+                (map    (fn (x) (* x x)))
+                (fold   + 0))))))

@@ -169,6 +169,13 @@ class Lexer:
                     self.pos += 2
                     self._emit(TokenKind.ARROW, start)
                     continue
+                if self._peek(1) in _DIGIT:
+                    # `-3`, `-0.5`: a negative numeric literal. Subtraction is
+                    # always a call head followed by whitespace, `(- a b)`, so
+                    # a `-` immediately followed by a digit is unambiguous.
+                    self._advance()  # -
+                    self._lex_number(start, negative=True)
+                    continue
                 self._advance()
                 self._emit(TokenKind.MINUS, start)
                 continue
@@ -347,7 +354,10 @@ class Lexer:
 
     # ---------- numbers ----------
 
-    def _lex_number(self, start: int) -> None:
+    def _lex_number(self, start: int, negative: bool = False) -> None:
+        # `negative`: the caller already consumed a leading `-` (at `start`).
+        # The decimal path below slices from `start`, so the sign is part of
+        # `raw`; only the base-prefixed path parses digits alone.
         # Base prefixes (0x / 0b / 0o) — integer only, no suffix yet.
         if self._peek() == "0" and self._peek(1) in ("x", "X", "b", "B", "o", "O"):
             self._advance()  # 0
@@ -364,7 +374,8 @@ class Lexer:
             if not raw:
                 raise self._error("numeric literal needs at least one digit", start)
             suffix = self._lex_numeric_suffix(start)
-            self._emit(TokenKind.INT_LIT, start, value=int(raw, base), suffix=suffix)
+            value = -int(raw, base) if negative else int(raw, base)
+            self._emit(TokenKind.INT_LIT, start, value=value, suffix=suffix)
             return
 
         # Decimal integer or float.

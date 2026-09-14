@@ -1,0 +1,9 @@
+=== stdout ===
+42 invalid integer 7
+DEBUG (+ 2 3) = 5
+true true true true
+item 1
+item 2
+42 hi
+parsed 12
+wrapped 3
