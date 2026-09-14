@@ -516,8 +516,10 @@ slice should carry. Natural next step for whoever picks this up.
 
 ## Phase 5 — main.no compiles and runs — DONE (2026-09-14)
 
-Branch `worktree-main-no-compiles`, on top of `worktree-fix-compiler-bugs`
-(`3cb712f`). main.no's header said "It compiles"; it had 45 `check`
+Branch `worktree-main-no-compiles`, based on `main` after PR #4 and
+carrying the three `worktree-fix-compiler-bugs` fixes (Array[T]
+ergonomics, 2D arrays, generic variant disambiguation) that main.no
+also needed. main.no's header said "It compiles"; it had 45 `check`
 errors and couldn't be built. Probing its features one at a time (71
 small programs) found 18 working, 6 silent miscompiles, about 20 that
 passed `check` but failed to build, and the rest unimplemented.
