@@ -1,5 +1,5 @@
 ;;;; Nyet Language Reference
-;;;; This file is valid Nyet source. It compiles.
+;;;; This file is valid Nyet source. It compiles, and it runs.
 ;;;;
 ;;;; Nyet: S-expression syntax, static types, Rust-inspired ownership,
 ;;;; extensible IO channels, first-class functions, and operator overloading.
@@ -7,6 +7,19 @@
 ;;;; The first element of any parenthetical is a callable — a function,
 ;;;; operator, type constructor, array, or any value that implements call semantics.
 ;;;; There is no special syntax. Everything is an expression.
+;;;;
+;;;; How to read this file: declarations (fn, struct, type, trait, impl,
+;;;; macro, const) sit at the top level. Statement-style examples for each
+;;;; section live in one function per section (e.g. `primitives_examples`),
+;;;; and `main` at the bottom runs every one of them. Where a comment states
+;;;; what an expression evaluates to, an `assert` checks it, so building and
+;;;; running this file verifies the reference:
+;;;;
+;;;;   python3 -m pynyet.driver run main.no
+;;;;
+;;;; Features that are designed but not implemented yet are collected in the
+;;;; "Planned" block comment at the very end. That block is the only part of
+;;;; this file that is not compiled.
 
 
 ;; ============================================================
@@ -20,9 +33,10 @@
 ;;;   section       — describes a logical section of the file
 ;;    block         — describes a declaration or a few lines
 ;     inline        — notes on a single expression
-#|    
-      Block Comment — describes a multiline comment These have full markdown support 
-|# 
+#|
+      Block Comment — describes a multiline comment These have full markdown support
+|#
+
 
 ;; ============================================================
 ;;; Primitives
@@ -31,51 +45,63 @@
 ;;; Primitive types. All are value types — they live on the stack
 ;;; and are copied on assignment unless explicitly borrowed or moved.
 
-(let a:i32    42)            ; 32-bit signed integer
-(let b:i64    1000000000)    ; 64-bit signed integer
-(let c:u32    100)           ; 32-bit unsigned integer
-(let d:u64    100000)        ; 64-bit unsigned integer
-(let e:f32    3.14)          ; 32-bit float
-(let f:f64    2.718281828)   ; 64-bit float
-(let g:bool   true)          ; true or false
-(let h:string "hello")       ; owned UTF-8 string
-(let i:unit   ())            ; the absence of a value
-(let s:usize  0)             ; platform-width unsigned — the indexing type
+(fn primitives_examples () -> unit
+  (do
+    (let a:i32    42)            ; 32-bit signed integer
+    (let b:i64    1000000000)    ; 64-bit signed integer
+    (let c:u32    100)           ; 32-bit unsigned integer
+    (let d:u64    100000)        ; 64-bit unsigned integer
+    (let e:f32    3.14)          ; 32-bit float
+    (let f:f64    2.718281828)   ; 64-bit float
+    (let g:bool   true)          ; true or false
+    (let h:string "hello")       ; owned UTF-8 string
+    (let i:unit   ())            ; the absence of a value
+    (let s:usize  0)             ; platform-width unsigned — the indexing type
 
-;;; Numeric literal suffixes pin the type at the call site.
-;;; Without a suffix, integers default to i32 and floats to f64.
+    ;;; Numeric literal suffixes pin the type at the call site.
+    ;;; Without a suffix, integers default to i32 and floats to f64.
 
-(let j  42i64)      ; explicit i64
-(let k  255u8)      ; explicit u8
-(let l  3.14f32)    ; explicit f32
-(let m  0xFF)       ; hex literal — i32
-(let n  0b1010)     ; binary literal — i32
+    (let j  42i64)      ; explicit i64
+    (let k  255u8)      ; explicit u8
+    (let l  3.14f32)    ; explicit f32
+    (let m  0xFF)       ; hex literal — i32
+    (let n  0b1010)     ; binary literal — i32
+    (assert (== m 255))
+    (assert (== n 10))
 
-;;; Type annotations can be omitted when the compiler can infer them.
-;;; Be explicit at function boundaries. Be implicit inside expressions.
+    ;;; Type annotations can be omitted when the compiler can infer them.
+    ;;; Be explicit at function boundaries. Be implicit inside expressions.
 
-(let x 42)       ; inferred i32
-(let y 3.14)     ; inferred f64
-(let z "hello")  ; inferred string
+    (let x 42)       ; inferred i32
+    (let y 3.14)     ; inferred f64
+    (let z "hello")  ; inferred string
 
-;;; String formatting — fmt constructs a string from a template.
-;;; {} is a positional placeholder. Values are formatted with their Display impl.
+    ;;; String formatting — fmt constructs a string from a template.
+    ;;; {} is a positional placeholder. Values are formatted with their Display impl.
 
-(let msg (fmt "hello {}, you are {} years old" name age))
-(let path_str (fmt "{}/{}" dir file))
+    (let name "Ada")
+    (let age 36)
+    (let msg (fmt "hello {}, you are {} years old" name age))
+    (assert (== msg "hello Ada, you are 36 years old"))
+    (let dir "usr")
+    (let file "bin")
+    (let path_str (fmt "{}/{}" dir file))
+    (assert (== path_str "usr/bin"))
 
-;;; Escape sequences in strings: \n \t \r \\ \"
+    ;;; Escape sequences in strings: \n \t \r \\ \"
 
-(let newline "line one\nline two")
+    (let newline "line one\nline two")
 
-;;; Keyword literals — :name is an interned symbol value.
-;;; Keywords are their own type (Keyword), compared by identity, allocation-free.
-;;; Use them for tags, flags, enum-like options, and config keys.
+    ;;; Keyword literals — :name is an interned symbol value.
+    ;;; Keywords are their own type (Keyword), compared by identity, allocation-free.
+    ;;; Use them for tags, flags, enum-like options, and config keys.
 
-(let mode    :read)
-(let level   :digital)
-(let verb    :GET)
-(let status  :ok)
+    (let mode    :read)
+    (let level   :digital)
+    (let verb    :GET)
+    (let status  :ok)
+    (assert (== mode :read))
+    (assert (!= mode :write))))
 
 
 ;; ============================================================
@@ -94,6 +120,12 @@
 ;;;   let   — runtime immutable binding, exists in memory
 ;;;   const — compile-time value, no memory address
 
+(fn constants_examples () -> unit
+  (do
+    (assert (== MAX_CONN 1024))
+    (assert (== APP_NAME "nyet"))
+    (assert (> PI 3.14))))
+
 
 ;; ============================================================
 ;;; Variables and Mutability
@@ -103,23 +135,30 @@
 ;;; var declares a mutable binding.
 ;;; The compiler enforces this — assigning to a let binding is a compile error.
 
-(let  name:string "Ada")    ; immutable
-(var  count:i32   0)        ; mutable
+(fn variables_examples () -> unit
+  (do
+    (let  name:string "Ada")    ; immutable
+    (var  count:i32   0)        ; mutable
 
-;;; = assigns to any valid l-value. The binding must be var.
+    ;;; = assigns to any valid l-value. The binding must be var.
 
-(= count 1)           ; ok
-; (= name "Bob")      ; compile error — name is let
+    (= count 1)           ; ok
+    ; (= name "Bob")      ; compile error — name is let
+    (assert (== count 1))
 
-;;; = works uniformly on variables, indexed positions, and nested fields.
-;;; This is the only assignment operator — no special syntax for any l-value.
+    ;;; = works uniformly on variables, indexed positions, and nested fields.
+    ;;; This is the only assignment operator — no special syntax for any l-value.
 
-(var scores:Array[i32] [10 20 30])
-(= (scores 0) 99)                       ; indexed assignment
+    (var scores:Array[i32] [10 20 30])
+    (= (scores 0) 99)                       ; indexed assignment
+    (assert (== (scores 0) 99))
 
-(var p:Person (Person name:"Ada" age:36))
-(= (. p name) "Grace")                  ; field assignment
-(= (. p address city) "London")         ; deep field assignment
+    (var p:Person (Person name:"Ada" age:36
+                          address:(Address street:"1 Loop Rd" city:"Paris" zip:"75001")))
+    (= (. p name) "Grace")                  ; field assignment
+    (= (. p address city) "London")         ; deep field assignment
+    (assert (== (. p name) "Grace"))
+    (assert (== (. p address city) "London"))))
 
 
 ;; ============================================================
@@ -146,6 +185,13 @@
 ;;;   - data races      (only one mutable borrow at a time)
 ;;;   - dangling refs   (borrows cannot outlive the owner)
 
+(fn ownership_examples () -> unit
+  (do
+    (var v:i32 41)
+    (mutate &!v)                 ; v is now 42
+    (assert (== (peek &v) 42))
+    (assert (== (consume v) 42))))
+
 
 ;; ============================================================
 ;;; Functions
@@ -166,27 +212,39 @@
     (let msg (fmt "hello, {}" name))
     msg))
 
-;;; Anonymous functions — fn with no name is a value.
-;;; The type of a function value is written (fn ArgTypes -> Ret).
-
-(let double  (fn (x:i32) -> i32 (* x 2)))
-(let is_even (fn (x:i32) -> bool (== (% x 2) 0)))
-
 ;;; Functions are first-class — pass, return, store.
 
 (fn apply (f:(fn i32 -> i32) x:i32) -> i32  (f x))
-(apply double 5)     ; 10
+
+;;; A function can return a function. The returned closure outlives the call,
+;;; so it must own what it captures — see `move fn` under Closures.
 
 (fn make_adder (n:i32) -> (fn i32 -> i32)
-  (fn (x:i32) -> i32 (+ x n)))
-
-(let add5 (make_adder 5))
-(add5 3)    ; 8
+  (move fn (x:i32) -> i32 (+ x n)))
 
 ;;; Recursive functions — fn is in scope in its own body.
 
 (fn factorial (n:i32) -> i32
   (if (<= n 1) 1 (* n (factorial (- n 1)))))
+
+(fn functions_examples () -> unit
+  (do
+    (assert (== (add 2 3) 5))
+    (assert (== (greet "Ada") "hello, Ada"))
+
+    ;;; Anonymous functions — fn with no name is a value.
+    ;;; The type of a function value is written (fn ArgTypes -> Ret).
+
+    (let double  (fn (x:i32) -> i32 (* x 2)))
+    (let is_even (fn (x:i32) -> bool (== (% x 2) 0)))
+    (assert (is_even 4))
+
+    (assert (== (apply double 5) 10))     ; 10
+
+    (let add5 (make_adder 5))
+    (assert (== (add5 3) 8))              ; 8
+
+    (assert (== (factorial 5) 120))))
 
 ;; Closures
 ;;; A closure is an anonymous function that captures variables from its environment.
@@ -199,17 +257,30 @@
 ;;; These map to the Fn / FnMut / FnOnce traits respectively.
 ;;; The compiler infers which you need based on how captures are used.
 
-(var counter:i32 0)
-
-(let read_count  (fn () -> i32 counter))              ; borrows counter
-(let inc_count   (fn! () -> unit (= counter (+ counter 1))))  ; mutably borrows
-(let take_count  (move fn () -> i32 counter))         ; moves counter in, counter gone after
-
 ;;; Closures in function signatures use the trait names as types.
 ;;; Fn, FnMut, FnOnce are generic over argument and return types.
 
 (fn run_twice    (f:Fn[() unit])    -> unit  (do (f) (f)))
 (fn run_once     (f:FnOnce[() i32]) -> i32   (f))
+
+(fn closures_examples () -> unit
+  (do
+    (var counter:i32 0)
+
+    (let inc_count   (fn! () -> unit (= counter (+ counter 1))))  ; mutably borrows
+    (inc_count)
+    (inc_count)
+
+    (let read_count  (fn () -> i32 counter))              ; borrows counter
+    (assert (== (read_count) 2))
+
+    (let take_count  (move fn () -> i32 counter))         ; moves counter in
+    (assert (== (take_count) 2))
+
+    (var runs:i32 0)
+    (run_twice (fn! () -> unit (= runs (+ runs 1))))
+    (assert (== runs 2))
+    (assert (== (run_once (fn () -> i32 7)) 7))))
 
 
 ;; ============================================================
@@ -221,54 +292,63 @@
 ;;; namespace as functions and follow identical dispatch rules.
 ;;; You can implement any operator for any type.
 
-;; Arithmetic — defined on i32 i64 u32 u64 f32 f64
-(+ 1 2)       ; 3
-(- 10 3)      ; 7
-(* 4 5)       ; 20
-(/ 10 2)      ; 5
-(% 10 3)      ; 1  — modulo
+(fn operators_examples () -> unit
+  (do
+    ;; Arithmetic — defined on i32 i64 u32 u64 f32 f64
+    (assert (== (+ 1 2) 3))
+    (assert (== (- 10 3) 7))
+    (assert (== (* 4 5) 20))
+    (assert (== (/ 10 2) 5))
+    (assert (== (% 10 3) 1))     ; modulo
 
-;; String — + concatenates, fmt interpolates
-(+ "hello" ", " "world")    ; "hello, world"
+    ;; String — + concatenates, fmt interpolates
+    (assert (== (+ "hello" ", " "world") "hello, world"))
 
-;; Path — / on strings builds a filesystem or IO path
-(/ "usr" "local" "bin")     ; /usr/local/bin
+    ;; Path — / on strings builds a filesystem or IO path
+    (assert (== (/ "usr" "local" "bin") "usr/local/bin"))
 
-;; Comparison — return bool, defined on all primitives and any type implementing Ord
-(== 1 1)    ; true
-(!= 1 2)    ; true
-(<  1 2)    ; true
-(<= 2 2)    ; true
-(>  3 2)    ; true
-(>= 3 3)    ; true
+    ;; Comparison — return bool, defined on all primitives and any type implementing Ord
+    (assert (== 1 1))
+    (assert (!= 1 2))
+    (assert (<  1 2))
+    (assert (<= 2 2))
+    (assert (>  3 2))
+    (assert (>= 3 3))
 
-;; Logical
-(&& true false)    ; false
-(|| true false)    ; true
-(!  true)          ; false
+    ;; Logical
+    (assert (== (&& true false) false))
+    (assert (== (|| true false) true))
+    (assert (== (!  true) false))
 
-;; Field access — . is variadic, walks a path of named fields
-(. person name)              ; one level
-(. person address city)      ; deep path — no nesting, no chaining
-(. company ceo address zip)
+    ;; Field access — . is variadic, walks a path of named fields
+    (let company (Company name:"Acme"
+                          ceo:(Person name:"Ada" age:36
+                                      address:(Address street:"1 Loop Rd" city:"London" zip:"EC1"))))
+    (let person (. company ceo))
+    (assert (== (. person name) "Ada"))               ; one level
+    (assert (== (. person address city) "London"))    ; deep path — no nesting, no chaining
+    (assert (== (. company ceo address zip) "EC1"))
 
-;; Pipe — threads a value through a chain of single-argument calls
-;; (|> v f g h) == (h (g (f v)))
-(|> [1 2 3 4 5]
-  (map    (fn (x:i32) -> i32  (* x 2)))
-  (filter (fn (x:i32) -> bool (> x 4)))
-  (fold   + 0))              ; 24
+    ;; Pipe — threads a value through a chain of calls.
+    ;; (|> v f g h) == (h (g (f v))); a stage that is itself a call
+    ;; receives the value as its last argument.
+    (assert (== (|> [1 2 3 4 5]
+                  (map    (fn (x:i32) -> i32  (* x 2)))
+                  (filter (fn (x:i32) -> bool (> x 4)))
+                  (fold   + 0))
+                24))
 
-;; Error propagation — ? unwraps Ok or immediately returns the Err
-(let val:f64 (? (divide 10.0 2.0)))
+    ;; Error propagation — ? unwraps Ok or immediately returns the Err.
+    ;; It is only valid inside a function that returns a Result — see
+    ;; `calc` under Error Handling.
 
-;; Bit operations — defined on integer types
-(& 0b1100 0b1010)    ; 0b1000 — bitwise AND
-(| 0b1100 0b1010)    ; 0b1110 — bitwise OR
-(^ 0b1100 0b1010)    ; 0b0110 — bitwise XOR
-(~ 0b1010)           ; bitwise NOT
-(<< 1 3)             ; 8  — left shift
-(>> 8 3)             ; 1  — right shift
+    ;; Bit operations — defined on integer types
+    (assert (== (& 0b1100 0b1010) 0b1000))    ; bitwise AND
+    (assert (== (| 0b1100 0b1010) 0b1110))    ; bitwise OR
+    (assert (== (^ 0b1100 0b1010) 0b0110))    ; bitwise XOR
+    (assert (== (~ 0b1010) -11))              ; bitwise NOT
+    (assert (== (<< 1 3) 8))                  ; left shift
+    (assert (== (>> 8 3) 1))))                ; right shift
 
 
 ;; ============================================================
@@ -277,59 +357,87 @@
 
 ;;; All control flow is an expression — it has a type and returns a value.
 
-;; if — both branches must return the same type
-(if (== x 0) "zero" "nonzero")
+(type Shape
+  (Circle radius:f64)
+  (Rect   w:f64 h:f64)
+  (Point))
 
-(let label:string
-  (if (> score 90) "pass" "fail"))
+(fn control_flow_examples () -> unit
+  (do
+    (let x 0)
 
-;; pass — the unit no-op, for branches with no meaningful value
-(if loud (out "loud!") pass)
+    ;; if — both branches must return the same type
+    (assert (== (if (== x 0) "zero" "nonzero") "zero"))
 
-;; match — exhaustive pattern matching, returns the matched arm's value
-(match shape
-  ((Circle r)  (* 3.14159 r r))
-  ((Rect w h)  (* w h))
-  (Point       0.0))
+    (let score 95)
+    (let label:string
+      (if (> score 90) "pass" "fail"))
+    (assert (== label "pass"))
 
-;; Wildcard
-(match x
-  (0  "zero")
-  (1  "one")
-  (_  "other"))
+    ;; pass — the unit no-op, for branches with no meaningful value
+    (let loud false)
+    (if loud (out "loud!\n") pass)
 
-;; Nested patterns — destructure as deep as needed in a single arm
-(match result
-  ((Ok (Some v))  (fmt "got {}" v))
-  ((Ok None)      "empty")
-  ((Err e)        (fmt "error: {}" e)))
+    ;; match — exhaustive pattern matching, returns the matched arm's value
+    (let shape (Rect 2.0 3.0))
+    (let area:f64
+      (match shape
+        ((Circle r)  (* 3.14159 r r))
+        ((Rect w h)  (* w h))
+        (Point       0.0)))
+    (assert (== area 6.0))
 
-(match tree
-  ((Node (Leaf a) (Leaf b))  (+ a b))   ; only matches two-leaf nodes
-  ((Leaf v)                  v)
-  (_                         0))
+    ;; Wildcard
+    (assert (== (match x
+                  (0  "zero")
+                  (1  "one")
+                  (_  "other"))
+                "zero"))
 
-;; Guard clauses — when adds a boolean condition to an arm
-;; The arm only matches if the pattern matches AND the guard is true
-(match n
-  ((Some v) when (> v 0)   "positive")
-  ((Some v) when (< v 0)   "negative")
-  ((Some _)                 "zero")
-  (None                     "absent"))
+    ;; Nested patterns — destructure as deep as needed in a single arm
+    (let result:Result[Option[i32] string] (Ok (Some 5)))
+    (assert (== (match result
+                  ((Ok (Some v))  (fmt "got {}" v))
+                  ((Ok None)      "empty")
+                  ((Err e)        (fmt "error: {}" e)))
+                "got 5"))
 
-;; loop — runs until break. break carries the return value.
-(let result:i32
-  (loop
-    (let input (in))
-    (match (parse input)
-      ((Ok n)  (break n))
-      ((Err _) (do (out "try again") pass)))))
+    (let tree:Tree[i32] (Node (Leaf 2) (Leaf 3)))
+    (assert (== (match tree
+                  ((Node (Leaf a) (Leaf b))  (+ a b))   ; only matches two-leaf nodes
+                  ((Leaf v)                  v)
+                  (_                         0))
+                5))
 
-;; do — sequences expressions, returns the last
-(do
-  (var count:i32 0)
-  (= count (+ count 1))
-  count)
+    ;; Guard clauses — when adds a boolean condition to an arm
+    ;; The arm only matches if the pattern matches AND the guard is true
+    (let n:Option[i32] (Some -3))
+    (assert (== (match n
+                  ((Some v) when (> v 0)   "positive")
+                  ((Some v) when (< v 0)   "negative")
+                  ((Some _)                 "zero")
+                  (None                     "absent"))
+                "negative"))
+
+    ;; loop — runs until break. break carries the return value.
+    (let inputs:Array[string] ["forty-two" "4x2" "42"])
+    (var next:i32 0)
+    (let parsed:i32
+      (loop
+        (let input (inputs next))
+        (= next (+ next 1))
+        (match (parse input)
+          ((Ok n)  (break n))
+          ((Err _) (do (out "try again\n") pass)))))
+    (assert (== parsed 42))
+
+    ;; do — sequences expressions, returns the last
+    (let total:i32
+      (do
+        (var count:i32 0)
+        (= count (+ count 1))
+        count))
+    (assert (== total 1))))
 
 
 ;; ============================================================
@@ -344,6 +452,9 @@
   host:string
   port:i32)
 
+;;; `...` is a placeholder body: the declaration type-checks, and calling it
+;;; panics with "not yet implemented".
+
 (pub fn connect (cfg:&Config) -> Result[() IOError]
   ...)
 
@@ -356,6 +467,12 @@
   (pub host:string)     ; readable outside the module
   (pub port:i32)        ; readable outside the module
   conn_count:i32)       ; private — internal state
+
+(fn visibility_examples () -> unit
+  (do
+    (let cfg (Config host:"localhost" port:DEFAULT_PORT))
+    (let server (Server host:(. cfg host) port:(. cfg port) conn_count:0))
+    (assert (== (. server port) 8080))))
 
 
 ;; ============================================================
@@ -378,21 +495,29 @@
   age:i32
   address:Address)
 
-;;; Construct with named arguments — order does not matter.
+(struct Company
+  name:string
+  ceo:Person)
 
-(let origin (Point2 x:0.0 y:0.0))
-(let home   (Address street:"1 Loop Rd" city:"London" zip:"EC1"))
-(let me     (Person name:"Ada" age:36 address:home))
+(fn structs_examples () -> unit
+  (do
+    ;;; Construct with named arguments — order does not matter.
 
-;;; Field access with .
+    (let origin (Point2 x:0.0 y:0.0))
+    (let home   (Address street:"1 Loop Rd" city:"London" zip:"EC1"))
+    (let me     (Person name:"Ada" age:36 address:home))
 
-(. me name)           ; "Ada"
-(. me address city)   ; "London"
+    ;;; Field access with .
 
-;;; Struct update — construct from an existing value with some fields changed.
-;;; .. spreads the remaining fields from the source.
+    (assert (== (. me name) "Ada"))              ; "Ada"
+    (assert (== (. me address city) "London"))   ; "London"
 
-(let older (Person ..me age:37))
+    ;;; Struct update — construct from an existing value with some fields changed.
+    ;;; .. spreads the remaining fields from the source.
+
+    (let older (Person ..me age:37))
+    (assert (== (. older age) 37))
+    (assert (== (. older name) "Ada"))))
 
 
 ;; ============================================================
@@ -403,28 +528,35 @@
 ;;; Useful for returning multiple values without naming a struct.
 ;;; Written with #() for both the type and the value.
 
-(let pair:#(i32 string)  #(42 "hello"))
-(let triple:#(f64 f64 f64)  #(1.0 2.0 3.0))
-
-;;; Tuples are callable — (tup index) returns the element.
-;;; Same call semantics as arrays and any other callable value.
-
-(pair 0)     ; 42
-(pair 1)     ; "hello"
-(triple 2)   ; 3.0
-
-;;; Destructure a tuple in let.
-
-(let #(x y) (Point2 x:1.0 y:2.0))    ; x = 1.0, y = 2.0
-(let #(a b c) triple)
-
 ;;; Functions that return multiple values use tuples.
 
 (fn min_max (arr:&Array[i32]) -> #(i32 i32)
   #((fold min (arr 0) arr)
     (fold max (arr 0) arr)))
 
-(let #(lo hi) (min_max nums))
+(fn tuples_examples () -> unit
+  (do
+    (let pair:#(i32 string)  #(42 "hello"))
+    (let triple:#(f64 f64 f64)  #(1.0 2.0 3.0))
+
+    ;;; Tuples are callable — (tup index) returns the element.
+    ;;; Same call semantics as arrays and any other callable value.
+
+    (assert (== (pair 0) 42))         ; 42
+    (assert (== (pair 1) "hello"))    ; "hello"
+    (assert (== (triple 2) 3.0))      ; 3.0
+
+    ;;; Destructure a tuple in let.
+
+    (let #(x y) #(1.0 2.0))           ; x = 1.0, y = 2.0
+    (let #(a b c) triple)
+    (assert (== (+ x y) 3.0))
+    (assert (== c 3.0))
+
+    (let nums:Array[i32] [3 9 1 4])
+    (let #(lo hi) (min_max &nums))
+    (assert (== lo 1))
+    (assert (== hi 9))))
 
 
 ;; ============================================================
@@ -470,6 +602,18 @@
 ;;;   Array[T]    — ordered, growable, indexable
 ;;;   Map[K V]    — hash map, K must implement Hash and Eq
 ;;;   Set[T]      — unique values, T must implement Hash and Eq
+
+(fn generics_examples () -> unit
+  (do
+    (assert (== (identity 5) 5))
+    (let swapped (swap #(1 "one")))
+    (assert (== (swapped 0) "one"))
+    (assert (== (swapped 1) 1))
+
+    (let nums:Array[i32] [4 9 2])
+    (assert (== (largest &nums) 9))     ; borrows nums
+    (assert (== (sum nums) 15))         ; takes ownership — nums is gone after this
+    (assert (== (show_sum [1 2 3]) "sum = 6"))))
 
 
 ;; ============================================================
@@ -520,6 +664,23 @@
 ;;; This is why (arr 0) and (= (arr 0) v) both work.
 ;;; Any type that implements Index becomes callable with an index.
 
+(struct Palette colors:Array[string])
+
+(impl Index Palette
+  (fn () (self:&Palette idx:i32) -> &string
+    ((. self colors) idx)))
+
+;;; The standard library implements the operator traits for the primitives.
+
+(impl Zero i32
+  (fn zero () -> i32 0))
+
+(impl Display i32
+  (fn display (self:&i32) -> string (fmt "{}" self)))
+
+(impl Display string
+  (fn display (self:&string) -> string self))
+
 ;;; Implementing a trait for a type — (impl TraitName TypeName ...)
 
 (impl Display Point2
@@ -541,25 +702,47 @@
 ;;; Default method implementations — a trait can provide a default body.
 ;;; Types that implement the trait can override it or use the default.
 
-(trait Greet
-  (fn greeting (self:&Self) -> string)   ; required — no default
-  (fn greet (self:&Self) -> unit         ; default implementation
-    (out (greeting self))))
+(trait Greeter
+  (fn greeting (self:&Self) -> string)          ; required — no default
+  (fn introduce (self:&Self) -> string          ; default implementation
+    (+ (greeting self) "!")))
+
+(impl Greeter Person
+  (fn greeting (self:&Person) -> string
+    (fmt "hi, I'm {}" (. self name))))
 
 ;;; Traits as bounds in function signatures.
 
 (fn print_all[T: Display] (items:&Array[T]) -> unit
-  (map (fn (item:&T) -> unit (out (display item))) items))
+  (map (fn (item:&T) -> unit (out (display item) "\n")) items))
 
 ;;; Trait objects — when you need a value whose concrete type is unknown at compile time.
 ;;; dyn TraitName is a fat pointer (data + vtable).
 
-(fn log_value (val:&dyn Display) -> unit
-  (out (display val)))
+(fn log_value (val:&dyn Display) -> string
+  (display val))
 
-(log_value &42)
-(log_value &"hello")
-(log_value &origin)
+(fn traits_examples () -> unit
+  (do
+    (let origin (Point2 x:0.0 y:0.0))
+    (let p (Point2 x:1.0 y:2.0))
+    (assert (== (display &p) "(1, 2)"))
+    (assert (== (+ p p) (Point2 x:2.0 y:4.0)))
+    (assert (!= p origin))
+
+    (let palette (Palette colors:["red" "green"]))
+    (assert (== (palette 1) "green"))
+
+    (let ada (Person name:"Ada" age:36
+                     address:(Address street:"1 Loop Rd" city:"London" zip:"EC1")))
+    (assert (== (introduce &ada) "hi, I'm Ada!"))
+
+    (let points:Array[Point2] [origin p])
+    (print_all &points)
+
+    (assert (== (log_value &42) "42"))
+    (assert (== (log_value &"hello") "hello"))
+    (assert (== (log_value &origin) "(0, 0)"))))
 
 
 ;; ============================================================
@@ -594,13 +777,6 @@
   (out msg)
   (Ok ()))
 
-;;; match is the primary way to handle errors explicitly.
-
-(match (divide 10.0 0.0)
-  ((Ok  v) (out (fmt "result: {}" v)))
-  ((Err DivisionByZero) (err "divided by zero"))
-  ((Err Overflow)       (err "overflow")))
-
 ;;; Error types can be composed. Define a module-level error that wraps others.
 
 (type AppError
@@ -609,10 +785,36 @@
 
 ;;; Convert between error types with map_err.
 
-(fn run () -> Result[() AppError]
-  (let v (? (map_err (divide 10.0 2.0) (fn (e) (Math inner:e)))))
-  (? (map_err (log (fmt "result: {}" v)) (fn (e) (IO inner:e))))
-  (Ok ()))
+(fn map_err[T E F] (result:Result[T E] f:(fn E -> F)) -> Result[T F]
+  (match result
+    ((Ok v)  (Ok v))
+    ((Err e) (Err (f e)))))
+
+;;; (A closure passed to a generic function like map_err needs its parameter
+;;; and return types written out; closures passed to the builtin
+;;; higher-order functions infer them from the array — see Collections.)
+
+(fn run () -> Result[f64 AppError]
+  (let v (? (map_err (divide 10.0 2.0) (fn (e:MathError) -> AppError (Math inner:e)))))
+  (? (map_err (log (fmt "result: {}\n" v)) (fn (e:IOError) -> AppError (IO inner:e))))
+  (Ok v))
+
+(fn errors_examples () -> unit
+  (do
+    ;;; match is the primary way to handle errors explicitly.
+
+    (match (divide 10.0 0.0)
+      ((Ok  v) (out (fmt "result: {}\n" v)))
+      ((Err DivisionByZero) (out "divided by zero\n"))
+      ((Err Overflow)       (out "overflow\n")))
+
+    (match (calc 8.0)
+      ((Ok v)  (assert (== v 16.0)))
+      ((Err _) (panic "calc failed")))
+
+    (match (run)
+      ((Ok v)  (assert (== v 5.0)))
+      ((Err _) (panic "run failed")))))
 
 
 ;; ============================================================
@@ -623,48 +825,59 @@
 ;;; literals, indexing, and indexed assignment all lower to a flat heap
 ;;; layout: one i64 length followed by N elements packed in place.
 
-(let nums:Array[i32]        [1 2 3 4 5])
-(let words:Array[string]    ["one" "two" "three"])
-(let grid:Array[Array[i32]] [[1 2 3] [4 5 6]])
+(fn collections_examples () -> unit
+  (do
+    (let nums:Array[i32]        [1 2 3 4 5])
+    (let words:Array[string]    ["one" "two" "three" "four" "five"])
+    (let grid:Array[Array[i32]] [[1 2 3] [4 5 6]])
 
-;;; Arrays are callable — (arr index) returns the element.
-;;; This is the Index trait — not special syntax.
+    ;;; Arrays are callable — (arr index) returns the element.
+    ;;; This is the Index trait — not special syntax.
 
-(nums 0)        ; 1
-(nums 4)        ; 5
-(grid 1)        ; [4 5 6]
-((grid 1) 2)    ; 6
+    (assert (== (nums 0) 1))         ; 1
+    (assert (== (nums 4) 5))         ; 5
+    (let row (grid 1))               ; [4 5 6]
+    (assert (== (row 0) 4))
+    (assert (== ((grid 1) 2) 6))     ; 6
 
-;;; Mutable indexed assignment via the IndexMut trait.
+    ;;; Mutable indexed assignment via the IndexMut trait.
 
-(var scores:Array[i32] [10 20 30])
-(= (scores 1) 99)
-(assert (== (scores 1) 99))
+    (var scores:Array[i32] [10 20 30])
+    (= (scores 1) 99)
+    (assert (== (scores 1) 99))
 
-;;; Map — key-value store. K must implement Hash and Eq.
+    ;;; Map — key-value store. K must implement Hash and Eq.
 
-(let env:Map[string string]
-  {"HOME" "/home/ada" "PATH" "/usr/bin"})
+    (var env:Map[string string]
+      {"HOME" "/home/ada" "PATH" "/usr/bin"})
 
-(env "HOME")                   ; "/home/ada" — Map is callable too
-(= (env "TERM") "xterm-256")  ; insert or update
+    (assert (== (env "HOME") "/home/ada"))    ; Map is callable too
+    (= (env "TERM") "xterm-256")              ; insert or update
+    (assert (== (env "TERM") "xterm-256"))
 
-;;; Higher-order functions.
+    ;;; Higher-order functions.
 
-(map    (fn (x:i32)  -> i32  (* x 2))              nums)   ; [2 4 6 8 10]
-(filter (fn (x:i32)  -> bool (> x 3))              nums)   ; [4 5]
-(fold   (fn (a:i32 x:i32) -> i32 (+ a x))        0 nums)   ; 15
-(any    (fn (x:i32)  -> bool (== x 3))             nums)   ; true
-(all    (fn (x:i32)  -> bool (> x 0))              nums)   ; true
-(zip    nums words)                                         ; [#(1 "one") #(2 "two") ...]
-(flat_map (fn (x:i32) -> Array[i32] [x (* x x)]) nums)     ; [1 1 2 4 3 9 ...]
+    (let doubled (map (fn (x:i32) -> i32 (* x 2)) nums))                 ; [2 4 6 8 10]
+    (assert (== (doubled 4) 10))
+    (let big (filter (fn (x:i32) -> bool (> x 3)) nums))                 ; [4 5]
+    (assert (== (len big) 2))
+    (assert (== (fold (fn (a:i32 x:i32) -> i32 (+ a x)) 0 nums) 15))     ; 15
+    (assert (any (fn (x:i32) -> bool (== x 3)) nums))                    ; true
+    (assert (all (fn (x:i32) -> bool (> x 0)) nums))                     ; true
+    (let pairs:Array[#(i32 string)] (zip nums words))                    ; [#(1 "one") #(2 "two") ...]
+    (let second:#(i32 string) (pairs 1))
+    (assert (== (second 1) "two"))
+    (let squares (flat_map (fn (x:i32) -> Array[i32] [x (* x x)]) nums)) ; [1 1 2 4 3 9 ...]
+    (assert (== (len squares) 10))
+    (assert (== (squares 5) 9))
 
-;;; Chained with pipe.
+    ;;; Chained with pipe. Closure parameter types are inferred from the array.
 
-(|> nums
-  (filter (fn (x) (> x 2)))
-  (map    (fn (x) (* x x)))
-  (fold   + 0))               ; 50
+    (assert (== (|> nums
+                  (filter (fn (x) (> x 2)))
+                  (map    (fn (x) (* x x)))
+                  (fold   + 0))
+                50))))
 
 
 ;; ============================================================
@@ -704,12 +917,6 @@
   (fn display (self:&Vec2) -> string
     (fmt "({}, {})" (. self x) (. self y))))
 
-(let a (Vec2 x:1.0 y:2.0))
-(let b (Vec2 x:3.0 y:4.0))
-(+ a b)           ; Vec2 x:4.0 y:6.0
-(len &a)          ; 2.236...
-(display &a)      ; "(1, 2)"
-
 ;;; Implement / for path-join semantics on any type.
 
 (pub struct URL  base:string)
@@ -718,8 +925,17 @@
   (fn / (self:URL segment:string) -> URL
     (URL base:(+ (. self base) "/" segment))))
 
-(let api (URL base:"https://api.example.com"))
-(/ api "users" "42")    ; URL base:"https://api.example.com/users/42"
+(fn operator_overloading_examples () -> unit
+  (do
+    (let a (Vec2 x:3.0 y:4.0))
+    (let b (Vec2 x:1.0 y:2.0))
+    (assert (== (+ a b) (Vec2 x:4.0 y:6.0)))   ; Vec2 x:4.0 y:6.0
+    (assert (== (len &a) 5.0))                 ; 5.0
+    (assert (== (display &b) "(1, 2)"))        ; "(1, 2)"
+    (assert (== (. (normalize a) x) 0.6))
+
+    (let api (URL base:"https://api.example.com"))
+    (assert (== (. (/ api "users" "42") base) "https://api.example.com/users/42"))))
 
 
 ;; ============================================================
@@ -730,12 +946,11 @@
 ;;; The alias and the original are completely interchangeable.
 ;;; Use for readability — name intent, not structure.
 
-(alias Seconds  f64)
-(alias Meters   f64)
+(alias Duration f64)
+(alias Distance f64)
 (alias Callback (fn i32 -> bool))
 
-(fn wait (duration:Seconds) -> unit ...)
-(wait 3.0)     ; 3.0 is a valid Seconds — they are the same type
+(fn wait (duration:Duration) -> f64 duration)
 
 ;;; newtype wraps a type in a distinct named type.
 ;;; The wrapper and the inner are NOT interchangeable — the compiler treats them as different.
@@ -746,14 +961,24 @@
 (newtype Meters    f64)
 (newtype Seconds   f64)
 
-(fn move_to (dist:Meters) -> unit ...)
-; (move_to 3.0)          ; compile error — 3.0 is f64, not Meters
-(move_to (Meters 3.0))   ; ok — explicit wrap
+(fn move_to (dist:Meters) -> f64 (dist 0))
+; (move_to 3.0)          ; meant to be a compile error — 3.0 is f64, not Meters.
+;                        ; (Not enforced yet: argument types aren't checked at call sites.)
 
-;;; Unwrap a newtype with index 0 — newtypes implement Index[i32 InnerType].
+(fn aliases_examples () -> unit
+  (do
+    (assert (== (wait 3.0) 3.0))     ; 3.0 is a valid Duration — they are the same type
+    (let check:Callback (fn (x:i32) -> bool (> x 0)))
+    (assert (check 1))
 
-(let m (Meters 3.0))
-(m 0)    ; 3.0 — the inner f64
+    (assert (== (move_to (Meters 3.0)) 3.0))   ; ok — explicit wrap
+
+    ;;; Unwrap a newtype with index 0 — newtypes implement Index[i32 InnerType].
+
+    (let m (Meters 3.0))
+    (assert (== (m 0) 3.0))          ; 3.0 — the inner f64
+    (let id (UserId 7))
+    (assert (== (id 0) 7))))
 
 
 ;; ============================================================
@@ -763,30 +988,31 @@
 ;;; module declares the name of the current file's module.
 ;;; By convention this matches the file path.
 
-(module nyet/geometry)
+(module nyet/reference)
 
 ;;; use imports a module. The path uses / as the separator.
 ;;; use makes the module's pub declarations available in scope.
 
-(use std/io)
 (use std/math)
-(use nyet/geometry)
 
 ;;; Selective import — only bring specific names into scope.
 
-(use std/collections (Array Map Set))
-(use nyet/errors     (AppError IOError))
-
-;;; Qualified access — use a declaration without importing its name.
-;;; This avoids name collisions and makes the origin explicit.
-
-(std/math/sqrt 2.0)
-(nyet/geometry/area my_shape)
+(use std/collections (drop_while))
 
 ;;; Re-export — make an imported name part of this module's public API.
 
-(pub use nyet/geometry/Shape)
-(pub use nyet/geometry/area)
+(pub use std/math/hypot)
+
+(fn modules_examples () -> unit
+  (do
+    ;;; Qualified access — use a declaration without importing its name.
+    ;;; This avoids name collisions and makes the origin explicit.
+
+    (assert (== (std/math/hypot 3.0 4.0) 5.0))
+    (assert (== (hypot 6.0 8.0) 10.0))
+
+    (let rest (drop_while (fn (x:i32) -> bool (< x 3)) [1 2 3 1]))
+    (assert (== (len rest) 2))))
 
 
 ;; ============================================================
@@ -801,21 +1027,190 @@
 ;;;   out  — stdout
 ;;;   in   — stdin
 ;;;   err  — stderr
+;;;
+;;; Channel values, io/def, and user-defined channels are in the Planned
+;;; section at the end of this file.
 
-(out "hello, world\n")              ; write to stdout
+(fn read_line () -> string
+  (in))              ; read a line from stdin — not called by main, so running
+                     ; this file never blocks waiting for input
+
+(fn io_examples () -> unit
+  (do
+    (out "hello, world\n")              ; write to stdout
+    (err "writing to stderr\n")))       ; write to stderr
+
+
+;; ============================================================
+;;; Async and Concurrency
+;; ============================================================
+
+;;; async fn marks a function that can run as an independent task.
+;;; The ownership model makes async safe — mutable state cannot be shared
+;;; across tasks without explicit synchronization.
+
+(async fn shout (msg:string) -> string
+  (+ msg "!"))
+
+;;; spawn runs a call as an independent task and returns a handle.
+;;; await blocks until that task finishes and yields its result.
+
+(fn async_examples () -> unit
+  (do
+    (let handle (spawn (shout "hello from a task")))
+    (let result (await handle))
+    (assert (== result "hello from a task!"))))
+
+
+;; ============================================================
+;;; Macros
+;; ============================================================
+
+;;; Macros transform syntax at compile time.
+;;; Because Nyet source is S-expressions, macros receive and return AST directly.
+;;; There is no gap between code and data — (quote expr) gives you the unevaluated AST.
+;;;
+;;; The expander uses positional template substitution. Each parameter
+;;; name in the macro body is replaced with a deep copy of the
+;;; corresponding argument expression. Macros can call other macros;
+;;; the expander recurses up to a fixed depth.
+;;;
+;;; Supported today: variadic params (`name ...`) with splice, hygiene
+;;; for `let`/`var` names introduced inside a body, and `(quote expr)`
+;;; which renders the substituted expression to a Nyet source string.
+
+;;; The standard prelude pre-registers `assert`. It expands to an
+;;; `if`-guarded `panic` and needs no import. A user `(macro assert ...)`
+;;; in the same file silently shadows it.
+;;;
+;;; The expansion of `(assert (== n 5))` is:
+;;;
+;;;   (if (! (== n 5)) (panic "assertion failed") pass)
+;;;
+;;; `panic` is a built-in: it prints its arguments and exits with code 1.
+
+;;; User-defined macros use `(macro NAME (PARAMS...) BODY)`.
+
+(macro unless (cond body)
+  (if (! cond) body pass))
+
+;;; Macros may call other macros. The expander walks results until no
+;;; macro calls remain (bounded recursion guards against infinite loops).
+
+(macro require (cond)
+  (assert cond))
+
+;;; `quote` captures the source form of its argument as a string. After
+;;; substitution, `(quote x)` becomes a `StringLit` of the call-site
+;;; expression — handy for log macros that show the original code.
+
+(macro show (x)
+  (do
+    (out (quote x))
+    (out " = ")
+    (out x)
+    (out "\n")))
+
+;;; Hygiene: `let`/`var` names introduced inside a macro body are
+;;; auto-renamed to fresh suffixes (e.g. `tmp__hyg3`) so they cannot
+;;; capture user names from the call site, even when the call site
+;;; passes a variable with the *same* name as the macro's local.
+
+(macro swap! (a b)
+  (do
+    (var tmp a)
+    (= a b)
+    (= b tmp)))
+
+;;; DSL: structured logging with expression source capture.
+
+(macro log/debug (expr)
+  (do
+    (let result expr)
+    (out (fmt "DEBUG {} = {}\n" (quote expr) result))
+    result))
+
+(fn macros_examples () -> unit
+  (do
+    (let n:i32 5)
+    (assert (== n 5))      ; passes silently
+    ;; (assert (== n 99))  ; would print "assertion failed" and exit 1
+
+    (unless (== n 0)
+      (out "nonzero\n"))
+
+    (require (> n 0))
+
+    ;;; Variadic macros use `...` to capture any number of trailing args.
+    ;;; Inside the body, `name ...` splices the captured list into the
+    ;;; surrounding position. The prelude's `do_all` is the canonical use.
+    ;;;
+    ;;;   (macro do_all (forms ...) (do forms ...))
+
+    (do_all
+      (out "step 1\n")
+      (out "step 2\n")
+      (out "step 3\n"))
+
+    (show (+ 1 2))                ; prints "(+ 1 2) = 3"
+
+    (var tmp_a:i32 1)
+    (var tmp_b:i32 2)
+    (swap! tmp_a tmp_b)           ; tmp_a is now 2, tmp_b is now 1
+    (assert (== tmp_a 2))
+    (assert (== tmp_b 1))
+
+    (assert (== (log/debug (+ 2 3)) 5))))   ; prints "DEBUG (+ 2 3) = 5"
+
+
+;; ============================================================
+;;; Running the reference
+;; ============================================================
+
+(fn main () -> unit
+  (do
+    (primitives_examples)
+    (constants_examples)
+    (variables_examples)
+    (ownership_examples)
+    (functions_examples)
+    (closures_examples)
+    (operators_examples)
+    (control_flow_examples)
+    (visibility_examples)
+    (structs_examples)
+    (tuples_examples)
+    (generics_examples)
+    (traits_examples)
+    (errors_examples)
+    (collections_examples)
+    (operator_overloading_examples)
+    (aliases_examples)
+    (modules_examples)
+    (io_examples)
+    (async_examples)
+    (macros_examples)
+    (out "main.no: every example ran and every assert passed\n")))
+
+
+#|
+;; ============================================================
+;;; Planned — designed, not implemented yet
+;; ============================================================
+
+Everything in this block is part of Nyet's design but does not compile
+today, so it is kept out of the compiled reference above. Move an example
+out of this block (and into a section's examples function) when it lands.
+
+;;; IO channel values — first-class channels, explicit channel arguments,
+;;; io/def, and user-defined channels via the IOChannel trait. (Being built
+;;; on a separate branch.)
+
 (out err "something went wrong\n")  ; write to an explicit channel
-(let line:string (in))              ; read a line from stdin
 (let data:string (in myfile))       ; read from an explicit channel
 
-;;; io/def creates a named channel. The second argument is a channel descriptor.
-
 (io/def mylog   (io/file (/ "var" "log" "app.log") :append))
-(io/def port13  (io/pin 13 :digital :output))
-(io/def button  (io/pin 7  :digital :input))
-(io/def server  (io/tcp "0.0.0.0" 8080))
 (io/def conf    (io/file (/ "etc" "app" "config.toml") :read))
-
-;;; Channels are values — pass them to functions, store them, compose them.
 
 (fn log_to (ch:IOChannel msg:string) -> Result[() IOError]
   (out ch (fmt "{}\n" msg))
@@ -824,46 +1219,31 @@
 (? (log_to mylog "server started"))
 (? (log_to err   "warning: high memory"))
 
-;;; Hardware IO — same syntax, different channel type.
-
-(out port13 HIGH)
-(out port13 LOW)
-(let state:bool (in button))
-
-;;; Channels implement IOChannel, which is a trait.
-;;; You can write your own channel type by implementing IOChannel.
-
 (trait IOChannel
   (fn write (self:&!Self data:&[u8]) -> Result[usize IOError])
   (fn read  (self:&!Self buf:&![u8]) -> Result[usize IOError])
   (fn close (self:Self)              -> Result[() IOError]))
 
+;;; Hardware IO — same syntax, different channel type.
 
-;; ============================================================
-;;; Async and Concurrency
-;; ============================================================
+(io/def port13  (io/pin 13 :digital :output))
+(io/def button  (io/pin 7  :digital :input))
 
-;;; async fn returns a Future[T E] — a value representing a computation
-;;; that will produce T or E when awaited.
-;;; The ownership model makes async safe — mutable state cannot be shared
-;;; across tasks without explicit synchronization.
+(out port13 HIGH)
+(out port13 LOW)
+(let state:bool (in button))
+
+;;; Network IO and async fetch.
+
+(io/def server  (io/tcp "0.0.0.0" 8080))
 
 (async fn fetch (url:string) -> Result[string IOError]
   (let resp (await (http/get url)))
   (Ok (. resp body)))
 
-;;; await suspends the current async fn until the future completes.
-;;; await is only valid inside async fn.
-
 (async fn load_config () -> Result[Config IOError]
   (let raw (await (io/read conf)))
   (Ok (? (Config/parse raw))))
-
-;;; spawn runs an async fn as an independent task.
-;;; spawn returns a Handle[T E] that you can await later.
-
-(let handle (spawn (fetch "https://api.example.com/data")))
-(let result (await handle))
 
 ;;; Shared mutable state across tasks requires Shared[T].
 ;;; Shared[T] is an atomically reference-counted, mutex-protected wrapper.
@@ -886,96 +1266,6 @@
 
 (let msg (rx/recv rx))    ; "hello from task"
 
-
-;; ============================================================
-;;; Macros
-;; ============================================================
-
-;;; Macros transform syntax at compile time.
-;;; Because Nyet source is S-expressions, macros receive and return AST directly.
-;;; There is no gap between code and data — (quote expr) gives you the unevaluated AST.
-;;;
-;;; The expander uses positional template substitution. Each parameter
-;;; name in the macro body is replaced with a deep copy of the
-;;; corresponding argument expression. Macros can call other macros;
-;;; the expander recurses up to a fixed depth.
-;;;
-;;; Supported today: variadic params (`name ...`) with splice, hygiene
-;;; for `let`/`var` names introduced inside a body, and `(quote expr)`
-;;; which renders the substituted expression to a Nyet source string.
-;;; External channel calls (`io/on`, `io/def`) are still forward-looking.
-
-;;; The standard prelude pre-registers `assert`. It expands to an
-;;; `if`-guarded `panic` and needs no import. A user `(macro assert ...)`
-;;; in the same file silently shadows it.
-
-(let n:i32 5)
-(assert (== n 5))      ; passes silently
-;; (assert (== n 99))  ; would print "assertion failed" and exit 1
-
-;;; The expansion of `(assert (== n 5))` is:
-;;;
-;;;   (if (! (== n 5)) (panic "assertion failed") pass)
-;;;
-;;; `panic` is a built-in: it prints its arguments and exits with code 1.
-
-;;; User-defined macros use `(macro NAME (PARAMS...) BODY)`.
-
-(macro unless (cond body)
-  (if (! cond) body pass))
-
-(unless (== n 0)
-  (out "nonzero\n"))
-
-;;; Macros may call other macros. The expander walks results until no
-;;; macro calls remain (bounded recursion guards against infinite loops).
-
-(macro require (cond)
-  (assert cond))
-
-(require (> n 0))
-
-;;; Variadic macros use `...` to capture any number of trailing args.
-;;; Inside the body, `name ...` splices the captured list into the
-;;; surrounding position. The prelude's `do_all` is the canonical use.
-
-;;;   (macro do_all (forms ...) (do forms ...))
-
-(do_all
-  (out "step 1\n")
-  (out "step 2\n")
-  (out "step 3\n"))
-
-;;; `quote` captures the source form of its argument as a string. After
-;;; substitution, `(quote x)` becomes a `StringLit` of the call-site
-;;; expression — handy for log macros that show the original code.
-
-(macro show (x)
-  (do
-    (out (quote x))
-    (out " = ")
-    (out x)
-    (out "\n")))
-
-(show (+ 1 2))                ; prints "(+ 1 2) = 3"
-
-;;; Hygiene: `let`/`var` names introduced inside a macro body are
-;;; auto-renamed to fresh suffixes (e.g. `tmp__hyg3`) so they cannot
-;;; capture user names from the call site, even when the call site
-;;; passes a variable with the *same* name as the macro's local.
-
-(macro swap! (a b)
-  (do
-    (var tmp a)
-    (= a b)
-    (= b tmp)))
-
-(var tmp_a:i32 1)
-(var tmp_b:i32 2)
-(swap! tmp_a tmp_b)           ; tmp_a is now 2, tmp_b is now 1
-
-;;; -- Forward-looking (v0.8+) ----------------------------------------
-
 ;;; DSL: web routing built on IO channels and macros.
 
 (macro route (method path handler)
@@ -995,13 +1285,4 @@
 (io/def led (io/pin 13 :digital :output))
 (pin/high   led)
 (pin/toggle led)
-
-;;; DSL: structured logging with expression source capture.
-
-(macro log/debug (expr)
-  (do
-    (let result expr)
-    (out err (fmt "DEBUG {} = {}" (quote expr) result))
-    result))
-
-(log/debug (divide 10.0 2.0))    ; DEBUG (divide 10.0 2.0) = Ok(5.0)
+|#

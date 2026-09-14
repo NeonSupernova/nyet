@@ -92,19 +92,21 @@ def main() -> int:
 
     test_dir = Path(__file__).parent
     sources = sorted(test_dir.glob("*.no"))
-    if not sources:
-        print("no cases yet")
-        return 0
     if args.cases:
         wanted = set(args.cases)
         sources = [s for s in sources if s.stem in wanted]
-        if not sources:
-            print(f"no matching cases: {args.cases}", file=sys.stderr)
-            return 2
+    cases = [(src, src.with_suffix(".golden")) for src in sources]
+    # main.no is the language reference and says it compiles and runs, so it is
+    # built and run like any other case (`main` selects it alone). Its asserts
+    # make a wrong result exit non-zero, which the golden records.
+    if not args.cases or "main" in args.cases:
+        cases.append((ROOT / "main.no", test_dir / "main_no.golden"))
+    if not cases:
+        print(f"no matching cases: {args.cases}", file=sys.stderr)
+        return 2
 
     failures = 0
-    for src in sources:
-        golden = src.with_suffix(".golden")
+    for src, golden in cases:
         actual = dump_codegen_output(src)
         if args.update or not golden.exists():
             golden.write_text(actual)
