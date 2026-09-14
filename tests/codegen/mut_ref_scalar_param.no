@@ -1,0 +1,48 @@
+;; Regression test: a `&!T` parameter of a scalar type (int/float/bool)
+;; is a real mutable borrow -- writes through it are visible to the
+;; caller, exactly as main.no's Ownership section documents:
+;;
+;;   (fn mutate (x:&!i32) -> unit (= x (+ x 1)))
+;;
+;; Before the fix `&!i32` lowered to a plain by-value `i32`, so the
+;; callee incremented its own private copy and the caller's variable
+;; never changed -- no error, just a silently wrong result.
+;;
+;; Expected:
+;;   2
+;;   3
+;;   12
+;;   1.5
+;;   true
+;;   42 42
+
+(struct Counter count:i32)
+
+(fn peek (x:&i32) -> i32 x)
+(fn mutate (x:&!i32) -> unit (= x (+ x 1)))
+(fn mutate_twice (x:&!i32) -> unit
+  (do
+    (mutate &!x)
+    (mutate &!x)))
+(fn halve (f:&!f64) -> unit (= f (/ f 2.0)))
+(fn flip (b:&!bool) -> unit (= b (! b)))
+(fn consume (x:i32) -> i32 x)
+
+(fn main () -> unit
+  (do
+    (var v:i32 1)
+    (mutate &!v)
+    (out (fmt "{}\n" v))
+    (mutate &!v)
+    (out (fmt "{}\n" (peek &v)))
+    (var c:Counter (Counter count:10))
+    (mutate_twice &!(. c count))
+    (out (fmt "{}\n" (. c count)))
+    (var f:f64 3.0)
+    (halve &!f)
+    (out (fmt "{}\n" f))
+    (var b:bool false)
+    (flip &!b)
+    (if b (out "true\n") (out "false\n"))
+    (var w:i32 42)
+    (out (fmt "{} {}\n" (consume w) w))))

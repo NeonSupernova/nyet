@@ -68,6 +68,9 @@ class Emitter:
         self._synth_fns: dict[str, str] = {}
         # Counter for hidden array locals -- see `_hof_array_arg`.
         self._hof_tmp_count = 0
+        # fn name -> per-param LLVM scalar type for `&!T` scalar params
+        # (None for every other param) -- see `_mut_ref_scalar_type`.
+        self._fn_param_mut_ref: dict[str, list[str | None]] = {}
         self._fn_lines: list[str] = []
         # Stack of (end_label, result_ptr | None, result_ty | None) for loop/break
         self._loop_stack: list[tuple[str, str | None, str | None]] = []
@@ -1304,12 +1307,54 @@ class Emitter:
         self._current_fn_array_ret_elem_ty = saved["current_fn_array_ret_elem_ty"]
         self._current_fn_return_type_node = saved["current_fn_return_type_node"]
 
+    def _mut_ref_scalar_type(self, tn: N.TypeNode | None) -> str | None:
+        """The LLVM type of T for a `&!T` param whose T is a scalar
+        (int/float/bool/char), else None.
+
+        Such a param is passed as a pointer to the caller's storage so
+        writes through it are visible to the caller. `&!` of an aggregate
+        (struct/sum/array/tuple/map/string) needs no change -- those values
+        are already pointer-shaped. Before this, `&!i32` lowered to a plain
+        by-value `i32`, so `(fn mutate (x:&!i32) -> unit (= x (+ x 1)))`
+        silently mutated a private copy."""
+        if not isinstance(tn, N.RefType) or not tn.mutable:
+            return None
+        if not isinstance(tn.inner, (N.PrimType, N.NamedType)):
+            return None
+        inner = self._llvm_type(tn.inner)
+        return None if inner == "ptr" else inner
+
+    def _param_llvm_type(self, tn: N.TypeNode | None) -> str:
+        return "ptr" if self._mut_ref_scalar_type(tn) is not None else self._llvm_type(tn)
+
+    def _record_mut_ref_scalar_params(self, node: N.FnDecl) -> None:
+        kinds = [self._mut_ref_scalar_type(p.type) for p in node.params]
+        if any(k is not None for k in kinds):
+            self._fn_param_mut_ref[node.name] = kinds
+
+    def _emit_place_ptr(self, arg: N.Expr) -> str:
+        """Address of the storage an `&!x` argument names, for passing to
+        a `&!T` scalar parameter."""
+        place = self._unwrap_borrow(arg)
+        if isinstance(place, N.Ident) and place.name in self._env:
+            return self._env[place.name][0]
+        if isinstance(place, N.FieldAccess):
+            ptr_and_ty = self._emit_field_ptr(place)
+            if ptr_and_ty is not None:
+                return ptr_and_ty[0]
+        raise NotImplementedError(
+            f"codegen: a `&!T` argument must name a variable or a struct field "
+            f"(got {type(place).__name__}) -- a mutable borrow of a temporary or "
+            f"an array element isn't supported yet"
+        )
+
     def _register_fn_sig(self, node: N.FnDecl) -> None:
         """Pre-populate `_fn_sigs` so call sites resolve regardless of
         the order functions appear in the program list."""
         if node.name == "main":
             return
-        param_types = [self._llvm_type(p.type) for p in node.params]
+        param_types = [self._param_llvm_type(p.type) for p in node.params]
+        self._record_mut_ref_scalar_params(node)
         ret_type = self._llvm_ret_type(node.return_type)
         self._fn_sigs[node.name] = (param_types, ret_type)
         ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
@@ -1390,9 +1435,10 @@ class Emitter:
             param_names = []
             param_nyet_names = []  # original Nyet type names for struct detection
             for p in node.params:
-                param_types.append(self._llvm_type(p.type))
+                param_types.append(self._param_llvm_type(p.type))
                 param_names.append(p.name)
                 param_nyet_names.append(self._nyet_type_name(p.type))
+            self._record_mut_ref_scalar_params(node)
 
             ret_type = self._llvm_ret_type(node.return_type)
             self._fn_sigs[node.name] = (param_types, ret_type)
@@ -1503,6 +1549,11 @@ class Emitter:
                     self._emit_line(f"store ptr %{n}, ptr {ptr}")
                     self._env[n] = (ptr, "ptr")
                     self._env_dyn_trait[n] = self._dyn_trait_name(p.type)
+                elif (mut_ref_ty := self._mut_ref_scalar_type(p.type)) is not None:
+                    # `&!T` scalar: the incoming pointer IS the binding's
+                    # storage, so reads load through it and `(= x v)` stores
+                    # through it -- see `_mut_ref_scalar_type`.
+                    self._env[n] = (f"%{n}", mut_ref_ty)
                 else:
                     ptr = self._emit_alloca(t)
                     self._emit_line(f"store {t} %{n}, ptr {ptr}")
@@ -5702,8 +5753,12 @@ class Emitter:
     def _emit_user_call(self, name: str, args: list[N.Expr]) -> str | None:
         dyn_traits = self._fn_param_dyn_traits.get(name)
         array_elems = self._fn_param_array_elem.get(name)
+        mut_refs = self._fn_param_mut_ref.get(name)
         arg_vals: list[tuple[str, str]] = []
         for i, arg in enumerate(args):
+            if mut_refs and i < len(mut_refs) and mut_refs[i] is not None:
+                arg_vals.append(("ptr", self._emit_place_ptr(arg)))
+                continue
             trait_name = dyn_traits[i] if dyn_traits and i < len(dyn_traits) else None
             if trait_name is not None:
                 v = self._emit_dyn_coerce(arg, trait_name)
