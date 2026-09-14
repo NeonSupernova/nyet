@@ -63,6 +63,11 @@ class Emitter:
         self._const_values: dict[str, tuple[str, str]] = {}
         self._str_lits: dict[str, str] = {}
         self._declared_externs: set[str] = set()
+        # Compiler-synthesized helper function definitions, keyed by
+        # symbol name -- see `_get_or_emit_op_fn`.
+        self._synth_fns: dict[str, str] = {}
+        # Counter for hidden array locals -- see `_hof_array_arg`.
+        self._hof_tmp_count = 0
         self._fn_lines: list[str] = []
         # Stack of (end_label, result_ptr | None, result_ty | None) for loop/break
         self._loop_stack: list[tuple[str, str | None, str | None]] = []
@@ -503,6 +508,10 @@ class Emitter:
             out.append(decl)
         if self._declared_externs:
             out.append("")
+
+        # Compiler-synthesized helper functions (see `_get_or_emit_op_fn`).
+        for text in self._synth_fns.values():
+            out.append(text)
 
         out.extend(self._lines)
         out.append("")
@@ -1666,10 +1675,11 @@ class Emitter:
                         if mangled in self._fn_sigs:
                             return self._fn_sigs[mangled][1]
                 if (
-                    op == "+"
+                    op in ("+", "/")
                     and node.args
                     and all(self._infer_llvm_type(a) == "ptr" for a in node.args)
                 ):
+                    # String concat / path join (see `_emit_arith`).
                     return "ptr"
                 has_double = False
                 has_float = False
@@ -1711,6 +1721,12 @@ class Emitter:
                     return self._fn_sigs[fname][1]
                 if fname in self._env_fn_sig:
                     return self._env_fn_sig[fname][1]
+                if fname in self._OP_CALLABLES and len(node.args) == 3:
+                    fold_elem = self._array_expr_elem_ty(node.args[2])
+                    if fold_elem is not None:
+                        return fold_elem
+            if op in ("min", "max") and len(node.args) == 2 and op not in self._fn_sigs:
+                return self._min_max_type(node.args)
             if op in ("&", "&!") and len(node.args) == 1:
                 return self._infer_llvm_type(node.args[0])
             if op == "fmt":
@@ -2022,42 +2038,30 @@ class Emitter:
             # Higher-order functions over Array[T]: `(map f arr)`,
             # `(filter f arr)`, `(fold f init arr)`, `(any f arr)`,
             # `(all f arr)`, `(zip arr1 arr2)` — matching main.no's
-            # documented call form (array/arrays last).
-            if (
-                name in ("map", "filter")
-                and len(node.args) == 2
-                and isinstance(node.args[1], N.Ident)
-                and node.args[1].name in self._env_array_elem
-            ):
-                arr_name = node.args[1].name
-                if name == "map":
-                    return self._emit_hof_map(node.args[0], arr_name)
-                return self._emit_hof_filter(node.args[0], arr_name)
-            if (
-                name == "fold"
-                and len(node.args) == 3
-                and isinstance(node.args[2], N.Ident)
-                and node.args[2].name in self._env_array_elem
-            ):
-                return self._emit_hof_fold(node.args[0], node.args[1], node.args[2].name)
-            if (
-                name in ("any", "all")
-                and len(node.args) == 2
-                and isinstance(node.args[1], N.Ident)
-                and node.args[1].name in self._env_array_elem
-            ):
-                return self._emit_hof_any_all(
-                    node.args[0], node.args[1].name, is_all=(name == "all")
-                )
-            if (
-                name == "zip"
-                and len(node.args) == 2
-                and isinstance(node.args[0], N.Ident)
-                and isinstance(node.args[1], N.Ident)
-                and node.args[0].name in self._env_array_elem
-                and node.args[1].name in self._env_array_elem
-            ):
-                return self._emit_hof_zip(node.args[0].name, node.args[1].name)
+            # documented call form (array/arrays last). The array operand
+            # may be any array-valued expression (an inline literal, or a
+            # nested HOF call from a `|>` pipeline), not only a named
+            # binding -- see `_hof_array_arg`. A user function of the same
+            # name shadows the builtin.
+            if name in ("map", "filter", "any", "all") and len(node.args) == 2:
+                arr_name = None if name in self._fn_sigs else self._hof_array_arg(node.args[1])
+                if arr_name is not None:
+                    if name == "map":
+                        return self._emit_hof_map(node.args[0], arr_name)
+                    if name == "filter":
+                        return self._emit_hof_filter(node.args[0], arr_name)
+                    return self._emit_hof_any_all(node.args[0], arr_name, is_all=(name == "all"))
+            if name == "fold" and len(node.args) == 3 and name not in self._fn_sigs:
+                arr_name = self._hof_array_arg(node.args[2])
+                if arr_name is not None:
+                    return self._emit_hof_fold(node.args[0], node.args[1], arr_name)
+            if name == "zip" and len(node.args) == 2 and name not in self._fn_sigs:
+                arr1 = self._hof_array_arg(node.args[0])
+                arr2 = self._hof_array_arg(node.args[1]) if arr1 is not None else None
+                if arr1 is not None and arr2 is not None:
+                    return self._emit_hof_zip(arr1, arr2)
+            if name in ("min", "max") and len(node.args) == 2 and name not in self._fn_sigs:
+                return self._emit_min_max(name, node.args)
             # Operators
             if name in ("+", "-", "*", "/", "%"):
                 return self._emit_arith(name, node.args)
@@ -2873,9 +2877,27 @@ class Emitter:
             return None
         return self._emit_user_call(mangled, args)
 
+    @staticmethod
+    def _nest_binary_left(op: str, args: list[N.Expr]) -> N.Call:
+        """`(op a b c d)` -> `(op (op (op a b) c) d)`."""
+        acc = N.Call(args[0].span, N.Ident(args[0].span, op), [args[0], args[1]])
+        for arg in args[2:]:
+            acc = N.Call(arg.span, N.Ident(arg.span, op), [acc, arg])
+        return acc
+
     def _emit_arith(self, op: str, args: list[N.Expr]) -> str | None:
         if len(args) < 2:
             return None
+        if len(args) > 2:
+            # Arithmetic operators are variadic and left-associative, per
+            # main.no: `(+ "hello" ", " "world")`, `(* 3.14159 r r)`, and an
+            # operator impl applied across several operands like
+            # `(/ api "users" "42")` all mean `(op (op a b) c)`. Everything
+            # below only ever looks at args[0]/args[1], so every operand
+            # past the second used to be silently dropped. Rewriting to
+            # nested binary calls reuses the existing type inference and
+            # operator-impl dispatch for each step.
+            return self._emit_expr(self._nest_binary_left(op, args))
         dispatched = self._maybe_dispatch_op_impl(op, args)
         if dispatched is not None:
             return dispatched
@@ -2889,6 +2911,12 @@ class Emitter:
 
         if op == "+" and lty == "ptr" and rty == "ptr":
             return self._emit_string_concat(lhs, rhs)
+        if op == "/" and lty == "ptr" and rty == "ptr":
+            # `(/ "usr" "local")` -- main.no's path operator on strings
+            # joins with a separator: `a + "/" + b`. Previously fell into
+            # the integer path below and emitted `sdiv ptr`, invalid IR.
+            sep, _ = self._get_string("/")
+            return self._emit_string_concat(self._emit_string_concat(lhs, sep), rhs)
 
         if self._is_float(lty) or self._is_float(rty):
             # Use double if either operand is double, else float
@@ -4975,8 +5003,14 @@ class Emitter:
     # resolving "the callable" is uniform whether it's a named top-level
     # function or a closure that used to be an inline lambda.
 
-    def _resolve_callable(self, node: N.Expr) -> tuple[str, list[str], str] | None:
-        """Resolve a callable expression to (fnptr_value, param_types, ret_type)."""
+    def _resolve_callable(
+        self, node: N.Expr, elem_ty: str | None = None
+    ) -> tuple[str, list[str], str] | None:
+        """Resolve a callable expression to (fnptr_value, param_types, ret_type).
+
+        `elem_ty` is the element type of the array a HOF is iterating --
+        needed to give an operator used as a function value (`(fold + 0
+        xs)`, `(fold min (xs 0) xs)`) a concrete signature."""
         if not isinstance(node, N.Ident):
             return None
         if node.name in self._fn_sigs:
@@ -4988,7 +5022,158 @@ class Emitter:
             self._emit_line(f"{fnptr} = load ptr, ptr {ptr}")
             sig_types, ret_type = self._env_fn_sig[node.name]
             return fnptr, list(sig_types), ret_type
+        if elem_ty is not None and node.name in self._OP_CALLABLES and node.name not in self._env:
+            name = self._get_or_emit_op_fn(node.name, elem_ty)
+            return f"@{name}", [elem_ty, elem_ty], elem_ty
         return None
+
+    # Operators (and min/max) usable as a two-argument function value.
+    _OP_CALLABLES = {
+        "+": "add",
+        "-": "sub",
+        "*": "mul",
+        "/": "div",
+        "%": "rem",
+        "min": "min",
+        "max": "max",
+    }
+
+    def _get_or_emit_op_fn(self, op: str, ty: str) -> str:
+        """Synthesize `define internal ty @__nyet_op_<op>_<ty>(ty, ty)` for
+        an operator used as a function value, or `min`/`max`. Signed
+        integer semantics; strings aren't supported."""
+        if ty == "ptr" or ty == "void":
+            raise NotImplementedError(
+                f"codegen: `{op}` used as a function value over `{ty}` operands is not supported"
+            )
+        name = f"__nyet_op_{self._OP_CALLABLES[op]}_{ty}"
+        if name in self._synth_fns:
+            return name
+        is_float = self._is_float(ty)
+        if op in ("min", "max"):
+            cmp = "fcmp" if is_float else "icmp"
+            if is_float:
+                pred = "olt" if op == "min" else "ogt"
+            else:
+                pred = "slt" if op == "min" else "sgt"
+            body = [f"  %c = {cmp} {pred} {ty} %a, %b", f"  %r = select i1 %c, {ty} %a, {ty} %b"]
+        else:
+            if is_float:
+                ops = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv", "%": "frem"}
+            else:
+                ops = {"+": "add", "-": "sub", "*": "mul", "/": "sdiv", "%": "srem"}
+            body = [f"  %r = {ops[op]} {ty} %a, %b"]
+        self._synth_fns[name] = "\n".join(
+            [
+                f"define internal {ty} @{name}({ty} %a, {ty} %b) {{",
+                "entry:",
+                *body,
+                f"  ret {ty} %r",
+                "}",
+                "",
+            ]
+        )
+        return name
+
+    @staticmethod
+    def _unresolved_callable_msg(f_arg: N.Expr) -> str:
+        what = f"'{f_arg.name}'" if isinstance(f_arg, N.Ident) else type(f_arg).__name__
+        return (
+            f"codegen: can't use {what} as the function argument of a higher-order "
+            f"builtin -- expected a named function, a closure, a fn-typed binding, "
+            f"or an operator"
+        )
+
+    def _convert_numeric(self, val: str, from_ty: str, to_ty: str, node: N.Node) -> str:
+        """Convert a numeric SSA value between LLVM int/float types."""
+        if from_ty == to_ty:
+            return val
+        if self._is_float(to_ty) and not self._is_float(from_ty):
+            conv = self._fresh_tmp()
+            iop = "uitofp" if self._node_is_unsigned(node) else "sitofp"
+            self._emit_line(f"{conv} = {iop} {from_ty} {val} to {to_ty}")
+            return conv
+        if self._is_float(to_ty) and self._is_float(from_ty):
+            conv = self._fresh_tmp()
+            fop = "fpext" if to_ty == "double" else "fptrunc"
+            self._emit_line(f"{conv} = {fop} {from_ty} {val} to {to_ty}")
+            return conv
+        if not self._is_float(from_ty) and from_ty != "ptr" and to_ty != "ptr":
+            return self._coerce_int_to(val, from_ty, to_ty, self._node_is_unsigned(node))
+        raise NotImplementedError(f"codegen: can't convert a `{from_ty}` value to `{to_ty}`")
+
+    def _min_max_type(self, args: list[N.Expr]) -> str:
+        lty = self._infer_llvm_type(args[0])
+        rty = self._infer_llvm_type(args[1])
+        if lty == rty:
+            return lty
+        if self._is_float(lty) or self._is_float(rty):
+            return "double"
+        return self._common_cmp_type(args[0], args[1], lty, rty)
+
+    def _emit_min_max(self, op: str, args: list[N.Expr]) -> str:
+        """`(min a b)` / `(max a b)` on two numbers."""
+        lhs = self._emit_expr(args[0])
+        rhs = self._emit_expr(args[1])
+        if lhs is None or rhs is None:
+            raise NotImplementedError(f"codegen: an operand of `{op}` produced no value")
+        ty = self._min_max_type(args)
+        lhs = self._convert_numeric(lhs, self._infer_llvm_type(args[0]), ty, args[0])
+        rhs = self._convert_numeric(rhs, self._infer_llvm_type(args[1]), ty, args[1])
+        fn = self._get_or_emit_op_fn(op, ty)
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call {ty} @{fn}({ty} {lhs}, {ty} {rhs})")
+        return tmp
+
+    def _array_expr_elem_ty(self, node: N.Node) -> str | None:
+        """LLVM element type of an array-valued expression, if known
+        without emitting it: a named array binding, an inline literal, a
+        nested `map`/`filter` call, or the shapes `_array_elem_ty_of_expr`
+        covers (struct field, 2D grid row)."""
+        if isinstance(node, N.Ident):
+            return self._env_array_elem.get(node.name)
+        if isinstance(node, N.ArrayLit):
+            return self._infer_llvm_type(node.elements[0]) if node.elements else None
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name not in self._fn_sigs
+            and len(node.args) == 2
+        ):
+            if node.head.name == "filter":
+                return self._array_expr_elem_ty(node.args[1])
+            if node.head.name == "map" and isinstance(node.args[0], N.Ident):
+                f = node.args[0].name
+                if f in self._fn_sigs:
+                    return self._fn_sigs[f][1]
+                if f in self._env_fn_sig:
+                    return self._env_fn_sig[f][1]
+        return self._array_elem_ty_of_expr(node)
+
+    def _hof_array_arg(self, arg: N.Expr) -> str | None:
+        """Name of an `Array[T]` binding holding `arg`'s value, for the HOF
+        builtins (which iterate a named binding). A plain array binding is
+        used as-is; any other array-valued expression -- an inline literal
+        `[1 2 3]`, a nested HOF call produced by a `|>` pipeline -- is
+        evaluated once into a hidden local. Before this, HOF dispatch only
+        matched a bare identifier, so `(fold + 0 (map f xs))` fell through
+        to a call to an undefined `@fold`. Returns None if `arg` isn't
+        known to be an array."""
+        if isinstance(arg, N.Ident):
+            return arg.name if arg.name in self._env_array_elem else None
+        elem_ty = self._array_expr_elem_ty(arg)
+        if elem_ty is None:
+            return None
+        val = self._emit_expr(arg)
+        if val is None:
+            return None
+        self._hof_tmp_count += 1
+        name = f"__hof_arr{self._hof_tmp_count}"
+        slot = self._emit_alloca("ptr")
+        self._emit_line(f"store ptr {val}, ptr {slot}")
+        self._env[name] = (slot, "ptr")
+        self._env_array_elem[name] = elem_ty
+        return name
 
     def _emit_indirect_call_raw(
         self, fnptr: str, arg_tys: list[str], arg_vals: list[str], ret_ty: str
@@ -5032,9 +5217,9 @@ class Emitter:
         return i_slot, i_val, cond_label, end_label
 
     def _emit_hof_map(self, f_arg: N.Expr, arr_name: str) -> str | None:
-        callable_ = self._resolve_callable(f_arg)
+        callable_ = self._resolve_callable(f_arg, self._env_array_elem[arr_name])
         if callable_ is None:
-            return None
+            raise NotImplementedError(self._unresolved_callable_msg(f_arg))
         fnptr, param_tys, ret_ty = callable_
         elem_ty = self._env_array_elem[arr_name]
 
@@ -5069,9 +5254,9 @@ class Emitter:
         return out
 
     def _emit_hof_filter(self, f_arg: N.Expr, arr_name: str) -> str | None:
-        callable_ = self._resolve_callable(f_arg)
+        callable_ = self._resolve_callable(f_arg, self._env_array_elem[arr_name])
         if callable_ is None:
-            return None
+            raise NotImplementedError(self._unresolved_callable_msg(f_arg))
         fnptr, param_tys, _ = callable_
         elem_ty = self._env_array_elem[arr_name]
 
@@ -5128,15 +5313,20 @@ class Emitter:
         return out
 
     def _emit_hof_fold(self, f_arg: N.Expr, init_arg: N.Expr, arr_name: str) -> str | None:
-        callable_ = self._resolve_callable(f_arg)
+        callable_ = self._resolve_callable(f_arg, self._env_array_elem[arr_name])
         if callable_ is None:
-            return None
+            raise NotImplementedError(self._unresolved_callable_msg(f_arg))
         fnptr, param_tys, ret_ty = callable_
         elem_ty = self._env_array_elem[arr_name]
 
         init_val = self._emit_expr(init_arg)
         if init_val is None:
             return None
+        # e.g. `(fold + 0 floats)`: the literal `0` is an i32 but the
+        # accumulator is a double.
+        init_val = self._convert_numeric(
+            init_val, self._infer_llvm_type(init_arg), ret_ty, init_arg
+        )
         acc_slot = self._emit_alloca(ret_ty)
         self._emit_line(f"store {ret_ty} {init_val}, ptr {acc_slot}")
 
@@ -5166,9 +5356,9 @@ class Emitter:
         return final
 
     def _emit_hof_any_all(self, f_arg: N.Expr, arr_name: str, *, is_all: bool) -> str | None:
-        callable_ = self._resolve_callable(f_arg)
+        callable_ = self._resolve_callable(f_arg, self._env_array_elem[arr_name])
         if callable_ is None:
-            return None
+            raise NotImplementedError(self._unresolved_callable_msg(f_arg))
         fnptr, param_tys, _ = callable_
         elem_ty = self._env_array_elem[arr_name]
 

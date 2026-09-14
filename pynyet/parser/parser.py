@@ -920,7 +920,14 @@ class Parser:
         return result
 
     def _parse_pipe(self, lparen: Token) -> N.Call:
-        """(|> val f g h) desugars to (h (g (f val)))"""
+        """(|> val f g h) desugars to (h (g (f val))).
+
+        A stage that is itself a call receives the threaded value as its
+        LAST argument: (|> xs (map f) (fold + 0)) desugars to
+        (fold + 0 (map f xs)), matching the HOFs' array-last argument
+        order. Wrapping such a stage as ((map f) xs) instead called the
+        *result* of (map f), which silently computed the wrong value.
+        """
         self._advance()
         val = self.parse_expr()
         stages: list[N.Expr] = []
@@ -929,7 +936,10 @@ class Parser:
         self._expect(TokenKind.RPAREN)
         result = val
         for stage in stages:
-            result = N.Call(self._span_from(lparen), stage, [result])
+            if isinstance(stage, N.Call):
+                result = N.Call(self._span_from(lparen), stage.head, [*stage.args, result])
+            else:
+                result = N.Call(self._span_from(lparen), stage, [result])
         return result
 
     # out/in/err — consume the keyword, then parse args like a regular call
