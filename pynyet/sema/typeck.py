@@ -221,6 +221,8 @@ class TypeChecker:
                 return FnSig((), UNIT)
             if node.name == "panic":
                 return FnSig((), UNIT)
+            if node.name == "sqrt":
+                return FnSig((F64,), F64)
             # v1.0 file IO builtins. STRING return for handles is approximate
             # — handles are opaque pointers, but STRING shares the LLVM `ptr`
             # shape and isn't Copy, which keeps the borrow checker honest if
@@ -279,6 +281,8 @@ class TypeChecker:
                     if node.args:
                         return self._infer(node.args[0])
                     return I32
+                if op in ("min", "max") and len(node.args) == 2 and op not in self.env:
+                    return self._infer(node.args[0])
                 if op in ("==", "!=", "<", "<=", ">", ">=", "&&", "||", "!"):
                     return BOOL
                 if op in ("&", "&!"):

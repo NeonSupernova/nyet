@@ -80,6 +80,7 @@ BUILTINS = {
     "now",
     "min",
     "max",
+    "sqrt",
 }
 
 # Primitive type names valid in expression position (e.g. `(in i32)`)

@@ -1784,6 +1784,8 @@ class Emitter:
                 return "ptr"
             if op == "now":
                 return "double"
+            if op == "sqrt" and len(node.args) == 1 and op not in self._fn_sigs:
+                return "double"
             if op in ("file_open", "file_read_all"):
                 return "ptr"
             if op == "in":
@@ -1841,6 +1843,8 @@ class Emitter:
             mangled = self._method_impls.get(tuple(node.head.segments))
             if mangled is not None and mangled in self._fn_sigs:
                 return self._fn_sigs[mangled][1]
+        if isinstance(node, N.Call) and (unq := self._unqualify_module_call(node)) is not None:
+            return self._infer_llvm_type(unq)
         if isinstance(node, N.FieldAccess):
             return self._infer_field_type(node)
         if isinstance(node, N.If) and node.then_branch:
@@ -2047,6 +2051,22 @@ class Emitter:
     # Calls — builtins, operators, struct ctors, user fns
     # ==================================================================
 
+    def _unqualify_module_call(self, node: N.Call) -> N.Call | None:
+        """`(std/math/sqrt 2.0)` / `(nyet/geometry/area s)` -> the same call
+        through its plain name.
+
+        The driver merges every loaded module into one flat program
+        (`_load_program_with_deps`), so a module qualifier only documents
+        where a name comes from. Only lowercase-rooted paths count as module
+        paths; `(Type/name ...)` impl calls are handled separately. Before
+        this, a module-qualified call evaluated to nothing at all."""
+        head = node.head
+        if not isinstance(head, N.Path) or len(head.segments) < 2:
+            return None
+        if not head.segments[0][:1].islower():
+            return None
+        return N.Call(node.span, N.Ident(head.span, head.segments[-1]), node.args)
+
     def _emit_call(self, node: N.Call) -> str | None:
         if isinstance(node.head, N.Ident):
             name = node.head.name
@@ -2076,6 +2096,8 @@ class Emitter:
                 return self._emit_panic(node.args)
             if name == "now" and len(node.args) == 0:
                 return self._emit_now()
+            if name == "sqrt" and len(node.args) == 1 and name not in self._fn_sigs:
+                return self._emit_sqrt(node.args[0])
             if name == "len" and len(node.args) == 1:
                 return self._emit_array_len(node.args[0])
             if name == "file_open":
@@ -2201,6 +2223,9 @@ class Emitter:
             mangled = self._method_impls.get((target_name, method_name))
             if mangled is not None:
                 return self._emit_user_call(mangled, node.args)
+        unqualified = self._unqualify_module_call(node)
+        if unqualified is not None:
+            return self._emit_call(unqualified)
         if (
             isinstance(node.head, (N.FieldAccess, N.Call))
             and len(node.args) == 1
@@ -2210,7 +2235,15 @@ class Emitter:
             # `Array[T]` value produced by a further expression. See
             # `_emit_array_index_nested`.
             return self._emit_array_index_nested(node.head, node.args[0])
-        return None
+        head = node.head
+        if isinstance(head, N.Path):
+            head_desc = "path '" + "/".join(head.segments) + "'"
+        else:
+            head_desc = type(head).__name__
+        raise NotImplementedError(
+            f"codegen: can't emit a call whose head is {head_desc} (span {node.span}) -- "
+            f"this used to silently evaluate to nothing"
+        )
 
     # ------------------------------------------------------------------
     # v0.3: Generic call inference helpers
@@ -2498,7 +2531,12 @@ class Emitter:
                 continue
             val = self._emit_expr(arg)
             if val is None:
-                continue
+                if isinstance(arg, (N.UnitLit, N.Pass)):
+                    continue
+                # Used to be skipped silently -- dropped output, no error.
+                raise NotImplementedError(
+                    f"codegen: an `out` argument ({arg.span}) produced no value"
+                )
             ty = self._infer_llvm_type(arg)
             self._declare_printf()
             if ty == "ptr":
@@ -2814,9 +2852,14 @@ class Emitter:
         fmt_args: list[tuple[str, str, N.Expr]] = []
         for arg in args[1:]:
             val = self._emit_expr(arg)
-            if val is not None:
-                ty = self._infer_llvm_type(arg)
-                fmt_args.append((ty, val, arg))
+            if val is None:
+                # Used to be skipped, leaving its `{}` placeholder printed
+                # literally -- e.g. `(fmt "{}" (std/math/sqrt 4.0))` printed "{}".
+                raise NotImplementedError(
+                    f"codegen: a `fmt` argument ({arg.span}) produced no value"
+                )
+            ty = self._infer_llvm_type(arg)
+            fmt_args.append((ty, val, arg))
 
         template_text = None
         if isinstance(args[0], N.StringLit):
@@ -4539,6 +4582,8 @@ class Emitter:
             mangled = self._method_impls.get(tuple(node.head.segments))
             if mangled is not None:
                 return self._fn_ret_nyet_names.get(mangled)
+        if isinstance(node, N.Call) and (unq := self._unqualify_module_call(node)) is not None:
+            return self._infer_nyet_type_name(unq)
         if isinstance(node, N.Ident) and node.name in self._env_struct_name:
             return self._env_struct_name[node.name]
         # A struct field that itself holds a struct/sum-type value —
@@ -5174,6 +5219,19 @@ class Emitter:
         fn = self._get_or_emit_op_fn(op, ty)
         tmp = self._fresh_tmp()
         self._emit_line(f"{tmp} = call {ty} @{fn}({ty} {lhs}, {ty} {rhs})")
+        return tmp
+
+    def _emit_sqrt(self, arg: N.Expr) -> str:
+        """`(sqrt x)` -> `f64`, via the `llvm.sqrt` intrinsic."""
+        val = self._emit_expr(arg)
+        if val is None:
+            raise NotImplementedError(
+                f"codegen: the `sqrt` argument ({arg.span}) produced no value"
+            )
+        val = self._convert_numeric(val, self._infer_llvm_type(arg), "double", arg)
+        self._declare_extern("declare double @llvm.sqrt.f64(double)")
+        tmp = self._fresh_tmp()
+        self._emit_line(f"{tmp} = call double @llvm.sqrt.f64(double {val})")
         return tmp
 
     def _array_expr_elem_ty(self, node: N.Node) -> str | None:

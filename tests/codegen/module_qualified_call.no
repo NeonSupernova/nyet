@@ -1,0 +1,29 @@
+;; Regression test: calling a function through its module-qualified path,
+;; as main.no's Modules section documents -- `(std/math/sqrt 2.0)` --
+;; plus the `sqrt` builtin itself.
+;;
+;; Before the fix, a call whose head was a module path (anything but a
+;; two-segment `(Type/name ...)` impl call) fell through every case in
+;; codegen and evaluated to nothing -- and `fmt`/`out` silently skipped an
+;; argument that produced no value, so `(fmt "{}\n" (std/math/sqrt 16.0))`
+;; printed a literal "{}". Both now either work or fail loudly.
+;;
+;; Expected:
+;;   2 5
+;;   4
+;;   1.41421
+;;   5
+
+(use std/collections)
+
+(fn hypot (x:f64 y:f64) -> f64
+  (sqrt (+ (* x x) (* y y))))
+
+(fn main () -> unit
+  (do
+    (let xs:Array[i32] [1 2 5 1])
+    (let rest:Array[i32] (std/collections/drop_while (fn (x:i32) -> bool (< x 3)) xs))
+    (out (fmt "{} {}\n" (len rest) (rest 0)))
+    (out (fmt "{}\n" (std/math/sqrt 16.0)))
+    (out (fmt "{}\n" (sqrt 2)))
+    (out (fmt "{}\n" (hypot 3.0 4.0)))))
