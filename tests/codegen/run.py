@@ -75,7 +75,11 @@ def dump_codegen_output(path: Path) -> str:
             parts.append(clang.stderr.rstrip("\n"))
             return "\n".join(parts) + "\n"
 
-        run = subprocess.run([str(bin_path)], capture_output=True, text=True)
+        # An empty stdin, so a fixture that reads input (tests/codegen/stdin_*)
+        # sees EOF instead of blocking on whatever stdin the runner inherited.
+        run = subprocess.run(
+            [str(bin_path)], capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
         parts.append("=== stdout ===")
         parts.append(run.stdout.rstrip("\n"))
         if run.returncode != 0:
