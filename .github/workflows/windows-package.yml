@@ -1,0 +1,59 @@
+name: Windows demo package
+
+# Manual only -- this downloads a ~100-200MB toolchain and runs
+# PyInstaller, which is unnecessary weight on every push. Trigger from
+# the Actions tab (or `gh workflow run windows-package.yml`) when you
+# need a fresh nyet-windows-demo.zip.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the Windows bundle
+        shell: pwsh
+        run: packaging\build_windows.ps1
+
+      - name: Smoke test -- bundled nyet.exe against its bundled clang
+        shell: pwsh
+        run: |
+          $bundle = "packaging\dist\bundle"
+          $exe = "$bundle\nyet.exe"
+
+          Write-Host "--- run demo/01_hello.no ---"
+          $out = & $exe run demo\01_hello.no 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "01_hello.no failed to build/run" }
+          if ($out -notmatch "hello from Nyet!") { throw "unexpected output from 01_hello.no" }
+
+          Write-Host "--- check demo/03_ownership.no (should pass) ---"
+          & $exe check demo\03_ownership.no
+          if ($LASTEXITCODE -ne 0) { throw "03_ownership.no should have passed check" }
+
+          Write-Host "--- check demo/03_ownership_bad.no (should fail) ---"
+          & $exe check demo\03_ownership_bad.no
+          if ($LASTEXITCODE -eq 0) { throw "03_ownership_bad.no should have failed check" }
+
+          Write-Host "--- bare shorthand: nyet -o smoketest.exe demo/05_closures.no ---"
+          & $exe -o smoketest.exe demo\05_closures.no
+          if ($LASTEXITCODE -ne 0) { throw "bare -o shorthand build failed" }
+          if (-not (Test-Path smoketest.exe)) { throw "smoketest.exe wasn't produced" }
+          $out2 = & .\smoketest.exe 2>&1 | Out-String
+          Write-Host $out2
+          if ($LASTEXITCODE -ne 0) { throw "smoketest.exe failed to run" }
+          if ($out2 -notmatch "product = 120") { throw "unexpected output from smoketest.exe" }
+
+          Write-Host "All smoke tests passed."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nyet-windows-demo
+          path: packaging/dist/nyet-windows-demo.zip
+          retention-days: 30
