@@ -4,8 +4,15 @@ name: Windows demo package
 # PyInstaller, which is unnecessary weight on every push. Trigger from
 # the Actions tab (or `gh workflow run windows-package.yml`) when you
 # need a fresh nyet-windows-demo.zip.
+#
+# workflow_dispatch only works for a workflow file that's on the
+# default branch, so while this is still under review on a feature
+# branch we also trigger on push to it directly -- drop that block
+# once this lands on main and workflow_dispatch works normally.
 on:
   workflow_dispatch: {}
+  push:
+    branches: [arcade/windows-bundle]
 
 jobs:
   package:
@@ -49,6 +56,33 @@ jobs:
           Write-Host $out2
           if ($LASTEXITCODE -ne 0) { throw "smoketest.exe failed to run" }
           if ($out2 -notmatch "product = 120") { throw "unexpected output from smoketest.exe" }
+
+          Write-Host "--- demo/features/*.no (also this repo's own regression tests) ---"
+          foreach ($name in @("ansi_lib", "char_printing", "file_read_lines", "string_len")) {
+            $fout = & $exe run "demo\features\$name.no" 2>&1 | Out-String
+            Write-Host $fout
+            if ($LASTEXITCODE -ne 0) { throw "demo\features\$name.no failed to build/run" }
+          }
+
+          Write-Host "--- minibase, standalone (exercises (use minibase_repl) -> (use minibase_core)) ---"
+          $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & $exe run minibase\main.no 2>&1 | Out-String
+          Write-Host $mbOut
+          if ($LASTEXITCODE -ne 0) { throw "minibase failed to build/run" }
+          if ($mbOut -notmatch "inserted #1: Alice") { throw "unexpected output from minibase" }
+
+          Write-Host "--- the arcade launcher (use)s all five games into one binary ---"
+          & $exe -o arcade.exe arcade\main.no
+          if ($LASTEXITCODE -ne 0) { throw "arcade launcher failed to build" }
+          # Drive it through minibase (option 1) then pipe dreams (option 4),
+          # then quit each game and the arcade itself -- proves the bundled
+          # repo-root _lib/_repl/prelude_*.no data files actually resolve at
+          # runtime from a frozen exe, not just that this all compiles.
+          $arcOut = "1`nseed`nlist`nquit`n4`n1`nq`nq`n" | & .\arcade.exe 2>&1 | Out-String
+          Write-Host $arcOut
+          if ($LASTEXITCODE -ne 0) { throw "arcade launcher failed to run" }
+          if ($arcOut -notmatch "N Y E T   A R C A D E") { throw "arcade banner missing from output" }
+          if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) didn't run correctly" }
+          if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) didn't run correctly" }
 
           Write-Host "All smoke tests passed."
 

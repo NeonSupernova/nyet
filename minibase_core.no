@@ -1,0 +1,283 @@
+;;;; minibase_core — the reusable data layer: `Row`/`Database`, their
+;;;; CRUD methods, and the validation macros those methods lean on.
+;;;; Split out of `main.no` (which `(use minibase_core)`s this file) to
+;;;; actually exercise Nyet's module system rather than just describe
+;;;; it — a REPL frontend and a storage engine are a natural seam, and
+;;;; this is genuinely all `main.no` needs to import to build one.
+;;;;
+;;;; NOTE: `pub` is honored by the parser/typeck but not yet enforced
+;;;; across a module boundary — a non-`pub` declaration here would
+;;;; still resolve from `main.no` today. Everything meant to be part of
+;;;; this library's surface is marked `pub` anyway, both because that's
+;;;; the honest intent and because it costs nothing to be ready for the
+;;;; day the boundary is enforced.
+
+(module minibase_core)
+
+(use std/ansi)
+
+;; ============================================================
+;;; Macros
+;; ============================================================
+
+;; Bail out of the current function, returning `on_fail`, unless `ok`
+;; holds — after printing `msg`. `on_fail` is `false` in every `-> bool`
+;; method and `()` in the couple of `-> unit` ones, so the same macro
+;; covers both without needing two near-identical copies.
+(macro guard (ok msg on_fail)
+  (if (! ok) (do (out msg) (return on_fail)) pass))
+
+;; The prelude's own idiom (see examples/macro_unless.no) — reads
+;; better than `(if (! cond) body pass)` at every call site below.
+(macro unless (cond body)
+  (if (! cond) body pass))
+
+;; A `guard` specialized for "this string argument may not be blank",
+;; with the field name in the error message captured automatically via
+;; `(quote s)` — `s` is a macro parameter, so `quote` renders whatever
+;; identifier the caller passed (e.g. `name`), not the word "s".
+(macro require_nonempty (s on_fail)
+  (guard (!= (len s) 0) (fmt "{}Error: {} cannot be blank{}\n" RED (quote s) RESET) on_fail))
+
+;; ============================================================
+;;; Presentation
+;; ============================================================
+
+(pub const MAX_ROWS:i32 100)
+
+;; ============================================================
+;;; Model
+;; ============================================================
+
+(pub struct Row id:i32 name:string used:bool)
+(pub struct Database rows:Array[Row] count:i32 next_id:i32)
+
+(impl Display Row
+  (fn display (self:&Row) -> string
+    (fmt "#{}  {}" (. self id) (. self name))))
+
+(impl Database
+  ;; The associated constructor: `(Database/new)`. Allocates the fixed
+  ;; row array via `array_new` (which leaves it uninitialized) and
+  ;; hands off to `init` to zero every slot.
+  (fn new () -> Database
+    (var rows:Array[Row] (array_new MAX_ROWS))
+    (var db:Database (Database rows:rows count:0 next_id:1))
+    (init &!db)
+    db)
+
+  (fn init (self:&!Database) -> unit
+    (let rows:&!Array[Row] (. self rows))
+    (var i:i32 0)
+    (loop
+      (if (>= i MAX_ROWS) (break) pass)
+      (= (rows i) (Row id:0 name:"" used:false))
+      (= i (+ i 1)))
+    (= (. self count) 0)
+    (= (. self next_id) 1))
+
+  ;; Returns the index of the row named `name`, or -1 if none is used.
+  (fn find_by_name (self:&Database name:&string) -> i32
+    (let rows:&Array[Row] (. self rows))
+    (var i:i32 0)
+    (loop
+      (if (>= i MAX_ROWS) (break) pass)
+      (let row:&Row (rows i))
+      (if (&& (. row used) (== (. row name) name)) (return i) pass)
+      (= i (+ i 1)))
+    (- 0 1))
+
+  ;; INSERT: assigns the next auto-incrementing id. False if the
+  ;; database is full, `name` is blank, or `name` is already taken.
+  (fn insert (self:&!Database name:string) -> bool
+    (require_nonempty name false)
+    (guard (< (. self count) MAX_ROWS) (fmt "{}Error: database is full{}\n" RED RESET) false)
+    (guard
+      (== (find_by_name self &name) (- 0 1))
+      (fmt "{}Error: '{}' already exists{}\n" RED name RESET)
+      false)
+
+    (let rows:&!Array[Row] (. self rows))
+    (var i:i32 0)
+    (loop
+      (if (>= i MAX_ROWS) (break) pass)
+      (let row:&Row (rows i))
+      (if (! (. row used))
+        (do
+          (let id:i32 (. self next_id))
+          (= (rows i) (Row id:id name:name used:true))
+          (= (. self count) (+ (. self count) 1))
+          (= (. self next_id) (+ id 1))
+          (out (fmt "{}inserted #{}: {}{}\n" GREEN id name RESET))
+          (return true))
+        pass)
+      (= i (+ i 1)))
+    false)
+
+  ;; RENAME (this file's UPDATE): false if `name` isn't found or
+  ;; `new_name` is blank.
+  (fn rename (self:&!Database name:string new_name:string) -> bool
+    (require_nonempty new_name false)
+    (let idx:i32 (find_by_name self &name))
+    (guard (!= idx (- 0 1)) (fmt "{}Error: '{}' not found{}\n" RED name RESET) false)
+    (guard
+      (== (find_by_name self &new_name) (- 0 1))
+      (fmt "{}Error: '{}' already exists{}\n" RED new_name RESET)
+      false)
+
+    (let rows:&!Array[Row] (. self rows))
+    (= (. (rows idx) name) new_name)
+    (out (fmt "{}renamed '{}' -> '{}'{}\n" GREEN name new_name RESET))
+    true)
+
+  ;; DELETE by name.
+  (fn delete_by_name (self:&!Database name:string) -> bool
+    (let idx:i32 (find_by_name self &name))
+    (guard (!= idx (- 0 1)) (fmt "{}Error: '{}' not found{}\n" RED name RESET) false)
+    (let rows:&!Array[Row] (. self rows))
+    (= (. (rows idx) used) false)
+    (= (. self count) (- (. self count) 1))
+    (out (fmt "{}deleted '{}'{}\n" GREEN name RESET))
+    true)
+
+  ;; Reorders the backing array into ascending name order. Unused
+  ;; slots (name "") sort first and are simply skipped by `print_all`,
+  ;; so sorting the whole fixed array needs no special-casing.
+  (fn sort_by_name (self:&!Database) -> unit
+    (let rows:&!Array[Row] (. self rows))
+    (var i:i32 0)
+    (loop
+      (if (>= i (- MAX_ROWS 1)) (break) pass)
+      (var j:i32 0)
+      (loop
+        (if (>= j (- (- MAX_ROWS 1) i)) (break) pass)
+        (let a:&Row (rows j))
+        (let b:&Row (rows (+ j 1)))
+        (if (> (. a name) (. b name))
+          (do
+            (let tmp (rows j))
+            (= (rows j) (rows (+ j 1)))
+            (= (rows (+ j 1)) tmp))
+          pass)
+        (= j (+ j 1)))
+      (= i (+ i 1))))
+
+  ;; SELECT * : print every used row via its Display impl.
+  (fn print_all (self:&Database) -> unit
+    (unless (> (. self count) 0) (do (out DIM) (out "(empty)\n") (out RESET) (return ())))
+    (let rows:&Array[Row] (. self rows))
+    (var i:i32 0)
+    (loop
+      (if (>= i MAX_ROWS) (break) pass)
+      (let row:&Row (rows i))
+      (if (. row used)
+        (do (out "  ") (out (display row)) (out "\n"))
+        pass)
+      (= i (+ i 1))))
+
+  (fn stats (self:&Database) -> unit
+    (out (fmt "{} / {} rows used\n" (. self count) MAX_ROWS))
+    (unless
+      (< (. self count) (- MAX_ROWS 10))
+      (do (out YELLOW) (out "warning: nearing capacity\n") (out RESET))))
+
+  (fn clear (self:&!Database) -> unit
+    (let rows:&!Array[Row] (. self rows))
+    (var i:i32 0)
+    (loop
+      (if (>= i MAX_ROWS) (break) pass)
+      (let row:&!Row (rows i))
+      (= (. row used) false)
+      (= i (+ i 1)))
+    (= (. self count) 0)
+    (out "database cleared\n"))
+
+  ;; SAVE: one name per line, active rows only, storage order. Doesn't
+  ;; need `file_read_lines` -- writing is just a sequence of
+  ;; `file_write` calls, no parsing back out required.
+  (fn save_to_file (self:&Database path:string) -> unit
+    (let h (file_open path "w"))
+    (let rows:&Array[Row] (. self rows))
+    (var i:i32 0)
+    (loop
+      (if (>= i MAX_ROWS) (break) pass)
+      (let row:&Row (rows i))
+      (if (. row used)
+        (do (file_write h (. row name)) (file_write h "\n"))
+        pass)
+      (= i (+ i 1)))
+    (file_close h)
+    (out (fmt "{}saved {} row(s) to '{}'{}\n" GREEN (. self count) path RESET)))
+
+  ;; LOAD: merges every name in `path` into the live database via the
+  ;; normal `insert` path (so validation/dedup/id-assignment are exactly
+  ;; the same as typing each name in by hand) -- it does not clear
+  ;; existing rows first. Touches the file in append mode before ever
+  ;; reading it, so a first-ever load (no save file yet) creates an
+  ;; empty one instead of handing `file_read_lines` a null handle from
+  ;; opening a nonexistent path for read.
+  (fn load_from_file (self:&!Database path:string) -> unit
+    (file_close (file_open path "a"))
+    (let h (file_open path "r"))
+    (let names:Array[string] (file_read_lines h))
+    (file_close h)
+
+    (var loaded:i32 0)
+    (var i:i32 0)
+    (let total:i32 (len &names))
+    (loop
+      (if (>= i total) (break) pass)
+      (let name:string (names i))
+      (if (> (len &name) 0)
+        (if (insert self name) (= loaded (+ loaded 1)) pass)
+        pass)
+      (= i (+ i 1)))
+    (out (fmt "{}loaded {} new row(s) from '{}' ({} line(s) read){}\n"
+      GREEN loaded path total RESET)))
+
+  ;; SEARCH: every row whose name contains `needle` anywhere (not just
+  ;; an exact match, unlike `find_by_name`) -- case-sensitive substring
+  ;; match via `contains_substr` below.
+  (fn search_by_name (self:&Database needle:string) -> unit
+    (let rows:&Array[Row] (. self rows))
+    (var hits:i32 0)
+    (var i:i32 0)
+    (loop
+      (if (>= i MAX_ROWS) (break) pass)
+      (let row:&Row (rows i))
+      (if (. row used)
+        (do
+          (let rname:string (. row name))
+          (if (contains_substr &rname &needle)
+            (do (out "  ") (out (display row)) (out "\n") (= hits (+ hits 1)))
+            pass))
+        pass)
+      (= i (+ i 1)))
+    (unless (> hits 0) (out (fmt "{}no matches for '{}'{}\n" DIM needle RESET)))))
+
+;; ============================================================
+;;; String helpers
+;; ============================================================
+
+;; True if `needle` occurs anywhere in `haystack` (byte-wise,
+;; case-sensitive); an empty needle always matches. Nyet has no
+;; substring/split primitive yet (see CONTINUATION_PLAN.md), so this
+;; is the naive O(hn * nn) scan via single-character indexing -- fine
+;; at minibase's row-name scale, not meant for bulk text search.
+(fn contains_substr (haystack:&string needle:&string) -> bool
+  (let hn:i32 (len haystack))
+  (let nn:i32 (len needle))
+  (unless (> nn 0) (return true))
+  (unless (<= nn hn) (return false))
+  (var i:i32 0)
+  (loop
+    (if (> i (- hn nn)) (break) pass)
+    (var j:i32 0)
+    (var ok:bool true)
+    (loop
+      (if (>= j nn) (break) pass)
+      (unless (== (haystack (+ i j)) (needle j)) (do (= ok false) (break)))
+      (= j (+ j 1)))
+    (if ok (return true) pass)
+    (= i (+ i 1)))
+  false)

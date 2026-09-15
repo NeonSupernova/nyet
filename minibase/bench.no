@@ -1,0 +1,53 @@
+;;;; minibase/bench.no — benchmarks minibase's own CRUD operations,
+;;;; plus a raw arithmetic microbenchmark, using std/bench's `time_it`
+;;;; (built on the `now` compiler primitive — CPU seconds via `clock()`).
+;;;;
+;;;; Run with: python3 -m pynyet.driver run minibase/bench.no
+;;;;
+;;;; minibase's array is fixed at 100 rows (MAX_ROWS in
+;;;; minibase_core.no), so these numbers are inherently small —
+;;;; sub-millisecond on any modern machine. That's expected, not a
+;;;; benchmarking bug: this exercises the real CRUD paths at the scale
+;;;; the app actually runs at, honestly reported rather than padded out
+;;;; by growing the array just to produce a bigger number. The
+;;;; "arithmetic loop" section at the bottom is the one that actually
+;;;; stresses the compiled code at a scale worth timing.
+
+(use minibase_core)
+(use std/bench)
+
+(fn fill (db:&!Database count:i32) -> unit
+  (var i:i32 0)
+  (loop
+    (if (>= i count) (break) pass)
+    (insert db (fmt "user{}" i))
+    (= i (+ i 1))))
+
+(fn find_all (db:&Database count:i32) -> unit
+  (var i:i32 0)
+  (loop
+    (if (>= i count) (break) pass)
+    (let name:string (fmt "user{}" i))
+    (find_by_name db &name)
+    (= i (+ i 1))))
+
+(fn arithmetic_loop (n:i32) -> i64
+  (var i:i32 0)
+  (var sum:i64 0)
+  (loop
+    (if (>= i n) (break) pass)
+    (= sum (+ sum (as i i64)))
+    (= i (+ i 1)))
+  sum)
+
+(fn main () -> unit
+  (out "--- minibase CRUD, at its real fixed capacity (97 rows) ---\n")
+  (var db:Database (Database/new))
+  (time_it "insert 97 rows" (fill &!db 97))
+  (time_it "find 97 rows (linear scan each)" (find_all &db 97))
+  (time_it "sort 100 rows"  (sort_by_name &!db))
+  (stats &db)
+
+  (out "\n--- raw arithmetic loop, at a scale worth timing ---\n")
+  (let total:i64 (time_it "sum 0..20000000" (arithmetic_loop 20000000)))
+  (out (fmt "sum = {}\n" total)))

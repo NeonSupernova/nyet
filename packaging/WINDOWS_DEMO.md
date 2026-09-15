@@ -52,9 +52,29 @@ Either redo step 2 each session, or skip it entirely and just `cd`
 into this folder and run `.\nyet.exe ...` -- works identically, just
 without the shorter `nyet` name.
 
+## The arcade -- the main event
+
+`nyet run arcade\main.no` (or double-click-build it first with
+`nyet -o arcade.exe arcade\main.no`, then `.\arcade.exe`) launches a
+menu that links five small game/utility programs into one binary and
+lets you jump between them -- a live demonstration of Nyet's module
+system, not five separate demos glued together after the fact.
+
+| # | Game | Shows |
+|---|---|---|
+| 1 | `minibase` | A CRUD console database: structs, an `impl` block, macros, file save/load. |
+| 2 | `adventure` | A tiny text adventure: sum types + `match` encoding a room graph. |
+| 3 | `game of life` | Conway's Game of Life as an animated terminal UI, with a cursor-based board editor. |
+| 4 | `pipe dreams` | A number-transformation puzzle built entirely around the `\|>` pipe operator. |
+| 5 | `hangman` | Classic word-guessing -- ASCII gallows art, one letter at a time. |
+
+Each also runs completely standalone (same code, just linked a second
+way): `nyet run minibase\main.no`, `nyet run adventure\main.no`, etc.
+
 ## The demo programs
 
-All in `demo\`, run with `nyet run demo\<file>`:
+Smaller, single-feature programs in `demo\`, run with
+`nyet run demo\<file>`:
 
 | File | Shows |
 |---|---|
@@ -65,9 +85,29 @@ All in `demo\`, run with `nyet run demo\<file>`:
 | `04_generics_and_option.no` | Generic `Option[T]` and the `?` early-return operator -- no nulls. |
 | `05_closures.no` | Closures / higher-order functions. |
 
+`demo\features\` has a few more, doubling as this repo's own
+regression tests for the features they show off:
+
+| File | Shows |
+|---|---|
+| `ansi_lib.no` | `std/ansi.no`: SGR colors, 256-color mode, truecolor, hex-to-ANSI conversion. |
+| `char_printing.no` | Printing a `char` correctly (as the letter, not its numeric codepoint). |
+| `file_read_lines.no` | Reading a file back as one string per line. |
+| `string_len.no` | `len` on a `string` (as opposed to an `Array[T]`). |
+
 A natural live order: `01` to prove it works, `02` for the language
 feel, `03` then `03_bad` as the "watch it catch a real bug" beat,
-`04` and `05` for two more distinctive features.
+`04` and `05` for two more distinctive features, then straight into
+the arcade as the finale.
+
+## main.no -- the language reference
+
+`main.no`, copied into this folder's root, is this project's own
+language specification, written as one big Nyet program with
+extensive comments -- worth browsing (in a text editor, or
+`nyet parse main.no` to see it round-tripped) but **not guaranteed to
+build**: it deliberately documents features somewhat ahead of what's
+implemented, and isn't something this bundle promises to compile.
 
 ## Compiling your own file
 

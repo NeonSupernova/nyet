@@ -1,0 +1,6 @@
+=== stdout ===
+literal: 0
+plain let: 10
+borrowed param: 10
+struct field: 5
+array (control, unaffected): 4

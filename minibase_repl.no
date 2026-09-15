@@ -1,0 +1,164 @@
+;;;; minibase_repl — minibase's REPL frontend, extracted out of
+;;;; minibase/main.no into a repo-root module so the arcade launcher
+;;;; can `(use minibase_repl)` and call `run_minibase` directly,
+;;;; alongside the other games it also links in. minibase/main.no
+;;;; keeps working standalone as a two-line wrapper around
+;;;; `run_minibase`.
+;;;;
+;;;; Command dispatch below is a plain `match` on the typed command —
+;;;; earlier drafts used a macro (`on`) that chained independent `if`s
+;;;; with a hand-rolled `matched` flag, which was reinventing exactly
+;;;; what `match` already does natively (single evaluation of `cmd`,
+;;;; one designated fallback arm). Every arm ends in `pass` — this
+;;;; compiler doesn't unify/coerce an arm's inferred type against its
+;;;; siblings, so a `-> bool` command's result and a `-> unit` one's
+;;;; would otherwise disagree; `pass` makes every arm agree on "no
+;;;; value", which is all a REPL loop actually needs from `match` here.
+;;;;
+;;;; The other macro below, `atomic`, is a genuinely different macro
+;;;; shape from anything in minibase_core: a *variadic* one, splicing a
+;;;; caller-supplied sequence of operations between a pair of markers
+;;;; (see examples/macro_variadic.no's `do_all` for the underlying
+;;;; mechanism this borrows).
+;;;;
+;;;; A note on what `(in)` can and can't tell you: reading a blank line
+;;;; and hitting real EOF (Ctrl-D) both come back as "" — there's no
+;;;; way from Nyet source to tell them apart. The prompt loop below
+;;;; treats a blank top-level command as `quit` specifically so EOF
+;;;; can never spin the loop forever; sub-prompts (a name, a
+;;;; confirmation) are covered by `require_nonempty` and `confirm`
+;;;; instead, which already reject blank input on their own terms.
+;;;;
+;;;; `seed`/`print_help` below are named `minibase_seed_demo`/
+;;;; `minibase_print_help` rather than the shorter names main.no used
+;;;; to use standalone -- game_of_life and adventure each have their
+;;;; own differently-bodied `seed`/`print_help`, and the arcade
+;;;; launcher links every game's module into one program, where all of
+;;;; their top-level names share a single flat namespace.
+
+(module minibase_repl)
+
+(use minibase_core)
+(use std/ansi)
+(use std/io)
+
+(const DB_PATH:string "minibase.db")
+
+;; Splices a labeled sequence of operations between a start/done
+;; marker — the variadic form: `ops` captures every trailing argument,
+;; and `ops ...` in the body re-splices that whole sequence in place
+;; (unlike `guard`/`unless`, which each take exactly one fixed body).
+(macro atomic (label ops ...)
+  (do
+    (out DIM) (out "[") (out label) (out "] start\n") (out RESET)
+    ops ...
+    (out DIM) (out "[") (out label) (out "] done\n") (out RESET)))
+
+(fn confirm (msg:string) -> bool
+  (out msg)
+  (let ans:string (in))
+  (|| (== ans "y") (== ans "yes")))
+
+(pub fn minibase_print_help () -> unit
+  (out "commands:\n")
+  (out "  list      (ls)         show every row\n")
+  (out "  insert                 add a row (prompts for a name)\n")
+  (out "  rename                 rename a row (prompts for name, new name)\n")
+  (out "  delete    (rm)         delete a row (prompts for name, confirms)\n")
+  (out "  find                   look up a row by exact name\n")
+  (out "  search                 look up rows whose name contains text\n")
+  (out "  sorted                 sort rows by name, then list them\n")
+  (out "  seed                   insert a few demo rows\n")
+  (out "  stats                  show row count / capacity\n")
+  (out "  save                   write every row to 'minibase.db'\n")
+  (out "  load                   merge rows in from 'minibase.db'\n")
+  (out "  clear                  wipe every row (confirms)\n")
+  (out "  help                   show this message\n")
+  (out "  quit      (exit, q)    leave\n"))
+
+(fn minibase_seed_demo (db:&!Database) -> unit
+  (atomic "seed"
+    (insert db "Alice")
+    (insert db "Bob")
+    (insert db "Carol")))
+
+(pub fn run_minibase () -> unit
+  (var db:Database (Database/new))
+  (out DIM) (out "minibase — type 'help' for commands, 'quit' to leave\n") (out RESET)
+
+  (loop
+    (let cmd:string (prompt_line "minibase> "))
+
+    ;; A blank line at the TOP prompt doubles as quit — see the file
+    ;; header on why real EOF and a blank Enter are indistinguishable
+    ;; here, and why this is the only place that matters.
+    (if (|| (== cmd "") (|| (== cmd "quit") (|| (== cmd "exit") (== cmd "q"))))
+      (do (out "bye\n") (break))
+      pass)
+
+    (match cmd
+      ("help" (do (minibase_print_help) pass))
+      ("?"    (do (minibase_print_help) pass))
+      ("list" (do (print_all &db) pass))
+      ("ls"   (do (print_all &db) pass))
+
+      ("insert"
+        (do
+          (let name:string (prompt_line "  name: "))
+          (insert &!db name)
+          pass))
+
+      ("rename"
+        (do
+          (let name:string (prompt_line "  name: "))
+          (let new_name:string (prompt_line "  new name: "))
+          (rename &!db name new_name)
+          pass))
+
+      ("delete"
+        (do
+          (let name:string (prompt_line "  name: "))
+          (if (confirm (fmt "  delete '{}'? (y/n) " name))
+            (delete_by_name &!db name)
+            (do (out "cancelled\n") false))
+          pass))
+      ("rm"
+        (do
+          (let name:string (prompt_line "  name: "))
+          (if (confirm (fmt "  delete '{}'? (y/n) " name))
+            (delete_by_name &!db name)
+            (do (out "cancelled\n") false))
+          pass))
+
+      ("find"
+        (do
+          (let name:string (prompt_line "  name: "))
+          (let idx:i32 (find_by_name &db &name))
+          (if (== idx (- 0 1))
+            (out (fmt "{}not found{}\n" DIM RESET))
+            (do
+              (let rows:&Array[Row] (. db rows))
+              (out "  ") (out (display (rows idx))) (out "\n")))
+          pass))
+
+      ("search"
+        (do
+          (let needle:string (prompt_line "  contains: "))
+          (search_by_name &db needle)
+          pass))
+
+      ("sorted" (do (sort_by_name &!db) (print_all &db) pass))
+      ("seed"   (do (minibase_seed_demo &!db) pass))
+      ("stats"  (do (stats &db) pass))
+      ("save"   (do (save_to_file &db DB_PATH) pass))
+      ("load"   (do (load_from_file &!db DB_PATH) pass))
+
+      ("clear"
+        (do
+          (if (confirm "  really wipe every row? (y/n) ")
+            (clear &!db)
+            (out "cancelled\n"))
+          pass))
+
+      (other
+        (do (out (fmt "{}unknown command: '{}' — try 'help'{}\n" DIM other RESET)) pass)))))

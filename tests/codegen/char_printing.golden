@@ -1,0 +1,6 @@
+=== stdout ===
+out! a char literal-annotation: A
+fmt a char literal-annotation: A
+out! a char from string indexing: h
+fmt a char from string indexing: h
+control -- plain i32 unaffected: 65
