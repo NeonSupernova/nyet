@@ -71,6 +71,22 @@ system, not five separate demos glued together after the fact.
 Each also runs completely standalone (same code, just linked a second
 way): `nyet run minibase\main.no`, `nyet run adventure\main.no`, etc.
 
+**The actual source worth reading is in `lib\`, not in each game's own
+folder.** Every `<game>\main.no` here is just a two-line wrapper --
+`(use <game>_lib) (fn main () -> unit (run_<game>))` -- so it can
+`(use ...)` its logic from a shared module and also link into the
+combined arcade binary. The real code (structs, `match`, macros, the
+borrow checker, `|>` pipelines, all of it) is in `lib\`:
+
+| File | Belongs to |
+|---|---|
+| `minibase_core.no` / `minibase_repl.no` | minibase |
+| `adventure_lib.no` | adventure |
+| `game_of_life_lib.no` | game of life |
+| `pipe_dreams_lib.no` | pipe dreams |
+| `hangman_lib.no` | hangman |
+| `prelude_option.no` / `prelude_rng.no` | shared by several of the above (`Option[T]`, a small linear-congruential RNG) |
+
 ## The demo programs
 
 Smaller, single-feature programs in `demo\`, run with

@@ -47,6 +47,20 @@ foreach ($dir in @("minibase", "adventure", "game_of_life", "pipe_dreams", "hang
     Copy-Item "$RepoRoot\$dir" "$bundle\$dir" -Recurse -Force
 }
 
+# The arcade suite's actual logic: each game's `main.no` wrapper is
+# just two lines, so the interesting, language-feature-showing code
+# lives in these repo-root `_lib`/`_repl`/prelude modules instead.
+# nyet.spec bundles them too (ARCADE_LIB_MODULES, kept in sync with
+# this list) so `(use ...)` resolves at runtime from the frozen exe --
+# but that copy lands wherever PyInstaller's internals put it, not
+# somewhere a person browsing the demo folder would ever find. Half
+# the point of the demo is showing off the language, so give them a
+# second, plainly-visible copy here.
+New-Item -ItemType Directory -Path "$bundle\lib" -Force | Out-Null
+foreach ($name in @("minibase_core", "minibase_repl", "adventure_lib", "game_of_life_lib", "pipe_dreams_lib", "hangman_lib", "prelude_option", "prelude_rng")) {
+    Copy-Item "$RepoRoot\$name.no" "$bundle\lib\$name.no" -Force
+}
+
 # A handful of feature-focused programs (also this repo's own
 # regression tests, written to double as short, documented demos of
 # one language feature each) alongside the curated demo/ set.
