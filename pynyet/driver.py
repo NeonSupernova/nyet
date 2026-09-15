@@ -92,6 +92,16 @@ def _load_program_with_deps(entry_path: str) -> list[N.Node]:
 
     repo_root = _repo_root()
     entry = Path(entry_path).resolve()
+    if not entry.is_file():
+        # `load()` below silently no-ops on a missing path -- that's the
+        # right call for a `(use ...)` target that isn't implemented yet,
+        # but applied to the entry file itself it used to mean a typo'd
+        # or wrong path silently compiled as an *empty* program (no
+        # diagnostics, no `main`) instead of failing here. That surfaced
+        # as a baffling downstream clang/linker error with no obvious
+        # connection to the real cause, so check the entry explicitly.
+        print(f"error: file not found: {entry_path}", file=sys.stderr)
+        sys.exit(1)
     seen: set[Path] = set()
     order: list[Path] = []
     loaded: dict[Path, list[N.Node]] = {}

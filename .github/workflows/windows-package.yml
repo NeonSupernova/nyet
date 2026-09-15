@@ -90,10 +90,25 @@ jobs:
           # (not a foreach over a name list) for the same reason as the
           # note above -- keep every invocation as plain, direct,
           # top-level code.
+          #
+          # Source path: demo\features\ only exists *inside the bundle*
+          # ($bundle\demo\features\, populated by build_windows.ps1 from
+          # tests\codegen\*.no) -- it's never a real repo-root directory
+          # (demo/*.no is gitignore-excepted, but not demo/features/*.no).
+          # An earlier version of this step pointed at the bare
+          # `demo\features\...` path, which doesn't exist here, and
+          # `nyet build` on a missing entry file used to silently compile
+          # an *empty* program (no diagnostics, no `main`) instead of
+          # erroring -- so it "succeeded" all the way to a baffling
+          # `undefined reference to WinMain` link error (no `main` symbol
+          # for the linker's console-subsystem CRT object, so it fell
+          # back looking for a GUI-subsystem entry point instead). Fixed
+          # at the source in pynyet/driver.py (missing entry file is now
+          # a hard, immediate error) as well as here.
 
           Write-Host "--- demo/features/ansi_lib.no ---"
           try {
-              & $exe -o ansi_lib.exe demo\features\ansi_lib.no
+              & $exe -o ansi_lib.exe $bundle\demo\features\ansi_lib.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               $fout = & .\ansi_lib.exe 2>&1 | Out-String
               Write-Host $fout
@@ -102,7 +117,7 @@ jobs:
 
           Write-Host "--- demo/features/char_printing.no ---"
           try {
-              & $exe -o char_printing.exe demo\features\char_printing.no
+              & $exe -o char_printing.exe $bundle\demo\features\char_printing.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               $fout = & .\char_printing.exe 2>&1 | Out-String
               Write-Host $fout
@@ -111,7 +126,7 @@ jobs:
 
           Write-Host "--- demo/features/file_read_lines.no ---"
           try {
-              & $exe -o file_read_lines.exe demo\features\file_read_lines.no
+              & $exe -o file_read_lines.exe $bundle\demo\features\file_read_lines.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               $fout = & .\file_read_lines.exe 2>&1 | Out-String
               Write-Host $fout
@@ -120,7 +135,7 @@ jobs:
 
           Write-Host "--- demo/features/string_len.no ---"
           try {
-              & $exe -o string_len.exe demo\features\string_len.no
+              & $exe -o string_len.exe $bundle\demo\features\string_len.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               $fout = & .\string_len.exe 2>&1 | Out-String
               Write-Host $fout
@@ -153,26 +168,6 @@ jobs:
               if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) wrong" }
               if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) wrong" }
           } catch { Write-Host "[FAIL] $_"; $failures.Add("arcade") }
-
-          # --- Isolating diagnostic probes -----------------------------
-          # Every failing build above shares one trait none of the
-          # passing ones have: an underscore in the -o name
-          # (ansi_lib/char_printing/file_read_lines/string_len vs.
-          # smoketest/minibase/arcade). Two probes to isolate variables:
-          # (A) a KNOWN-GOOD source (demo\05_closures.no, already built
-          # successfully above as smoketest.exe) but with an
-          # underscored -o name; (B) a FAILING source relocated to a
-          # shallow (demo\, not demo\features\) path, same underscored
-          # name. These don't count toward $failures -- purely
-          # diagnostic, logged either way.
-          Write-Host "--- probe A: known-good source, underscored -o name ---"
-          & $exe -o probe_a_test.exe demo\05_closures.no
-          Write-Host "probe A exit code: $LASTEXITCODE"
-
-          Write-Host "--- probe B: failing source relocated to a shallow path ---"
-          Copy-Item demo\features\string_len.no demo\string_len.no -Force
-          & $exe -o probe_b_string_len.exe demo\string_len.no
-          Write-Host "probe B exit code: $LASTEXITCODE"
 
           Write-Host ""
           if ($failures.Count -gt 0) {
