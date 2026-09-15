@@ -154,6 +154,26 @@ jobs:
               if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) wrong" }
           } catch { Write-Host "[FAIL] $_"; $failures.Add("arcade") }
 
+          # --- Isolating diagnostic probes -----------------------------
+          # Every failing build above shares one trait none of the
+          # passing ones have: an underscore in the -o name
+          # (ansi_lib/char_printing/file_read_lines/string_len vs.
+          # smoketest/minibase/arcade). Two probes to isolate variables:
+          # (A) a KNOWN-GOOD source (demo\05_closures.no, already built
+          # successfully above as smoketest.exe) but with an
+          # underscored -o name; (B) a FAILING source relocated to a
+          # shallow (demo\, not demo\features\) path, same underscored
+          # name. These don't count toward $failures -- purely
+          # diagnostic, logged either way.
+          Write-Host "--- probe A: known-good source, underscored -o name ---"
+          & $exe -o probe_a_test.exe demo\05_closures.no
+          Write-Host "probe A exit code: $LASTEXITCODE"
+
+          Write-Host "--- probe B: failing source relocated to a shallow path ---"
+          Copy-Item demo\features\string_len.no demo\string_len.no -Force
+          & $exe -o probe_b_string_len.exe demo\string_len.no
+          Write-Host "probe B exit code: $LASTEXITCODE"
+
           Write-Host ""
           if ($failures.Count -gt 0) {
               Write-Host "FAILED: $($failures -join ', ')"
