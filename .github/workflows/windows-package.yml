@@ -38,68 +38,107 @@ jobs:
         run: |
           $bundle = "packaging\dist\bundle"
           $exe = "$bundle\nyet.exe"
+          $failures = @()
 
-          Write-Host "--- run demo/01_hello.no ---"
-          $out = & $exe run demo\01_hello.no 2>&1 | Out-String
-          Write-Host $out
-          if ($LASTEXITCODE -ne 0) { throw "01_hello.no failed to build/run" }
-          if ($out -notmatch "hello from Nyet!") { throw "unexpected output from 01_hello.no" }
+          function Check-Step {
+              param([string]$Name, [scriptblock]$Body)
+              Write-Host "--- $Name ---"
+              try {
+                  & $Body
+                  Write-Host "[OK] $Name"
+              } catch {
+                  Write-Host "[FAIL] $Name -- $($_.Exception.Message)"
+                  $script:failures += $Name
+              }
+          }
 
-          Write-Host "--- check demo/03_ownership.no (should pass) ---"
-          & $exe check demo\03_ownership.no
-          if ($LASTEXITCODE -ne 0) { throw "03_ownership.no should have passed check" }
+          Check-Step "run demo/01_hello.no" {
+              $out = & $exe run demo\01_hello.no 2>&1 | Out-String
+              Write-Host $out
+              if ($LASTEXITCODE -ne 0) { throw "failed to build/run" }
+              if ($out -notmatch "hello from Nyet!") { throw "unexpected output" }
+          }
 
-          Write-Host "--- check demo/03_ownership_bad.no (should fail) ---"
-          & $exe check demo\03_ownership_bad.no
-          if ($LASTEXITCODE -eq 0) { throw "03_ownership_bad.no should have failed check" }
+          Check-Step "check demo/03_ownership.no (should pass)" {
+              & $exe check demo\03_ownership.no
+              if ($LASTEXITCODE -ne 0) { throw "should have passed check" }
+          }
 
-          Write-Host "--- bare shorthand: nyet -o smoketest.exe demo/05_closures.no ---"
-          & $exe -o smoketest.exe demo\05_closures.no
-          if ($LASTEXITCODE -ne 0) { throw "bare -o shorthand build failed" }
-          if (-not (Test-Path smoketest.exe)) { throw "smoketest.exe wasn't produced" }
-          $out2 = & .\smoketest.exe 2>&1 | Out-String
-          Write-Host $out2
-          if ($LASTEXITCODE -ne 0) { throw "smoketest.exe failed to run" }
-          if ($out2 -notmatch "product = 120") { throw "unexpected output from smoketest.exe" }
+          Check-Step "check demo/03_ownership_bad.no (should fail)" {
+              & $exe check demo\03_ownership_bad.no
+              if ($LASTEXITCODE -eq 0) { throw "should have failed check" }
+          }
 
-          Write-Host "--- demo/features/*.no (also this repo's own regression tests) ---"
+          Check-Step "bare shorthand: nyet -o smoketest.exe demo/05_closures.no" {
+              & $exe -o smoketest.exe demo\05_closures.no
+              if ($LASTEXITCODE -ne 0) { throw "bare -o shorthand build failed" }
+              if (-not (Test-Path smoketest.exe)) { throw "smoketest.exe wasn't produced" }
+              $out2 = & .\smoketest.exe 2>&1 | Out-String
+              Write-Host $out2
+              if ($LASTEXITCODE -ne 0) { throw "smoketest.exe failed to run" }
+              if ($out2 -notmatch "product = 120") { throw "unexpected output" }
+          }
+
           # Explicit, distinct -o per file: `run` defaults to a bare
           # "output"/"output.exe" with no -o given, and the very first
           # step above (`run demo\01_hello.no`) already produced one of
-          # those in this same working directory -- Windows won't let a
-          # second build silently clobber it the way Unix would, and
-          # the resulting failure surfaces as a confusing clang/ld
-          # linker error rather than an obvious file-locked message.
+          # those in this same working directory.
           foreach ($name in @("ansi_lib", "char_printing", "file_read_lines", "string_len")) {
-            & $exe -o "$name.exe" "demo\features\$name.no"
-            if ($LASTEXITCODE -ne 0) { throw "demo\features\$name.no failed to build" }
-            $fout = & ".\$name.exe" 2>&1 | Out-String
-            Write-Host $fout
-            if ($LASTEXITCODE -ne 0) { throw "demo\features\$name.no failed to run" }
+              Check-Step "demo/features/$name.no" {
+                  & $exe -o "$name.exe" "demo\features\$name.no"
+                  if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+                  $fout = & ".\$name.exe" 2>&1 | Out-String
+                  Write-Host $fout
+                  if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+              }
           }
 
-          Write-Host "--- minibase, standalone (exercises (use minibase_repl) -> (use minibase_core)) ---"
-          & $exe -o minibase.exe minibase\main.no
-          if ($LASTEXITCODE -ne 0) { throw "minibase failed to build" }
-          $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & .\minibase.exe 2>&1 | Out-String
-          Write-Host $mbOut
-          if ($LASTEXITCODE -ne 0) { throw "minibase failed to run" }
-          if ($mbOut -notmatch "inserted #1: Alice") { throw "unexpected output from minibase" }
+          Check-Step "minibase, standalone (exercises (use minibase_repl) -> (use minibase_core))" {
+              & $exe -o minibase.exe minibase\main.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & .\minibase.exe 2>&1 | Out-String
+              Write-Host $mbOut
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+              if ($mbOut -notmatch "inserted #1: Alice") { throw "unexpected output" }
+          }
 
-          Write-Host "--- the arcade launcher (use)s all five games into one binary ---"
-          & $exe -o arcade.exe arcade\main.no
-          if ($LASTEXITCODE -ne 0) { throw "arcade launcher failed to build" }
-          # Drive it through minibase (option 1) then pipe dreams (option 4),
-          # then quit each game and the arcade itself -- proves the bundled
-          # repo-root _lib/_repl/prelude_*.no data files actually resolve at
-          # runtime from a frozen exe, not just that this all compiles.
-          $arcOut = "1`nseed`nlist`nquit`n4`n1`nq`nq`n" | & .\arcade.exe 2>&1 | Out-String
-          Write-Host $arcOut
-          if ($LASTEXITCODE -ne 0) { throw "arcade launcher failed to run" }
-          if ($arcOut -notmatch "N Y E T   A R C A D E") { throw "arcade banner missing from output" }
-          if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) didn't run correctly" }
-          if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) didn't run correctly" }
+          Check-Step "the arcade launcher (use)s all five games into one binary" {
+              & $exe -o arcade.exe arcade\main.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              # Drive it through minibase (option 1) then pipe dreams
+              # (option 4), then quit each game and the arcade itself --
+              # proves the bundled repo-root _lib/_repl/prelude_*.no data
+              # files actually resolve at runtime from a frozen exe, not
+              # just that this all compiles.
+              $arcOut = "1`nseed`nlist`nquit`n4`n1`nq`nq`n" | & .\arcade.exe 2>&1 | Out-String
+              Write-Host $arcOut
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+              if ($arcOut -notmatch "N Y E T   A R C A D E") { throw "arcade banner missing" }
+              if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) wrong" }
+              if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) wrong" }
+          }
 
+          Write-Host ""
+          if ($failures.Count -gt 0) {
+              Write-Host "=== diagnostic: comparing a working vs. a failing .ll (nyet build leaves these on disk) ==="
+              $llFiles = Get-ChildItem -Filter "*.ll" | Select-Object -ExpandProperty Name
+              Write-Host "all .ll files present: $($llFiles -join ', ')"
+              foreach ($path in @("smoketest.exe.ll", "ansi_lib.exe.ll")) {
+                  if (Test-Path $path) {
+                      Write-Host "--- $path : first 5 lines ---"
+                      Get-Content $path -TotalCount 5 | ForEach-Object { Write-Host $_ }
+                      Write-Host "--- $path : grep for 'target' ---"
+                      Select-String -Path $path -Pattern "target" | ForEach-Object { Write-Host $_.Line }
+                      Write-Host "--- $path : define @main line ---"
+                      Select-String -Path $path -Pattern "define.*@main" | ForEach-Object { Write-Host $_.Line }
+                  } else {
+                      Write-Host "$path not found"
+                  }
+              }
+              Write-Host ""
+              Write-Host "FAILED: $($failures -join ', ')"
+              throw "$($failures.Count) smoke test(s) failed"
+          }
           Write-Host "All smoke tests passed."
 
       - uses: actions/upload-artifact@v4
