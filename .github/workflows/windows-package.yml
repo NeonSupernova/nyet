@@ -26,6 +26,11 @@ jobs:
 
       - name: Build the Windows bundle
         shell: pwsh
+        env:
+          # Raises fetch_clang.ps1's GitHub API calls from 60/hr
+          # (unauthenticated, shared per-IP -- easy to exhaust on a
+          # busy shared runner IP) to 5000/hr.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: packaging\build_windows.ps1
 
       - name: Smoke test -- bundled nyet.exe against its bundled clang

@@ -35,6 +35,16 @@ if (Test-Path "$Dest\bin\clang.exe") {
 # over MSVCRT (the modern default mingw-w64 recommends).
 $candidates = @()
 $headers = @{ "User-Agent" = "nyet-packaging-script" }
+# Unauthenticated GitHub API calls are capped at 60/hr *per IP* --
+# easy to exhaust on a shared CI runner IP even from unrelated
+# traffic (hit exactly this in practice: "API rate limit exceeded"
+# on a windows-latest runner). GITHUB_TOKEN is set automatically in
+# every Actions job and raises that to 5000/hr; fall back to
+# unauthenticated only for a manual/local run of this script, where
+# there's no such token and much less contention anyway.
+if ($env:GITHUB_TOKEN) {
+    $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN"
+}
 for ($page = 1; $page -le 10 -and $candidates.Count -eq 0; $page++) {
     Write-Host "Searching winlibs_mingw releases (page $page) for an x86_64/posix/llvm build..."
     $uri = "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases?per_page=100&page=$page"
