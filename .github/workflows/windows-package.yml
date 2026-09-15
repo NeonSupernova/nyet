@@ -4,14 +4,8 @@ name: Windows demo package
 # PyInstaller, which is unnecessary weight on every push. Trigger from
 # the Actions tab (or `gh workflow run windows-package.yml`) when you
 # need a fresh nyet-windows-demo.zip.
-#
-# TEMPORARY: re-added to validate the hangman/pipe_dreams/adventure
-# full-screen redraw changes build/run correctly before merge -- drop
-# this block again once confirmed.
 on:
   workflow_dispatch: {}
-  push:
-    branches: [arcade/windows-bundle]
 
 jobs:
   package:
