@@ -28,6 +28,7 @@
 
 (use prelude_option)
 (use prelude_rng)
+(use std/ansi)
 
 (fn inc  (x:i32) -> i32 (+ x 1))
 (fn dec  (x:i32) -> i32 (- x 1))
@@ -48,14 +49,17 @@
     ("6" (Some (|> n dec sq)))
     (other (None))))
 
+;; The `|>` in each line is printed in its own color -- the whole
+;; point of this game is showing off the pipe operator, so it should
+;; visibly stand out rather than blend into the rest of the line.
 (fn pipe_dreams_print_menu () -> unit
-  (out "  1) n |> inc |> dbl    (add one, then double)\n")
-  (out "  2) n |> dbl |> dec    (double, then subtract one)\n")
-  (out "  3) n |> sq  |> half   (square, then halve)\n")
-  (out "  4) n |> neg |> inc    (negate, then add one)\n")
-  (out "  5) n |> dbl |> dbl    (double, twice)\n")
-  (out "  6) n |> dec |> sq     (subtract one, then square)\n")
-  (out "  new = reroll this puzzle    q = quit\n"))
+  (out (fmt "  {}{}1{}) n {}|>{} inc {}|>{} dbl    (add one, then double)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out (fmt "  {}{}2{}) n {}|>{} dbl {}|>{} dec    (double, then subtract one)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out (fmt "  {}{}3{}) n {}|>{} sq  {}|>{} half   (square, then halve)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out (fmt "  {}{}4{}) n {}|>{} neg {}|>{} inc    (negate, then add one)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out (fmt "  {}{}5{}) n {}|>{} dbl {}|>{} dbl    (double, twice)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out (fmt "  {}{}6{}) n {}|>{} dec {}|>{} sq     (subtract one, then square)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out DIM) (out "  new = reroll this puzzle    q = quit\n") (out RESET))
 
 (pub fn run_pipe_dreams () -> unit
   (var seed:i32 (as (* (now) 1000000.0) i32))
@@ -68,14 +72,14 @@
   (var solved:i32 0)
   (var running:bool true)
 
-  (out "=== Pipe Dreams ===\n")
-  (out "Turn the starting number into the target using |> pipelines.\n\n")
+  (out (fmt "{}{}=== Pipe Dreams ==={}\n" BOLD BRIGHT_MAGENTA RESET))
+  (out (fmt "Turn the starting number into the target using {}|>{} pipelines.\n\n" BRIGHT_CYAN RESET))
 
   (loop
     (if (! running) (break) pass)
 
-    (out (fmt "puzzle #{}   moves so far: {}\n" (+ solved 1) moves))
-    (out (fmt "current: {}    target: {}\n\n" n target))
+    (out (fmt "{}puzzle #{}   moves so far: {}{}\n" DIM (+ solved 1) moves RESET))
+    (out (fmt "current: {}{}{}    target: {}{}{}\n\n" BOLD n RESET BOLD target RESET))
     (pipe_dreams_print_menu)
     (out "> ")
     (let cmd:string (in))
@@ -99,14 +103,14 @@
           (let result:Option[i32] (apply_pipeline other n))
           (match result
             ((None)
-              (do (out (fmt "unknown command: '{}'\n\n" other)) pass))
+              (do (out (fmt "{}unknown command: '{}'{}\n\n" RED other RESET)) pass))
             ((Some next)
               (do
                 (= n next)
                 (= moves (+ moves 1))
                 (if (== n target)
                   (do
-                    (out (fmt "*** solved in {} move(s)! ***\n\n" moves))
+                    (out (fmt "{}{}*** solved in {} move(s)! ***{}\n\n" BOLD BRIGHT_GREEN moves RESET))
                     (= solved (+ solved 1))
                     (= seed (next_seed seed))
                     (= n (in_range seed 1 20))
@@ -114,9 +118,9 @@
                     (= target (in_range seed (- 0 20) 40))
                     (= moves 0)
                     pass)
-                  (do (out (fmt "-> {}\n\n" n)) pass))
+                  (do (out (fmt "{}->{} {}\n\n" BRIGHT_CYAN RESET n)) pass))
                 pass)))
           pass))))
 
-  (out (fmt "puzzles solved: {}\n" solved))
-  (out "thanks for playing!\n"))
+  (out (fmt "{}puzzles solved: {}{}\n" DIM solved RESET))
+  (out (fmt "{}thanks for playing!{}\n" BRIGHT_MAGENTA RESET)))

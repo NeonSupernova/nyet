@@ -80,13 +80,17 @@
     (var c:i32 0)
     (loop
       (if (>= c COLS) (break) pass)
-      (if (== (get grid r c) 1) (out "#") (out "."))
+      (if (== (get grid r c) 1)
+        (do (out BRIGHT_GREEN) (out "#") (out RESET))
+        (do (out BRIGHT_BLACK) (out ".") (out RESET)))
       (= c (+ c 1)))
     (out "\n")
     (= r (+ r 1))))
 
 ;; Same as `print_grid`, plus a visible cursor for edit mode: `+` is
 ;; the cursor over a dead cell, `*` is the cursor over a live one.
+;; The cursor cell always gets a highlight color regardless of whether
+;; it's alive or dead, so it stays easy to spot against the grid.
 (fn print_grid_with_cursor (grid:&Array[i32] cur_r:i32 cur_c:i32) -> unit
   (var r:i32 0)
   (loop
@@ -97,8 +101,12 @@
       (let alive:bool (== (get grid r c) 1))
       (let at_cursor:bool (&& (== r cur_r) (== c cur_c)))
       (if at_cursor
-        (if alive (out "*") (out "+"))
-        (if alive (out "#") (out ".")))
+        (if alive
+          (do (out BG_BRIGHT_YELLOW) (out BLACK) (out "*") (out RESET))
+          (do (out BG_BRIGHT_YELLOW) (out BLACK) (out "+") (out RESET)))
+        (if alive
+          (do (out BRIGHT_GREEN) (out "#") (out RESET))
+          (do (out BRIGHT_BLACK) (out ".") (out RESET))))
       (= c (+ c 1)))
     (out "\n")
     (= r (+ r 1))))
@@ -135,8 +143,8 @@
 
 (fn render (a:&Array[i32] b:&Array[i32] gen:i32 delay:f64) -> unit
   (out CLEAR_SCREEN)
-  (out (fmt "Conway's Game of Life -- generation {} (delay {}s)\n" gen delay))
-  (out "Enter=step one frame   run=animate 10 frames   +/-=speed   edit=set up board   r=reseed   q=quit\n\n")
+  (out (fmt "{}{}Conway's Game of Life{} -- generation {} (delay {}s)\n" BOLD BRIGHT_CYAN RESET gen delay))
+  (out DIM) (out "Enter=step one frame   run=animate 10 frames   +/-=speed   edit=set up board   r=reseed   q=quit\n\n") (out RESET)
   (if (== (% gen 2) 0) (print_grid a) (print_grid b))
   (out "\n"))
 
@@ -158,8 +166,8 @@
   (loop
     (if (! editing) (break) pass)
     (out CLEAR_SCREEN)
-    (out "-- edit mode --\n")
-    (out "w/a/s/d=move cursor   Enter=toggle cell   c=clear board   done=finish\n\n")
+    (out (fmt "{}{}-- edit mode --{}\n" BOLD BRIGHT_YELLOW RESET))
+    (out DIM) (out "w/a/s/d=move cursor   Enter=toggle cell   c=clear board   done=finish\n\n") (out RESET)
     (print_grid_with_cursor grid cur_r cur_c)
     (out "\n")
     (out "> ")
