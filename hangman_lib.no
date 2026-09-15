@@ -110,14 +110,20 @@
     (5 "  +---+\n  |   |\n  O   |\n /|\\  |\n /    |\n      |\n=========\n")
     (other "  +---+\n  |   |\n  O   |\n /|\\  |\n / \\  |\n      |\n=========\n")))
 
+;; A shared header for every redraw, since the whole screen gets wiped
+;; and rebuilt each turn rather than scrolling -- without this, the
+;; game title and how-to-play reminder would only ever flash by once,
+;; right before getting cleared away.
+(fn header () -> unit
+  (out CLEAR_SCREEN)
+  (out DIM) (out "=== Hangman ===") (out RESET)
+  (out "  (guess a letter at a time, 'quit' to leave)\n\n"))
+
 (pub fn run_hangman () -> unit
   (var seed:i32 (as (* (now) 1000000.0) i32))
   (var wins:i32 0)
   (var losses:i32 0)
   (var running:bool true)
-
-  (out DIM) (out "=== Hangman ===\n") (out RESET)
-  (out "Guess a letter at a time. 'quit' to leave.\n\n")
 
   (loop
     (if (! running) (break) pass)
@@ -135,6 +141,7 @@
     (loop
       (if (! playing) (break) pass)
 
+      (header)
       (out (gallows wrong))
       (out (fmt "wrong guesses: {} / {}\n" wrong MAX_WRONG))
       (print_blanked_word &word &guessed guess_count)
@@ -148,14 +155,14 @@
           (do
             (let ch:char (line 0))
             (if (was_guessed &guessed guess_count &ch)
-              (out "already guessed that one\n")
+              (do (out "already guessed that one\n") (busy_wait 0.8) pass)
               (do
                 (= (guessed guess_count) ch)
                 (= guess_count (+ guess_count 1))
                 (if (char_in_string &word &ch) pass (do (= wrong (+ wrong 1)) pass))
                 pass))
             pass)
-          (do (out "guess exactly one letter (or 'quit')\n") pass)))
+          (do (out "guess exactly one letter (or 'quit')\n") (busy_wait 0.8) pass)))
 
       (if (&& playing (word_complete &word &guessed guess_count))
         (do (= won true) (= playing false) pass)
@@ -166,17 +173,20 @@
 
     (if running
       (do
+        (header)
+        (out (gallows wrong))
         (if won
           (do
             (out GREEN) (out (fmt "*** you got it! the word was '{}' ***\n" word)) (out RESET)
             (= wins (+ wins 1))
             pass)
           (do
-            (out (gallows wrong))
             (out RED) (out (fmt "*** out of guesses -- the word was '{}' ***\n" word)) (out RESET)
             (= losses (+ losses 1))
             pass))
         (out "\n")
+        (let cont:string (prompt_line "press Enter for another round ('quit' to leave): "))
+        (if (|| (== cont "quit") (== cont "q")) (= running false) pass)
         pass)
       pass))
 

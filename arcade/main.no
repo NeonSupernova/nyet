@@ -47,6 +47,7 @@
 
   (loop
     (if (! running) (break) pass)
+    (out CLEAR_SCREEN)
     (print_banner)
     (print_arcade_menu)
     (out "> ")

@@ -29,6 +29,7 @@
 (use prelude_option)
 (use prelude_rng)
 (use std/ansi)
+(use std/io)
 
 (fn inc  (x:i32) -> i32 (+ x 1))
 (fn dec  (x:i32) -> i32 (- x 1))
@@ -72,12 +73,12 @@
   (var solved:i32 0)
   (var running:bool true)
 
-  (out (fmt "{}{}=== Pipe Dreams ==={}\n" BOLD BRIGHT_MAGENTA RESET))
-  (out (fmt "Turn the starting number into the target using {}|>{} pipelines.\n\n" BRIGHT_CYAN RESET))
-
   (loop
     (if (! running) (break) pass)
 
+    (out CLEAR_SCREEN)
+    (out (fmt "{}{}=== Pipe Dreams ==={}\n" BOLD BRIGHT_MAGENTA RESET))
+    (out (fmt "Turn the starting number into the target using {}|>{} pipelines.\n\n" BRIGHT_CYAN RESET))
     (out (fmt "{}puzzle #{}   moves so far: {}{}\n" DIM (+ solved 1) moves RESET))
     (out (fmt "current: {}{}{}    target: {}{}{}\n\n" BOLD n RESET BOLD target RESET))
     (pipe_dreams_print_menu)
@@ -95,7 +96,8 @@
           (= seed (next_seed seed))
           (= target (in_range seed (- 0 20) 40))
           (= moves 0)
-          (out "-- new puzzle --\n\n")
+          (out "-- new puzzle --\n")
+          (busy_wait 0.5)
           pass))
 
       (other
@@ -103,22 +105,23 @@
           (let result:Option[i32] (apply_pipeline other n))
           (match result
             ((None)
-              (do (out (fmt "{}unknown command: '{}'{}\n\n" RED other RESET)) pass))
+              (do (out (fmt "{}unknown command: '{}'{}\n" RED other RESET)) (busy_wait 0.8) pass))
             ((Some next)
               (do
                 (= n next)
                 (= moves (+ moves 1))
                 (if (== n target)
                   (do
-                    (out (fmt "{}{}*** solved in {} move(s)! ***{}\n\n" BOLD BRIGHT_GREEN moves RESET))
+                    (out (fmt "{}{}*** solved in {} move(s)! ***{}\n" BOLD BRIGHT_GREEN moves RESET))
                     (= solved (+ solved 1))
                     (= seed (next_seed seed))
                     (= n (in_range seed 1 20))
                     (= seed (next_seed seed))
                     (= target (in_range seed (- 0 20) 40))
                     (= moves 0)
+                    (busy_wait 1.2)
                     pass)
-                  (do (out (fmt "{}->{} {}\n\n" BRIGHT_CYAN RESET n)) pass))
+                  (do (out (fmt "{}->{} {}\n" BRIGHT_CYAN RESET n)) (busy_wait 0.6) pass))
                 pass)))
           pass))))
 

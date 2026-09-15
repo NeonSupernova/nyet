@@ -113,13 +113,31 @@
 (fn adventure_print_help () -> unit
   (out "commands: north/south/east/west (or n/s/e/w), look, take, inventory, help, quit\n"))
 
+;; A fresh full-screen view of the current room -- called on entry and
+;; every successful move/`look`, so arriving somewhere new always
+;; reads as a clean scene rather than one more line tacked onto a
+;; growing wall of text. Responses to other commands (help, inventory,
+;; a blocked move, an unrecognized word) deliberately do NOT redraw:
+;; they print as ordinary feedback below whatever room view is already
+;; on screen, since a player who just asked "help" or "inventory"
+;; should get to actually read the answer, not have it cleared away
+;; before the next redraw.
+(fn render_room (room:&Room has_key:bool) -> unit
+  (out CLEAR_SCREEN)
+  (out DIM) (out "-- a tiny adventure --") (out RESET)
+  (out "  (help, look, take, inventory, quit)\n\n")
+  (out (describe room))
+  (out "\n")
+  (if has_key
+    (do (out DIM) (out "(carrying: a brass key)\n") (out RESET))
+    pass))
+
 (pub fn run_adventure () -> unit
   (var room:Room (Entrance))
   (var has_key:bool false)
   (var won:bool false)
 
-  (out DIM) (out "a tiny adventure -- 'help' for commands, 'quit' to leave\n") (out RESET)
-  (out (describe &room)) (out "\n")
+  (render_room &room has_key)
 
   (loop
     (if won (break) pass)
@@ -138,7 +156,7 @@
     ;; store that clang then rejects.
     (match cmd
       ("help" (do (adventure_print_help) pass))
-      ("look" (do (out (describe &room)) (out "\n") pass))
+      ("look" (do (render_room &room has_key) pass))
 
       ("inventory"
         (do
@@ -170,8 +188,7 @@
                   ((Some next)
                     (do
                       (= room next)
-                      (out (describe &room))
-                      (out "\n")
+                      (render_room &room has_key)
                       (if (is_vault &room) (= won true) pass)
                       pass
                     )
