@@ -4,8 +4,16 @@ name: Windows demo package
 # PyInstaller, which is unnecessary weight on every push. Trigger from
 # the Actions tab (or `gh workflow run windows-package.yml`) when you
 # need a fresh nyet-windows-demo.zip.
+#
+# TEMPORARY: re-added to validate the bundle\lib\ addition before
+# merge (workflow_dispatch only dispatches the version of this file
+# that's on the default branch, so it can't be used to validate
+# feature-branch-only changes pre-merge) -- drop this block again once
+# that's confirmed green.
 on:
   workflow_dispatch: {}
+  push:
+    branches: [arcade/windows-bundle]
 
 jobs:
   package:
@@ -161,6 +169,14 @@ jobs:
               if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) wrong" }
               if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) wrong" }
           } catch { Write-Host "[FAIL] $_"; $failures.Add("arcade") }
+
+          Write-Host "--- bundle\lib\ has the arcade suite's browsable source ---"
+          try {
+              foreach ($name in @("minibase_core", "minibase_repl", "adventure_lib", "game_of_life_lib", "pipe_dreams_lib", "hangman_lib", "prelude_option", "prelude_rng")) {
+                  $libFile = "$bundle\lib\$name.no"
+                  if (-not (Test-Path $libFile)) { throw "$libFile missing from bundle" }
+              }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("bundle-lib") }
 
           Write-Host ""
           if ($failures.Count -gt 0) {
