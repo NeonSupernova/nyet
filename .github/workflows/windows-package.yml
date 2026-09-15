@@ -4,15 +4,8 @@ name: Windows demo package
 # PyInstaller, which is unnecessary weight on every push. Trigger from
 # the Actions tab (or `gh workflow run windows-package.yml`) when you
 # need a fresh nyet-windows-demo.zip.
-#
-# workflow_dispatch only works for a workflow file that's on the
-# default branch, so while this is still under review on a feature
-# branch we also trigger on push to it directly -- drop that block
-# once this lands on main and workflow_dispatch works normally.
 on:
   workflow_dispatch: {}
-  push:
-    branches: [arcade/windows-bundle]
 
 jobs:
   package:
