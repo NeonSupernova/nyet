@@ -58,16 +58,27 @@ jobs:
           if ($out2 -notmatch "product = 120") { throw "unexpected output from smoketest.exe" }
 
           Write-Host "--- demo/features/*.no (also this repo's own regression tests) ---"
+          # Explicit, distinct -o per file: `run` defaults to a bare
+          # "output"/"output.exe" with no -o given, and the very first
+          # step above (`run demo\01_hello.no`) already produced one of
+          # those in this same working directory -- Windows won't let a
+          # second build silently clobber it the way Unix would, and
+          # the resulting failure surfaces as a confusing clang/ld
+          # linker error rather than an obvious file-locked message.
           foreach ($name in @("ansi_lib", "char_printing", "file_read_lines", "string_len")) {
-            $fout = & $exe run "demo\features\$name.no" 2>&1 | Out-String
+            & $exe -o "$name.exe" "demo\features\$name.no"
+            if ($LASTEXITCODE -ne 0) { throw "demo\features\$name.no failed to build" }
+            $fout = & ".\$name.exe" 2>&1 | Out-String
             Write-Host $fout
-            if ($LASTEXITCODE -ne 0) { throw "demo\features\$name.no failed to build/run" }
+            if ($LASTEXITCODE -ne 0) { throw "demo\features\$name.no failed to run" }
           }
 
           Write-Host "--- minibase, standalone (exercises (use minibase_repl) -> (use minibase_core)) ---"
-          $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & $exe run minibase\main.no 2>&1 | Out-String
+          & $exe -o minibase.exe minibase\main.no
+          if ($LASTEXITCODE -ne 0) { throw "minibase failed to build" }
+          $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & .\minibase.exe 2>&1 | Out-String
           Write-Host $mbOut
-          if ($LASTEXITCODE -ne 0) { throw "minibase failed to build/run" }
+          if ($LASTEXITCODE -ne 0) { throw "minibase failed to run" }
           if ($mbOut -notmatch "inserted #1: Alice") { throw "unexpected output from minibase" }
 
           Write-Host "--- the arcade launcher (use)s all five games into one binary ---"
