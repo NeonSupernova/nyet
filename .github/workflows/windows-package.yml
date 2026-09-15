@@ -38,38 +38,42 @@ jobs:
         run: |
           $bundle = "packaging\dist\bundle"
           $exe = "$bundle\nyet.exe"
-          $failures = @()
+          $failures = New-Object System.Collections.Generic.List[string]
 
-          function Check-Step {
-              param([string]$Name, [scriptblock]$Body)
-              Write-Host "--- $Name ---"
-              try {
-                  & $Body
-                  Write-Host "[OK] $Name"
-              } catch {
-                  Write-Host "[FAIL] $Name -- $($_.Exception.Message)"
-                  $script:failures += $Name
-              }
-          }
+          # Deliberately NOT wrapped in a reusable function/scriptblock:
+          # an earlier version of this script called `& $exe ...` from
+          # inside a `[scriptblock]$Body` parameter invoked via `& $Body`
+          # in a helper function, and EVERY SUCH CALL silently lost its
+          # `-o` value (nyet received the input file's own path as the
+          # output name instead) while calls written as plain inline
+          # code right here in the step always passed their arguments
+          # through correctly. Never fully root-caused (no Windows
+          # machine to debug interactively) but the fix is simple: keep
+          # every `& $exe ...` invocation as plain top-level code, one
+          # try/catch per check, no indirection.
 
-          Check-Step "run demo/01_hello.no" {
+          Write-Host "--- run demo/01_hello.no ---"
+          try {
               $out = & $exe run demo\01_hello.no 2>&1 | Out-String
               Write-Host $out
               if ($LASTEXITCODE -ne 0) { throw "failed to build/run" }
               if ($out -notmatch "hello from Nyet!") { throw "unexpected output" }
-          }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("01_hello.no") }
 
-          Check-Step "check demo/03_ownership.no (should pass)" {
+          Write-Host "--- check demo/03_ownership.no (should pass) ---"
+          try {
               & $exe check demo\03_ownership.no
               if ($LASTEXITCODE -ne 0) { throw "should have passed check" }
-          }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("03_ownership.no") }
 
-          Check-Step "check demo/03_ownership_bad.no (should fail)" {
+          Write-Host "--- check demo/03_ownership_bad.no (should fail) ---"
+          try {
               & $exe check demo\03_ownership_bad.no
               if ($LASTEXITCODE -eq 0) { throw "should have failed check" }
-          }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("03_ownership_bad.no") }
 
-          Check-Step "bare shorthand: nyet -o smoketest.exe demo/05_closures.no" {
+          Write-Host "--- bare shorthand: nyet -o smoketest.exe demo/05_closures.no ---"
+          try {
               & $exe -o smoketest.exe demo\05_closures.no
               if ($LASTEXITCODE -ne 0) { throw "bare -o shorthand build failed" }
               if (-not (Test-Path smoketest.exe)) { throw "smoketest.exe wasn't produced" }
@@ -77,32 +81,64 @@ jobs:
               Write-Host $out2
               if ($LASTEXITCODE -ne 0) { throw "smoketest.exe failed to run" }
               if ($out2 -notmatch "product = 120") { throw "unexpected output" }
-          }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("05_closures.no") }
 
           # Explicit, distinct -o per file: `run` defaults to a bare
           # "output"/"output.exe" with no -o given, and the very first
           # step above (`run demo\01_hello.no`) already produced one of
-          # those in this same working directory.
-          foreach ($name in @("ansi_lib", "char_printing", "file_read_lines", "string_len")) {
-              Check-Step "demo/features/$name.no" {
-                  & $exe -o "$name.exe" "demo\features\$name.no"
-                  if ($LASTEXITCODE -ne 0) { throw "failed to build" }
-                  $fout = & ".\$name.exe" 2>&1 | Out-String
-                  Write-Host $fout
-                  if ($LASTEXITCODE -ne 0) { throw "failed to run" }
-              }
-          }
+          # those in this same working directory. Written out longhand
+          # (not a foreach over a name list) for the same reason as the
+          # note above -- keep every invocation as plain, direct,
+          # top-level code.
 
-          Check-Step "minibase, standalone (exercises (use minibase_repl) -> (use minibase_core))" {
+          Write-Host "--- demo/features/ansi_lib.no ---"
+          try {
+              & $exe -o ansi_lib.exe demo\features\ansi_lib.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\ansi_lib.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("ansi_lib.no") }
+
+          Write-Host "--- demo/features/char_printing.no ---"
+          try {
+              & $exe -o char_printing.exe demo\features\char_printing.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\char_printing.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("char_printing.no") }
+
+          Write-Host "--- demo/features/file_read_lines.no ---"
+          try {
+              & $exe -o file_read_lines.exe demo\features\file_read_lines.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\file_read_lines.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("file_read_lines.no") }
+
+          Write-Host "--- demo/features/string_len.no ---"
+          try {
+              & $exe -o string_len.exe demo\features\string_len.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\string_len.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("string_len.no") }
+
+          Write-Host "--- minibase, standalone (exercises (use minibase_repl) -> (use minibase_core)) ---"
+          try {
               & $exe -o minibase.exe minibase\main.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & .\minibase.exe 2>&1 | Out-String
               Write-Host $mbOut
               if ($LASTEXITCODE -ne 0) { throw "failed to run" }
               if ($mbOut -notmatch "inserted #1: Alice") { throw "unexpected output" }
-          }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("minibase") }
 
-          Check-Step "the arcade launcher (use)s all five games into one binary" {
+          Write-Host "--- the arcade launcher (use)s all five games into one binary ---"
+          try {
               & $exe -o arcade.exe arcade\main.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               # Drive it through minibase (option 1) then pipe dreams
@@ -116,26 +152,10 @@ jobs:
               if ($arcOut -notmatch "N Y E T   A R C A D E") { throw "arcade banner missing" }
               if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) wrong" }
               if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) wrong" }
-          }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("arcade") }
 
           Write-Host ""
           if ($failures.Count -gt 0) {
-              Write-Host "=== diagnostic: comparing a working vs. a failing .ll (nyet build leaves these on disk) ==="
-              $llFiles = Get-ChildItem -Filter "*.ll" | Select-Object -ExpandProperty Name
-              Write-Host "all .ll files present: $($llFiles -join ', ')"
-              foreach ($path in @("smoketest.exe.ll", "ansi_lib.exe.ll")) {
-                  if (Test-Path $path) {
-                      Write-Host "--- $path : first 5 lines ---"
-                      Get-Content $path -TotalCount 5 | ForEach-Object { Write-Host $_ }
-                      Write-Host "--- $path : grep for 'target' ---"
-                      Select-String -Path $path -Pattern "target" | ForEach-Object { Write-Host $_.Line }
-                      Write-Host "--- $path : define @main line ---"
-                      Select-String -Path $path -Pattern "define.*@main" | ForEach-Object { Write-Host $_.Line }
-                  } else {
-                      Write-Host "$path not found"
-                  }
-              }
-              Write-Host ""
               Write-Host "FAILED: $($failures -join ', ')"
               throw "$($failures.Count) smoke test(s) failed"
           }
