@@ -30,17 +30,17 @@
   (out "\n"))
 
 (fn main () -> unit
-  (write_file "/tmp/nyet_file_read_lines_a.txt" "alpha\nbeta\ngamma\n")
-  (out "normal ") (dump "/tmp/nyet_file_read_lines_a.txt")
+  (write_file "nyet_file_read_lines_a.txt" "alpha\nbeta\ngamma\n")
+  (out "normal ") (dump "nyet_file_read_lines_a.txt")
 
-  (write_file "/tmp/nyet_file_read_lines_b.txt" "solo")
-  (out "no trailing newline ") (dump "/tmp/nyet_file_read_lines_b.txt")
+  (write_file "nyet_file_read_lines_b.txt" "solo")
+  (out "no trailing newline ") (dump "nyet_file_read_lines_b.txt")
 
-  (write_file "/tmp/nyet_file_read_lines_c.txt" "")
-  (out "empty file ") (dump "/tmp/nyet_file_read_lines_c.txt")
+  (write_file "nyet_file_read_lines_c.txt" "")
+  (out "empty file ") (dump "nyet_file_read_lines_c.txt")
 
-  (write_file "/tmp/nyet_file_read_lines_d.txt" "one\n\nthree\n")
-  (out "embedded blank line ") (dump "/tmp/nyet_file_read_lines_d.txt")
+  (write_file "nyet_file_read_lines_d.txt" "one\n\nthree\n")
+  (out "embedded blank line ") (dump "nyet_file_read_lines_d.txt")
 
-  (write_file "/tmp/nyet_file_read_lines_e.txt" "\n")
-  (out "file is just newline ") (dump "/tmp/nyet_file_read_lines_e.txt"))
+  (write_file "nyet_file_read_lines_e.txt" "\n")
+  (out "file is just newline ") (dump "nyet_file_read_lines_e.txt"))
