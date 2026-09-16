@@ -4,15 +4,8 @@ name: Windows demo package
 # PyInstaller, which is unnecessary weight on every push. Trigger from
 # the Actions tab (or `gh workflow run windows-package.yml`) when you
 # need a fresh nyet-windows-demo.zip.
-#
-# TEMPORARY: re-added to validate the CLOCKS_PER_SEC fix on real
-# Windows CI before merge -- this is exactly the class of bug that
-# can't be confirmed any other way. Drop this block again once the
-# smoke test's wall-clock assertion comes back green.
 on:
   workflow_dispatch: {}
-  push:
-    branches: [arcade/bugfixes]
 
 jobs:
   package:
