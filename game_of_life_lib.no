@@ -1,0 +1,260 @@
+;;;; game_of_life_lib — Conway's Game of Life's engine + TUI, extracted
+;;;; out of game_of_life/main.no into a repo-root module so the arcade
+;;;; launcher can `(use game_of_life_lib)` and call `run_game_of_life`
+;;;; directly, alongside the other games it also links in.
+;;;; game_of_life/main.no keeps working standalone as a two-line
+;;;; wrapper around `run_game_of_life`.
+;;;;
+;;;; The grid is a single flat `Array[i32]` (row-major, index =
+;;;; r*COLS+c) rather than an `Array[Array[i32]]` -- a real nested
+;;;; array would work too, but a flat array sidesteps needing
+;;;; `array_new` at a *nested* array-index-assignment position (an
+;;;; unexercised corner of that feature), keeping this on the most
+;;;; battle-tested path. `get`/`set` do the row/col -> flat-index
+;;;; translation, with `get` also handling out-of-bounds neighbors by
+;;;; treating them as dead (a bounded, non-wrapping board).
+;;;;
+;;;; Two generation buffers (`a`/`b`) ping-pong: each step reads one and
+;;;; writes the other, alternating by generation parity so there's no
+;;;; in-place read/write aliasing within a single step.
+;;;;
+;;;; `seed` below is named `gol_seed_glider` rather than the shorter
+;;;; name main.no used to use standalone -- minibase has its own
+;;;; differently-bodied `seed`, and the arcade launcher links every
+;;;; game's module into one program, where all of their top-level
+;;;; names share a single flat namespace.
+
+(module game_of_life_lib)
+
+(use std/ansi)
+(use std/io)
+
+(pub const ROWS:i32 16)
+(pub const COLS:i32 40)
+(const RUN_BATCH:i32 10)
+
+(fn idx (r:i32 c:i32) -> i32 (+ (* r COLS) c))
+
+(fn get (grid:&Array[i32] r:i32 c:i32) -> i32
+  (if (|| (< r 0) (|| (>= r ROWS) (|| (< c 0) (>= c COLS))))
+    0
+    (grid (idx r c))))
+
+(fn set (grid:&!Array[i32] r:i32 c:i32 v:i32) -> unit
+  (= (grid (idx r c)) v))
+
+(fn count_neighbors (grid:&Array[i32] r:i32 c:i32) -> i32
+  (+ (get grid (- r 1) (- c 1))
+  (+ (get grid (- r 1) c)
+  (+ (get grid (- r 1) (+ c 1))
+  (+ (get grid r (- c 1))
+  (+ (get grid r (+ c 1))
+  (+ (get grid (+ r 1) (- c 1))
+  (+ (get grid (+ r 1) c)
+     (get grid (+ r 1) (+ c 1))))))))))
+
+;; Standard Conway rules: a live cell with 2 or 3 live neighbors
+;; survives; a dead cell with exactly 3 becomes alive; every other
+;; combination is/becomes dead.
+(fn next_state (alive:i32 neighbors:i32) -> i32
+  (if (== alive 1)
+    (if (|| (== neighbors 2) (== neighbors 3)) 1 0)
+    (if (== neighbors 3) 1 0)))
+
+(fn step (cur:&Array[i32] nxt:&!Array[i32]) -> unit
+  (var r:i32 0)
+  (loop
+    (if (>= r ROWS) (break) pass)
+    (var c:i32 0)
+    (loop
+      (if (>= c COLS) (break) pass)
+      (let n:i32 (count_neighbors cur r c))
+      (set nxt r c (next_state (get cur r c) n))
+      (= c (+ c 1)))
+    (= r (+ r 1))))
+
+(fn print_grid (grid:&Array[i32]) -> unit
+  (var r:i32 0)
+  (loop
+    (if (>= r ROWS) (break) pass)
+    (var c:i32 0)
+    (loop
+      (if (>= c COLS) (break) pass)
+      (if (== (get grid r c) 1)
+        (do (out BRIGHT_GREEN) (out "#") (out RESET))
+        (do (out BRIGHT_BLACK) (out ".") (out RESET)))
+      (= c (+ c 1)))
+    (out "\n")
+    (= r (+ r 1))))
+
+;; Same as `print_grid`, plus a visible cursor for edit mode: `+` is
+;; the cursor over a dead cell, `*` is the cursor over a live one.
+;; The cursor cell always gets a highlight color regardless of whether
+;; it's alive or dead, so it stays easy to spot against the grid.
+(fn print_grid_with_cursor (grid:&Array[i32] cur_r:i32 cur_c:i32) -> unit
+  (var r:i32 0)
+  (loop
+    (if (>= r ROWS) (break) pass)
+    (var c:i32 0)
+    (loop
+      (if (>= c COLS) (break) pass)
+      (let alive:bool (== (get grid r c) 1))
+      (let at_cursor:bool (&& (== r cur_r) (== c cur_c)))
+      (if at_cursor
+        (if alive
+          (do (out BG_BRIGHT_YELLOW) (out BLACK) (out "*") (out RESET))
+          (do (out BG_BRIGHT_YELLOW) (out BLACK) (out "+") (out RESET)))
+        (if alive
+          (do (out BRIGHT_GREEN) (out "#") (out RESET))
+          (do (out BRIGHT_BLACK) (out ".") (out RESET))))
+      (= c (+ c 1)))
+    (out "\n")
+    (= r (+ r 1))))
+
+(fn zero (grid:&!Array[i32]) -> unit
+  (var i:i32 0)
+  (let total:i32 (* ROWS COLS))
+  (loop
+    (if (>= i total) (break) pass)
+    (= (grid i) 0)
+    (= i (+ i 1))))
+
+;; A glider (drifts diagonally forever on an infinite board -- on this
+;; bounded one it eventually runs off the edge and dies) plus a
+;; blinker (a period-2 oscillator) so a short GENERATIONS run visibly
+;; shows both motion and oscillation.
+(fn gol_seed_glider (grid:&!Array[i32]) -> unit
+  (set grid 1 3 1) (set grid 2 4 1)
+  (set grid 3 2 1) (set grid 3 3 1) (set grid 3 4 1)
+
+  (set grid 10 20 1) (set grid 10 21 1) (set grid 10 22 1))
+
+;; ============================================================
+;;; TUI: clear-and-redraw animation + a between-frames command
+;;; prompt. There's no non-blocking/raw-terminal input in Nyet --
+;;; `(in)` always blocks for a full line -- so this can't be a true
+;;; real-time "keystroke pauses the animation" loop. Instead: a
+;;; command runs a short animated BATCH (clear screen, redraw, pace
+;;; with a busy-wait, repeat -- RUN_BATCH frames), then always drops
+;;; back to a prompt. Blank Enter alone steps exactly one frame, which
+;;; in practice reads as "press Enter to advance" -- the closest thing
+;;; to manual single-step control this input model allows.
+;; ============================================================
+
+(fn render (a:&Array[i32] b:&Array[i32] gen:i32 delay:f64) -> unit
+  (out CLEAR_SCREEN)
+  (out (fmt "{}{}Conway's Game of Life{} -- generation {} (delay {}s)\n" BOLD BRIGHT_CYAN RESET gen delay))
+  (out DIM) (out "Enter=step one frame   run=animate 10 frames   +/-=speed   edit=set up board   r=reseed   q=quit\n\n") (out RESET)
+  (if (== (% gen 2) 0) (print_grid a) (print_grid b))
+  (out "\n"))
+
+(fn advance (a:&!Array[i32] b:&!Array[i32] gen:i32) -> unit
+  (if (== (% gen 2) 0) (step a b) (step b a)))
+
+;; Cursor-based board editor: `(in)` only ever reads a whole line, and
+;; there's no string-split/substring primitive to parse a two-number
+;; command like "toggle 3 5" out of one, so free-form coordinate entry
+;; isn't reachable. A moving cursor plus single-word move/toggle
+;; commands sidesteps that entirely, at the cost of needing an Enter
+;; press per move (no raw/non-blocking keystrokes either -- see the
+;; TUI section header above).
+(fn edit_mode (grid:&!Array[i32]) -> unit
+  (var cur_r:i32 (/ ROWS 2))
+  (var cur_c:i32 (/ COLS 2))
+  (var editing:bool true)
+
+  (loop
+    (if (! editing) (break) pass)
+    (out CLEAR_SCREEN)
+    (out (fmt "{}{}-- edit mode --{}\n" BOLD BRIGHT_YELLOW RESET))
+    (out DIM) (out "w/a/s/d=move cursor   Enter=toggle cell   c=clear board   done=finish\n\n") (out RESET)
+    (print_grid_with_cursor grid cur_r cur_c)
+    (out "\n")
+    (out "> ")
+
+    (let cmd:string (in))
+    (match cmd
+      ("w" (do (if (> cur_r 0) (= cur_r (- cur_r 1)) pass) pass))
+      ("s" (do (if (< cur_r (- ROWS 1)) (= cur_r (+ cur_r 1)) pass) pass))
+      ("a" (do (if (> cur_c 0) (= cur_c (- cur_c 1)) pass) pass))
+      ("d" (do (if (< cur_c (- COLS 1)) (= cur_c (+ cur_c 1)) pass) pass))
+
+      (""
+        (do
+          (if (== (get grid cur_r cur_c) 1)
+            (set grid cur_r cur_c 0)
+            (set grid cur_r cur_c 1))
+          pass))
+
+      ("c" (do (zero grid) pass))
+      ("done" (do (= editing false) pass))
+      ("q" (do (= editing false) pass))
+
+      (other (do (out (fmt "unknown edit command: '{}'\n" other)) (busy_wait 0.8) pass)))))
+
+(pub fn run_game_of_life () -> unit
+  (var a:Array[i32] (array_new (* ROWS COLS)))
+  (var b:Array[i32] (array_new (* ROWS COLS)))
+  (zero &!a)
+  (zero &!b)
+  (gol_seed_glider &!a)
+
+  (var gen:i32 0)
+  (var delay:f64 0.15)
+  (var running:bool true)
+
+  (loop
+    (if (! running) (break) pass)
+    (render &a &b gen delay)
+
+    (out "> ")
+    (let cmd:string (in))
+    (match cmd
+      ("q"    (do (= running false) pass))
+      ("quit" (do (= running false) pass))
+
+      ("r"
+        (do
+          (zero &!a) (zero &!b) (gol_seed_glider &!a) (= gen 0)
+          (out "-- reseeded --\n") (busy_wait 0.6)
+          pass))
+
+      ("edit"
+        (do
+          (if (== (% gen 2) 0) (edit_mode &!a) (edit_mode &!b))
+          pass))
+
+      ("+"
+        (do
+          (= delay (* delay 0.5))
+          (out (fmt "-- speed up: delay now {}s --\n" delay)) (busy_wait 0.6)
+          pass))
+
+      ("-"
+        (do
+          (= delay (* delay 2.0))
+          (out (fmt "-- slow down: delay now {}s --\n" delay)) (busy_wait 0.6)
+          pass))
+
+      (""
+        (do
+          (advance &!a &!b gen)
+          (= gen (+ gen 1))
+          pass))
+
+      ("run"
+        (do
+          (var i:i32 0)
+          (loop
+            (if (>= i RUN_BATCH) (break) pass)
+            (advance &!a &!b gen)
+            (= gen (+ gen 1))
+            (render &a &b gen delay)
+            (busy_wait delay)
+            (= i (+ i 1)))
+          pass))
+
+      (other
+        (do
+          (out (fmt "unknown command: '{}'\n" other)) (busy_wait 0.8)
+          pass)))))

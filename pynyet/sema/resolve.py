@@ -68,6 +68,7 @@ BUILTINS = {
     "io/on",
     "file_open",
     "file_read_all",
+    "file_read_lines",
     "file_write",
     "file_close",
     "map",

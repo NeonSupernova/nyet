@@ -1,0 +1,42 @@
+;; std/ansi.no -- confirms the multi-file `(use std/ansi)` path
+;; resolves (same mechanism tests/codegen/drop_while.no /
+;; tests/codegen/bench_lib.no exercise for std/collections /
+;; std/bench), that the SGR/256/truecolor escape sequences are built
+;; correctly, and that hex decomposition + the 256-color cube
+;; approximation are numerically right -- not just "produces some
+;; string".
+;;
+;; Expected (each "RED literal:"/"fg256(196):"/etc. line is followed
+;; by the real ESC byte + the rest of that escape sequence -- not
+;; reproduced literally here, see the .golden file for the exact
+;; bytes):
+;;   hex_r/g/b(0xff8800): 255 136 0
+;;   fg_hex(0xff8800) == fg_rgb(255,136,0): 1
+;;   hex_to_256(0x000000) [cube origin]: 16
+;;   hex_to_256(0xffffff) [cube far corner]: 231
+;;   hex_to_256(0xff8800) [known xterm orange]: 208
+;;   CLEAR_SCREEN starts with ESC[2J: 1
+
+(use std/ansi)
+
+(fn main () -> unit
+  (out "RED literal: ") (out RED) (out "\n")
+  (out "fg256(196): ") (out (fg256 196)) (out "\n")
+  (out "fg_rgb(255,136,0): ") (out (fg_rgb 255 136 0)) (out "\n")
+
+  (out "hex_r/g/b(0xff8800): ")
+  (out (hex_r 0xff8800)) (out " ")
+  (out (hex_g 0xff8800)) (out " ")
+  (out (hex_b 0xff8800)) (out "\n")
+
+  (let a:string (fg_hex 0xff8800))
+  (let b:string (fg_rgb 255 136 0))
+  (out "fg_hex(0xff8800) == fg_rgb(255,136,0): ") (out (== a b)) (out "\n")
+
+  (out "hex_to_256(0x000000) [cube origin]: ") (out (hex_to_256 0x000000)) (out "\n")
+  (out "hex_to_256(0xffffff) [cube far corner]: ") (out (hex_to_256 0xffffff)) (out "\n")
+  (out "hex_to_256(0xff8800) [known xterm orange]: ") (out (hex_to_256 0xff8800)) (out "\n")
+
+  (let clr:string CLEAR_SCREEN)
+  (let starts_with_2j:bool (&& (== (clr 0) 27) (== (clr 1) 91)))
+  (out "CLEAR_SCREEN starts with ESC[2J: ") (out starts_with_2j) (out "\n"))

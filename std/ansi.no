@@ -1,0 +1,142 @@
+;;;; std/ansi.no
+;;;
+;;; Real Nyet source, not a Python compiler builtin -- ANSI/VT100
+;;; terminal escape codes: SGR text styling and the 16 standard colors
+;;; as plain string constants, functions for the 256-color and 24-bit
+;;; truecolor extensions (including approximating an arbitrary
+;;; 0xRRGGBB hex color down to the nearest of the 256-color palette's
+;;; entries, for terminals without truecolor support), and a few
+;;; cursor/screen control codes. Built entirely on ordinary
+;;; string/`fmt` support plus the bitwise operators (`&`/`>>`) for hex
+;;; decomposition -- no core-primitive additions needed, in the same
+;;; spirit as `std/collections.no` (built on `array_new`) and
+;;; `std/bench.no` (built on `now`).
+
+(module std/ansi)
+
+;;; ------------------------------------------------------------
+;;; SGR text styling
+;;; ------------------------------------------------------------
+
+(pub const RESET:string         "\x1b[0m")
+(pub const BOLD:string          "\x1b[1m")
+(pub const DIM:string           "\x1b[2m")
+(pub const ITALIC:string        "\x1b[3m")
+(pub const UNDERLINE:string     "\x1b[4m")
+(pub const BLINK:string         "\x1b[5m")
+(pub const REVERSE:string       "\x1b[7m")
+(pub const HIDDEN:string        "\x1b[8m")
+(pub const STRIKETHROUGH:string "\x1b[9m")
+
+;;; ------------------------------------------------------------
+;;; The 16 standard colors (foreground)
+;;; ------------------------------------------------------------
+
+(pub const BLACK:string   "\x1b[30m")
+(pub const RED:string     "\x1b[31m")
+(pub const GREEN:string   "\x1b[32m")
+(pub const YELLOW:string  "\x1b[33m")
+(pub const BLUE:string    "\x1b[34m")
+(pub const MAGENTA:string "\x1b[35m")
+(pub const CYAN:string    "\x1b[36m")
+(pub const WHITE:string   "\x1b[37m")
+
+(pub const BRIGHT_BLACK:string   "\x1b[90m")
+(pub const BRIGHT_RED:string     "\x1b[91m")
+(pub const BRIGHT_GREEN:string   "\x1b[92m")
+(pub const BRIGHT_YELLOW:string  "\x1b[93m")
+(pub const BRIGHT_BLUE:string    "\x1b[94m")
+(pub const BRIGHT_MAGENTA:string "\x1b[95m")
+(pub const BRIGHT_CYAN:string    "\x1b[96m")
+(pub const BRIGHT_WHITE:string   "\x1b[97m")
+
+;;; ------------------------------------------------------------
+;;; The same 16, as backgrounds
+;;; ------------------------------------------------------------
+
+(pub const BG_BLACK:string   "\x1b[40m")
+(pub const BG_RED:string     "\x1b[41m")
+(pub const BG_GREEN:string   "\x1b[42m")
+(pub const BG_YELLOW:string  "\x1b[43m")
+(pub const BG_BLUE:string    "\x1b[44m")
+(pub const BG_MAGENTA:string "\x1b[45m")
+(pub const BG_CYAN:string    "\x1b[46m")
+(pub const BG_WHITE:string   "\x1b[47m")
+
+(pub const BG_BRIGHT_BLACK:string   "\x1b[100m")
+(pub const BG_BRIGHT_RED:string     "\x1b[101m")
+(pub const BG_BRIGHT_GREEN:string   "\x1b[102m")
+(pub const BG_BRIGHT_YELLOW:string  "\x1b[103m")
+(pub const BG_BRIGHT_BLUE:string    "\x1b[104m")
+(pub const BG_BRIGHT_MAGENTA:string "\x1b[105m")
+(pub const BG_BRIGHT_CYAN:string    "\x1b[106m")
+(pub const BG_BRIGHT_WHITE:string   "\x1b[107m")
+
+;;; ------------------------------------------------------------
+;;; Screen / cursor control
+;;; ------------------------------------------------------------
+
+(pub const CLEAR_SCREEN:string "\x1b[2J\x1b[H")
+(pub const CLEAR_LINE:string   "\x1b[2K")
+(pub const CURSOR_HOME:string  "\x1b[H")
+(pub const HIDE_CURSOR:string  "\x1b[?25l")
+(pub const SHOW_CURSOR:string  "\x1b[?25h")
+
+;;; ------------------------------------------------------------
+;;; 256-color mode (ESC[38;5;Nm / ESC[48;5;Nm, N in 0..255): the
+;;; first 16 alias the standard colors above, 16..231 are a 6x6x6 RGB
+;;; cube, 232..255 are a 24-step grayscale ramp.
+;;; ------------------------------------------------------------
+
+(pub fn fg256 (n:i32) -> string (fmt "\x1b[38;5;{}m" n))
+(pub fn bg256 (n:i32) -> string (fmt "\x1b[48;5;{}m" n))
+
+;;; ------------------------------------------------------------
+;;; 24-bit truecolor (ESC[38;2;R;G;Bm / ESC[48;2;R;G;Bm), each channel
+;;; 0..255. Widely supported by modern terminals; `fg256`/`bg256`
+;;; above remain the fallback for ones that aren't.
+;;; ------------------------------------------------------------
+
+(pub fn fg_rgb (r:i32 g:i32 b:i32) -> string (fmt "\x1b[38;2;{};{};{}m" r g b))
+(pub fn bg_rgb (r:i32 g:i32 b:i32) -> string (fmt "\x1b[48;2;{};{};{}m" r g b))
+
+;;; ------------------------------------------------------------
+;;; Hex color -> ANSI
+;;; ------------------------------------------------------------
+
+;;; Red/green/blue 0..255 channels out of a packed 0xRRGGBB value,
+;;; e.g. `(hex_r 0xff8800)` -> 255.
+(pub fn hex_r (hex:i32) -> i32 (& (>> hex 16) 255))
+(pub fn hex_g (hex:i32) -> i32 (& (>> hex 8) 255))
+(pub fn hex_b (hex:i32) -> i32 (& hex 255))
+
+;;; `(fg_hex hex)`/`(bg_hex hex)` -- exact truecolor from a packed
+;;; 0xRRGGBB value, e.g. `(out (fg_hex 0xff8800)) (out "orange!")`.
+(pub fn fg_hex (hex:i32) -> string (fg_rgb (hex_r hex) (hex_g hex) (hex_b hex)))
+(pub fn bg_hex (hex:i32) -> string (bg_rgb (hex_r hex) (hex_g hex) (hex_b hex)))
+
+;;; Nearest step (0..5) into the 256-color palette's 6x6x6 RGB cube
+;;; for one 0..255 channel value. The cube's six levels sit at
+;;; 0/95/135/175/215/255 -- not evenly spaced -- so this rounds to the
+;;; nearest of those six rather than a plain `/51`.
+(fn cube_step (v:i32) -> i32
+  (if (< v 48) 0
+  (if (< v 115) 1
+  (if (< v 155) 2
+  (if (< v 195) 3
+  (if (< v 235) 4
+    5))))))
+
+;;; Approximates a packed 0xRRGGBB color down to the nearest entry in
+;;; the ANSI 256-color palette's 6x6x6 RGB cube (indices 16..231:
+;;; 16 + 36*r + 6*g + b, each of r/g/b a 0..5 cube step) -- for
+;;; terminals without truecolor support. `(fg_hex256 hex)`/
+;;; `(bg_hex256 hex)` wrap this straight into an escape code.
+(pub fn hex_to_256 (hex:i32) -> i32
+  (let r:i32 (cube_step (hex_r hex)))
+  (let g:i32 (cube_step (hex_g hex)))
+  (let b:i32 (cube_step (hex_b hex)))
+  (+ 16 (+ (* 36 r) (+ (* 6 g) b))))
+
+(pub fn fg_hex256 (hex:i32) -> string (fg256 (hex_to_256 hex)))
+(pub fn bg_hex256 (hex:i32) -> string (bg256 (hex_to_256 hex)))

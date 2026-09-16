@@ -1,0 +1,207 @@
+;;;; adventure_lib — the tiny text adventure's game logic, extracted
+;;;; out of adventure/main.no into a repo-root module so the arcade
+;;;; launcher can `(use adventure_lib)` and call `run_adventure`
+;;;; directly, alongside the other games it also links in.
+;;;; adventure/main.no keeps working standalone as a two-line wrapper
+;;;; around `run_adventure`.
+;;;;
+;;;; The room graph is a sum type (`Room`) plus a `try_move` function
+;;;; that pattern-matches (room, direction) into the next room via a
+;;;; nested `match` -- an ordinary, idiomatic way to encode a small
+;;;; fixed graph without needing a generic map/dictionary of rooms.
+;;;;
+;;;; Commands are single words on purpose (north/south/east/west, or
+;;;; n/s/e/w; look; take; inventory; help; quit) -- Nyet has no
+;;;; string-split primitive yet (see CONTINUATION_PLAN.md), so a
+;;;; "go north"-style two-token command isn't reachable without one;
+;;;; single-word commands sidestep that entirely.
+
+(module adventure_lib)
+
+(use prelude_option)
+(use std/ansi)
+(use std/io)
+
+(type Room
+  (Entrance)
+  (Hallway)
+  (Library)
+  (Garden)
+  (Vault))
+
+(type Direction
+  (North)
+  (South)
+  (East)
+  (West))
+
+;; Every Room/Direction parameter below is a `&` borrow, never a plain
+;; value -- Room/Direction are non-Copy sum types (like every
+;; struct/sum type in this language; there's no auto-derived Copy even
+;; for a zero-field variant), so a by-value parameter would MOVE the
+;; caller's `room`/`d` on the very first call, permanently invalidating
+;; it for every later `if won (break) pass)`-style loop iteration.
+;; Comparing two Room values is deliberately done via `match`, never
+;; `==` -- `==` on a sum type with no `impl Eq` silently falls back to
+;; comparing the two values' heap addresses (confirmed:
+;; `(let x:Room (A)) (== x (A))` -> false, even though both are
+;; logically the `A` variant) rather than either refusing to compile
+;; or comparing structurally. A real, separately-worth-fixing compiler
+;; gap, not something to route around silently -- flagged for the
+;; user rather than fixed here, since the right fix (auto-derive
+;; structural equality? require an explicit `impl Eq`? hard error
+;; instead of silent pointer comparison?) is a real design decision,
+;; not a quick patch.
+(fn is_vault (r:&Room) -> bool
+  (match r
+    ((Entrance) false)
+    ((Hallway) false)
+    ((Library) false)
+    ((Garden) false)
+    ((Vault) true)))
+
+(fn is_library (r:&Room) -> bool
+  (match r
+    ((Entrance) false)
+    ((Hallway) false)
+    ((Library) true)
+    ((Garden) false)
+    ((Vault) false)))
+
+(fn describe (r:&Room) -> string
+  (match r
+    ((Entrance) "You're standing at the entrance. A cold draft blows in from outside. The only way in is north.")
+    ((Hallway)  "A dim hallway. Exits: north to a library, east to a garden, south back to the entrance.")
+    ((Library)  "Dusty shelves line the walls. A small brass key glints on a reading table. Exits: south to the hallway, east to a locked vault door.")
+    ((Garden)   "An overgrown courtyard garden, open to the sky. Exits: west back to the hallway.")
+    ((Vault)    "The vault. Gold coins are stacked to the ceiling. You made it!")))
+
+(fn try_move (r:&Room d:&Direction) -> Option[Room]
+  (match r
+    ((Entrance) (match d ((North) (Some (Hallway))) ((South) (None)) ((East) (None)) ((West) (None))))
+    ((Hallway)  (match d ((North) (Some (Library))) ((South) (Some (Entrance))) ((East) (Some (Garden))) ((West) (None))))
+    ((Library)  (match d ((South) (Some (Hallway))) ((East) (Some (Vault))) ((North) (None)) ((West) (None))))
+    ((Garden)   (match d ((West) (Some (Hallway))) ((North) (None)) ((South) (None)) ((East) (None))))
+    ((Vault)    (match d ((West) (Some (Library))) ((North) (None)) ((South) (None)) ((East) (None))))))
+
+;; Attempts to move in direction `d`, printing a message and returning
+;; `None` if blocked (invalid exit, or the vault door without the
+;; key); returns `Some(next room)` on a successful move, leaving it to
+;; the caller to actually update its own `room` variable (this fn only
+;; borrows `room`, it can't reassign the caller's binding).
+(fn resolve_direction (room:&Room d:&Direction has_key:bool) -> Option[Room]
+  (let dest:Option[Room] (try_move room d))
+  (match dest
+    ((None) (do (out "you can't go that way\n") (None)))
+    ((Some next)
+      (if (&& (is_vault &next) (! has_key))
+        (do (out "the vault door is locked -- you need a key\n") (None))
+        (Some next)
+      )
+    )
+  )
+)
+
+(fn parse_direction (cmd:string) -> Option[Direction]
+  (match cmd
+    ("north" (Some (North))) ("n" (Some (North)))
+    ("south" (Some (South))) ("s" (Some (South)))
+    ("east"  (Some (East)))  ("e" (Some (East)))
+    ("west"  (Some (West)))  ("w" (Some (West)))
+    (other (None))))
+
+(fn adventure_print_help () -> unit
+  (out "commands: north/south/east/west (or n/s/e/w), look, take, inventory, help, quit\n"))
+
+;; A fresh full-screen view of the current room -- called on entry and
+;; every successful move/`look`, so arriving somewhere new always
+;; reads as a clean scene rather than one more line tacked onto a
+;; growing wall of text. Responses to other commands (help, inventory,
+;; a blocked move, an unrecognized word) deliberately do NOT redraw:
+;; they print as ordinary feedback below whatever room view is already
+;; on screen, since a player who just asked "help" or "inventory"
+;; should get to actually read the answer, not have it cleared away
+;; before the next redraw.
+(fn render_room (room:&Room has_key:bool) -> unit
+  (out CLEAR_SCREEN)
+  (out DIM) (out "-- a tiny adventure --") (out RESET)
+  (out "  (help, look, take, inventory, quit)\n\n")
+  (out (describe room))
+  (out "\n")
+  (if has_key
+    (do (out DIM) (out "(carrying: a brass key)\n") (out RESET))
+    pass))
+
+(pub fn run_adventure () -> unit
+  (var room:Room (Entrance))
+  (var has_key:bool false)
+  (var won:bool false)
+
+  (render_room &room has_key)
+
+  (loop
+    (if won (break) pass)
+    (let cmd:string (prompt_line "> "))
+
+    (if (|| (== cmd "") (|| (== cmd "quit") (== cmd "q")))
+      (do (out "bye\n") (break))
+      pass)
+
+    ;; Every arm below ends in `pass`, even ones that "obviously" only
+    ;; call `out!`/`adventure_print_help` -- this compiler doesn't
+    ;; unify/coerce a `match` arm's inferred type against its siblings
+    ;; (see minibase_core.no's own header comment for the same rule),
+    ;; so a mismatch between, say, a bare `(out ...)` arm and a nested
+    ;; `(match ...)` arm elsewhere silently produces an ill-typed LLVM
+    ;; store that clang then rejects.
+    (match cmd
+      ("help" (do (adventure_print_help) pass))
+      ("look" (do (render_room &room has_key) pass))
+
+      ("inventory"
+        (do
+          (if has_key
+            (out "you are carrying: a brass key\n")
+            (out "you aren't carrying anything\n"))
+          pass))
+
+      ("take"
+        (do
+          (if (is_library &room)
+            (if has_key
+              (out "you already have the key\n")
+              (do (= has_key true) (out (fmt "{}you take the brass key{}\n" GREEN RESET))))
+            (out "there's nothing here to take\n"))
+          pass))
+
+      (other
+        (do
+          (let dir:Option[Direction] (parse_direction other))
+          (match dir
+            ((None)
+              (do (out (fmt "{}unknown command: '{}' -- try 'help'{}\n" DIM other RESET)) pass))
+            ((Some d)
+              (do
+                (let outcome:Option[Room] (resolve_direction &room &d has_key))
+                (match outcome
+                  ((None) pass)
+                  ((Some next)
+                    (do
+                      (= room next)
+                      (render_room &room has_key)
+                      (if (is_vault &room) (= won true) pass)
+                      pass
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+
+  (if won
+    (do (out GREEN) (out "*** you win! ***\n") (out RESET))
+    pass))

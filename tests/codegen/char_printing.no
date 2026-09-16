@@ -1,0 +1,27 @@
+;; Regression test: printing a `char` (via `out!` or `fmt`) must print
+;; the character itself, not its numeric codepoint. `char` is stored
+;; as `i32` (a Unicode scalar value -- see CLAUDE.md), the same LLVM
+;; shape as an ordinary int, so without a dedicated case both `out!`
+;; and `fmt` fell through to their generic i32 `%d` handling and
+;; printed the number instead (confirmed: `(let ch:char 65) (out ch)`
+;; printed "65", not "A").
+;;
+;; Expected:
+;;   out! a char literal-annotation: A
+;;   fmt a char literal-annotation: A
+;;   out! a char from string indexing: h
+;;   fmt a char from string indexing: h
+;;   control -- plain i32 unaffected: 65
+
+(fn main () -> unit
+  (let ch:char 65)
+  (out "out! a char literal-annotation: ") (out ch) (out "\n")
+  (out (fmt "fmt a char literal-annotation: {}\n" ch))
+
+  (let s:string "hello")
+  (let c0:char (s 0))
+  (out "out! a char from string indexing: ") (out c0) (out "\n")
+  (out (fmt "fmt a char from string indexing: {}\n" c0))
+
+  (let n:i32 65)
+  (out "control -- plain i32 unaffected: ") (out n) (out "\n"))

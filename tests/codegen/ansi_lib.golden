@@ -1,0 +1,10 @@
+=== stdout ===
+RED literal: [31m
+fg256(196): [38;5;196m
+fg_rgb(255,136,0): [38;2;255;136;0m
+hex_r/g/b(0xff8800): 255 136 0
+fg_hex(0xff8800) == fg_rgb(255,136,0): 1
+hex_to_256(0x000000) [cube origin]: 16
+hex_to_256(0xffffff) [cube far corner]: 231
+hex_to_256(0xff8800) [known xterm orange]: 208
+CLEAR_SCREEN starts with ESC[2J: 1

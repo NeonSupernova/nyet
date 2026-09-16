@@ -92,6 +92,16 @@ def _load_program_with_deps(entry_path: str) -> list[N.Node]:
 
     repo_root = _repo_root()
     entry = Path(entry_path).resolve()
+    if not entry.is_file():
+        # `load()` below silently no-ops on a missing path -- that's the
+        # right call for a `(use ...)` target that isn't implemented yet,
+        # but applied to the entry file itself it used to mean a typo'd
+        # or wrong path silently compiled as an *empty* program (no
+        # diagnostics, no `main`) instead of failing here. That surfaced
+        # as a baffling downstream clang/linker error with no obvious
+        # connection to the real cause, so check the entry explicitly.
+        print(f"error: file not found: {entry_path}", file=sys.stderr)
+        sys.exit(1)
     seen: set[Path] = set()
     order: list[Path] = []
     loaded: dict[Path, list[N.Node]] = {}
@@ -227,13 +237,17 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
     # Compile with clang, linking the C runtime's Map[K V]/Set[T] support
     # (self-contained, matches codegen's plain-C-string representation --
-    # see runtime/map.c) and spawn/await support (runtime/async.c). The
-    # rest of runtime/ uses an incompatible fat-pointer string ABI and
-    # isn't linked.
+    # see runtime/map.c), spawn/await support (runtime/async.c), and a
+    # Windows-only console setup shim (runtime/win_console.c -- enables
+    # ANSI/VT escape-sequence interpretation so std/ansi.no colors render
+    # instead of printing as raw escape codes; a no-op object file
+    # everywhere else). The rest of runtime/ uses an incompatible
+    # fat-pointer string ABI and isn't linked.
     out_path = Path(output) if output else Path("output")
     runtime_dir = _repo_root() / "runtime"
     runtime_map_c = runtime_dir / "map.c"
     runtime_async_c = runtime_dir / "async.c"
+    runtime_win_console_c = runtime_dir / "win_console.c"
     # A frozen Windows bundle ships its own mingw-targeted clang with no
     # guarantee the host has one installed, so link everything statically
     # (incl. winpthreads, needed by runtime/async.c) rather than depend on
@@ -249,6 +263,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
                 str(ll_path),
                 str(runtime_map_c),
                 str(runtime_async_c),
+                str(runtime_win_console_c),
             ],
             capture_output=True,
             text=True,

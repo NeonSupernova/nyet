@@ -229,6 +229,8 @@ class TypeChecker:
                 return FnSig((STRING, STRING), STRING)
             if node.name == "file_read_all":
                 return FnSig((STRING,), STRING)
+            if node.name == "file_read_lines":
+                return FnSig((STRING,), ArrayType(STRING))
             if node.name == "file_write":
                 return FnSig((STRING, STRING), UNIT)
             if node.name == "file_close":

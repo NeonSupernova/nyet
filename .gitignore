@@ -6,6 +6,28 @@
 !scripts/*.no
 !std/**/*.no
 !demo/*.no
+
+# The arcade demo suite: five small games plus a launcher that links
+# all five into one binary via (use ...) -- each game's own directory
+# is a two-line main.no wrapper around a repo-root `_lib`/`_repl`
+# module (also carved out below), which is what actually needs
+# `(use ...)`-ing from elsewhere (like the launcher, or a packaged
+# Windows bundle) to resolve.
+!arcade/*.no
+!minibase/*.no
+!adventure/*.no
+!game_of_life/*.no
+!pipe_dreams/*.no
+!hangman/*.no
+!/minibase_core.no
+!/minibase_repl.no
+!/adventure_lib.no
+!/game_of_life_lib.no
+!/pipe_dreams_lib.no
+!/hangman_lib.no
+!/prelude_option.no
+!/prelude_rng.no
+
 *.pyc
 __pycache__
 

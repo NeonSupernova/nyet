@@ -1,0 +1,17 @@
+;;;; prelude_rng — a hand-rolled linear congruential generator (the
+;;;; classic glibc constants), shared by pipe_dreams and hangman.
+;;;; No random-number primitive exists in Nyet yet; this is itself a
+;;;; small, honest demonstration that Nyet's `i32` arithmetic has the
+;;;; ordinary twos-complement wraparound an LCG's multiply depends on.
+
+(module prelude_rng)
+
+(const LCG_A:i32 1103515245)
+(const LCG_C:i32 12345)
+
+(pub fn next_seed (seed:i32) -> i32 (+ (* seed LCG_A) LCG_C))
+
+;; Maps a seed value into `[lo, hi]` inclusive.
+(pub fn in_range (s:i32 lo:i32 hi:i32) -> i32
+  (let mag:i32 (if (< s 0) (- 0 s) s))
+  (+ lo (% mag (+ 1 (- hi lo)))))

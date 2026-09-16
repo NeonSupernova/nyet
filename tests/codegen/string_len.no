@@ -1,0 +1,33 @@
+;; Regression test: `(len s)` on a `string` must call `strlen`, not
+;; read a nonexistent array-style length header -- strings are plain
+;; null-terminated C strings (see runtime doc comments), unlike
+;; Array[T]'s malloc'd `[i64 length][elements...]` block that `len`
+;; was unconditionally assuming. Covers every shape `_is_string_operand`
+;; recognizes: a literal, a plain `let`, a `&`-borrowed fn param, a
+;; `string`-typed struct field, and an `Array[i32]` (still via the
+;; header, unaffected by the fix) as a control.
+;;
+;; Expected:
+;;   literal: 0
+;;   plain let: 10
+;;   borrowed param: 10
+;;   struct field: 5
+;;   array (control, unaffected): 4
+
+(struct Widget name:string)
+
+(fn strlen_ref (s:&string) -> i32 (len s))
+
+(fn main () -> unit
+  (out "literal: ") (out (len "")) (out "\n")
+
+  (let s:string "Alexandria")
+  (out "plain let: ") (out (len s)) (out "\n")
+
+  (out "borrowed param: ") (out (strlen_ref &s)) (out "\n")
+
+  (let w (Widget name:"Nyet!"))
+  (out "struct field: ") (out (len (. w name))) (out "\n")
+
+  (let arr:Array[i32] [1 2 3 4])
+  (out "array (control, unaffected): ") (out (len &arr)) (out "\n"))
