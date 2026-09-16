@@ -11,6 +11,7 @@ var, if, do, arithmetic, comparisons).
 from __future__ import annotations
 
 import struct as _struct
+import sys as _sys
 from collections.abc import Callable
 
 from pynyet.ast import nodes as N
@@ -2632,20 +2633,32 @@ class Emitter:
         rather than a wall-clock call (`gettimeofday`/`clock_gettime`):
         `clock()` is a single `clock_t` return value with no struct
         layout or platform-specific clock-ID constant to get wrong,
-        making it the portable choice between macOS and Linux for a
-        first primitive. `CLOCKS_PER_SEC` is 1000000 on both glibc and
-        macOS libc. Intended for benchmarking CPU-bound Nyet code
-        (loops, arithmetic, struct/array operations) — not for measuring
-        real elapsed time around blocking I/O, which `clock()` doesn't
-        count.
+        making it the portable choice between macOS, Linux, and Windows
+        for a first primitive. Intended for benchmarking CPU-bound Nyet
+        code (loops, arithmetic, struct/array operations) — not for
+        measuring real elapsed time around blocking I/O, which `clock()`
+        doesn't count.
+
+        `CLOCKS_PER_SEC` is 1000000 on glibc and macOS libc, but only
+        1000 on the Windows CRT (millisecond, not microsecond,
+        resolution) -- a well-known `clock()` portability gotcha.
+        Nyet never cross-compiles (a frozen Windows build's bundled
+        clang still runs ON Windows, targeting Windows), so `sys.platform`
+        at codegen time already tells us which libc the emitted `.ll`
+        will actually be linked against. Getting this wrong silently
+        made every `busy_wait` call take ~1000x longer than intended on
+        Windows (a 0.6s pause becomes a 10-minute one) -- easy to miss
+        entirely in dev on macOS/Linux, since the divisor is only wrong
+        for the platform this can't be tested on directly.
         """
         self._declare_extern("declare i64 @clock()")
         ticks = self._fresh_tmp()
         self._emit_line(f"{ticks} = call i64 @clock()")
         as_double = self._fresh_tmp()
         self._emit_line(f"{as_double} = sitofp i64 {ticks} to double")
+        clocks_per_sec = 1000.0 if _sys.platform == "win32" else 1000000.0
         seconds = self._fresh_tmp()
-        self._emit_line(f"{seconds} = fdiv double {as_double}, 1000000.0")
+        self._emit_line(f"{seconds} = fdiv double {as_double}, {clocks_per_sec}")
         return seconds
 
     # ------------------------------------------------------------------
