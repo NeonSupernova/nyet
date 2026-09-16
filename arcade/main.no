@@ -26,6 +26,7 @@
 (use pipe_dreams_lib)
 (use hangman_lib)
 (use std/ansi)
+(use std/io)
 
 (fn print_banner () -> unit
   (out! DIM)
@@ -53,12 +54,19 @@
     (out! "> ")
     (let cmd:string (in))
 
+    ;; Every game's own final message (a win/loss line, a closing
+    ;; tally, a plain "bye") is the last thing it prints before
+    ;; returning here -- with nothing pausing for it, the very next
+    ;; loop iteration's CLEAR_SCREEN above would wipe it from the
+    ;; screen before anyone had a chance to read it. Waiting on an
+    ;; explicit Enter (the `_pause` binding is never read again) makes
+    ;; returning to the menu a deliberate step instead.
     (match cmd
-      ("1" (do (run_minibase) pass))
-      ("2" (do (run_adventure) pass))
-      ("3" (do (run_game_of_life) pass))
-      ("4" (do (run_pipe_dreams) pass))
-      ("5" (do (run_hangman) pass))
+      ("1" (do (run_minibase) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("2" (do (run_adventure) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("3" (do (run_game_of_life) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("4" (do (run_pipe_dreams) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("5" (do (run_hangman) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
 
       ("q"    (do (= running false) pass))
       ("quit" (do (= running false) pass))
