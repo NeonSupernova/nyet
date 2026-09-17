@@ -1,0 +1,26 @@
+;; Aliasing exclusivity must NOT reject valid patterns: any number of
+;; simultaneous shared (`&`) borrows of the same value, and borrows in
+;; separate blocks (a `let`-bound reference lives until the end of the
+;; block that declared it -- this checker is lexical-scope-based, not
+;; NLL, so wrapping each borrow's use in its own `do` is what ends its
+;; lifetime before the next one starts; see borrow.py's module notes).
+
+(struct Person name:string)
+(fn take_mut (p:&!Person) -> unit (= (. p name) "x"))
+(fn take_shared (p:&Person) -> string (. p name))
+
+(fn main () -> unit
+  (var p:Person (Person name:"Alice"))
+
+  ;; many simultaneous shared borrows: fine
+  (do
+    (let s1 (&p))
+    (let s2 (&p))
+    (out! (take_shared s1))
+    (out! (take_shared s2)))
+
+  ;; each borrow's own block ends its lifetime before the next begins
+  (do (let m (&!p)) (take_mut m))
+  (do (let s (&p)) (out! (take_shared s)))
+  (take_mut &!p)
+  (out! (take_shared &p)))

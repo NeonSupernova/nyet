@@ -34,6 +34,7 @@ avoiding spurious errors on conditionally-consumed bindings).
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
+from typing import TypeGuard
 
 from pynyet.ast import nodes as N
 from pynyet.diagnostic import Diagnostic, Severity
@@ -525,6 +526,247 @@ def check_borrows(program: list[N.Node]) -> list[Diagnostic]:
     """Run the borrow checker. Returns diagnostics."""
     bc = BorrowChecker()
     return bc.check(program)
+
+
+# ----------------------------------------------------------------------
+# Aliasing-exclusivity checker: a value may be borrowed mutably by at
+# most one live reference, and never both mutably and shared at once.
+# ----------------------------------------------------------------------
+#
+# Deliberately lexical-scope-based, not NLL (non-lexical-lifetimes): a
+# `let`-bound reference is considered alive from its creation to the
+# end of the block that declared it, not narrowed to its last actual
+# use. This is sound -- it only ever rejects programs that really do
+# have two live conflicting borrows, never the reverse -- but is more
+# conservative than a full NLL borrow checker would be (it could, in
+# principle, reject a `let`-bound borrow that's actually done being
+# used well before its enclosing block ends). That tradeoff was
+# deliberate: surveyed against the whole existing codebase (tests,
+# examples, scripts, minibase, std) before implementing this, every
+# single `&`/`&!` use turned out to be created and consumed inline at
+# one call site -- nowhere does real code hold a borrow in a variable
+# across more than one statement -- so lexical-scope tracking has zero
+# behavioral difference from NLL for any code that exists today, while
+# being considerably simpler to implement (no last-use liveness pass).
+#
+# Deliberately NOT checked (kept out of scope for this pass): using the
+# *original* binding directly (read or write) while a `&`/`&!` borrow
+# of it is still alive elsewhere. Only borrow-vs-borrow conflicts are
+# caught -- e.g. `(let m (&!p)) (out! (. p name))` is accepted even
+# though a stricter checker would flag reading `p` while `m` holds a
+# live mutable borrow of it.
+
+
+@dataclass
+class _ActiveBorrow:
+    base: str
+    mutable: bool
+    bound_name: str | None
+    span: object
+
+
+class AliasChecker:
+    """Lexical-scope aliasing-exclusivity check (see module notes above)."""
+
+    def __init__(self) -> None:
+        self.errors: list[Diagnostic] = []
+        # Stack of lexical scopes, each a list of borrows alive within
+        # it. A `Do`/`if`-branch/`match`-arm/loop-body/fn-body pushes a
+        # real scope (popped -- and its borrows discarded as no-longer-
+        # alive -- at the end of that block); a `Call`'s own argument
+        # list pushes a temporary scope so inline borrows (`(foo &!p)`)
+        # are checked against siblings and enclosing scopes but don't
+        # outlive that one call.
+        self._scopes: list[list[_ActiveBorrow]] = []
+
+    def check(self, program: list[N.Node]) -> list[Diagnostic]:
+        for node in program:
+            self._check_top(node)
+        return self.errors
+
+    def _check_top(self, node: N.Node) -> None:
+        if isinstance(node, N.FnDecl):
+            self._check_fn(node)
+        elif isinstance(node, N.ImplDecl):
+            for item in node.items:
+                if isinstance(item, N.FnDecl):
+                    self._check_fn(item)
+        elif isinstance(node, (N.LetDecl, N.ConstDecl)) and node.value is not None:
+            self._check_expr(node.value)
+
+    def _check_fn(self, fn: N.FnDecl) -> None:
+        self._scopes.append([])
+        if fn.body is not None:
+            self._check_expr(fn.body)
+        self._scopes.pop()
+
+    @staticmethod
+    def _is_ref_expr(node: N.Node | None) -> TypeGuard[N.Call]:
+        return (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name in ("&", "&!")
+            and len(node.args) == 1
+        )
+
+    @staticmethod
+    def _base_name(node: N.Node) -> str | None:
+        """The bare variable a borrow ultimately refers to, or None if
+        it's anything more complex (e.g. `&(. p field)`) -- disjoint
+        field borrows aren't modeled, so those are conservatively
+        skipped rather than risking a false conflict."""
+        if isinstance(node, N.Ident):
+            return node.name
+        return None
+
+    def _check_and_register(self, node: N.Call, bound_name: str | None) -> None:
+        inner = node.args[0]
+        if not isinstance(inner, N.Ident):
+            self._check_expr(inner)
+        base = self._base_name(inner)
+        if base is None:
+            return
+        mutable = isinstance(node.head, N.Ident) and node.head.name == "&!"
+        for scope in self._scopes:
+            for b in scope:
+                if b.base != base:
+                    continue
+                if b.mutable or mutable:
+                    new_kind = "&!" if mutable else "&"
+                    old_kind = "&!" if b.mutable else "&"
+                    where = (
+                        f"bound to '{b.bound_name}'"
+                        if b.bound_name
+                        else "borrowed earlier in this scope"
+                    )
+                    self.errors.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f"cannot borrow '{base}' as {new_kind} -- already {old_kind}-{where}",
+                            node.span,
+                        )
+                    )
+        if self._scopes:
+            self._scopes[-1].append(_ActiveBorrow(base, mutable, bound_name, node.span))
+
+    def _check_call(self, node: N.Call) -> None:
+        if not isinstance(node.head, N.Ident):
+            self._check_expr(node.head)
+        self._scopes.append([])
+        for arg in node.args:
+            self._check_expr(arg)
+        self._scopes.pop()
+
+    def _check_expr(self, node: N.Node | None) -> None:
+        if node is None:
+            return
+
+        if isinstance(node, N.LetDecl):
+            if node.value is not None:
+                if self._is_ref_expr(node.value):
+                    self._check_and_register(node.value, bound_name=node.name)
+                else:
+                    self._check_expr(node.value)
+            return
+
+        if self._is_ref_expr(node):
+            self._check_and_register(node, bound_name=None)
+            return
+
+        if isinstance(node, N.ConstDecl):
+            if node.value is not None:
+                self._check_expr(node.value)
+            return
+
+        if isinstance(node, N.Assign):
+            self._check_expr(node.value)
+            if not isinstance(node.target, N.Ident):
+                self._check_expr(node.target)
+            return
+
+        if isinstance(node, N.Call):
+            self._check_call(node)
+            return
+
+        if isinstance(node, N.If):
+            self._check_expr(node.cond)
+            self._scopes.append([])
+            self._check_expr(node.then_branch)
+            self._scopes.pop()
+            if node.else_branch is not None:
+                self._scopes.append([])
+                self._check_expr(node.else_branch)
+                self._scopes.pop()
+            return
+
+        if isinstance(node, N.Do):
+            self._scopes.append([])
+            for expr in node.exprs:
+                self._check_expr(expr)
+            self._scopes.pop()
+            return
+
+        if isinstance(node, N.Match):
+            self._check_expr(node.scrutinee)
+            for arm in node.arms:
+                self._scopes.append([])
+                self._check_expr(arm.body)
+                self._scopes.pop()
+            return
+
+        if isinstance(node, N.Loop):
+            # Single pass, matching BorrowChecker's own loop handling --
+            # a borrow taken in one iteration is gone (scope popped)
+            # before the next iteration's copy of the body runs.
+            self._scopes.append([])
+            self._check_expr(node.body)
+            self._scopes.pop()
+            return
+
+        if isinstance(node, (N.Return, N.Break)):
+            if node.value is not None:
+                self._check_expr(node.value)
+            return
+
+        if isinstance(node, N.FieldAccess):
+            self._check_expr(node.target)
+            return
+
+        if isinstance(node, N.FnExpr):
+            self._scopes.append([])
+            if node.body is not None:
+                self._check_expr(node.body)
+            self._scopes.pop()
+            return
+
+        if isinstance(node, (N.ArrayLit, N.TupleLit)):
+            for e in node.elements:
+                self._check_expr(e)
+            return
+
+        if isinstance(node, N.MapLit):
+            for k, v in node.entries:
+                self._check_expr(k)
+                self._check_expr(v)
+            return
+
+        if isinstance(node, (N.Try, N.Quote, N.Splice, N.Await, N.Spawn)):
+            if getattr(node, "value", None) is not None:
+                self._check_expr(node.value)
+            return
+
+        if isinstance(node, N.KeywordArg):
+            if node.value is not None:
+                self._check_expr(node.value)
+            return
+
+        # Ident, literals, Pass, etc. -- nothing to check (see the
+        # "deliberately not checked" note above for Ident specifically).
+
+
+def check_aliasing(program: list[N.Node]) -> list[Diagnostic]:
+    """Run the aliasing-exclusivity checker. Returns diagnostics."""
+    return AliasChecker().check(program)
 
 
 # ----------------------------------------------------------------------

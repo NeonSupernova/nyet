@@ -137,7 +137,7 @@ def _cmd_parse(args: argparse.Namespace) -> int:
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    from pynyet.sema.borrow import check_borrows
+    from pynyet.sema.borrow import check_aliasing, check_borrows
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
@@ -149,7 +149,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    diags = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
+    diags = (
+        expand_errors
+        + resolve_names(program)
+        + check_types(program)
+        + check_borrows(program)
+        + check_aliasing(program)
+    )
     for d in diags:
         print(d.format(), file=sys.stderr)
     if any(d.severity is Severity.ERROR for d in diags):
@@ -162,7 +168,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
     import subprocess
 
     from pynyet.codegen.emit import emit_ir
-    from pynyet.sema.borrow import check_borrows
+    from pynyet.sema.borrow import check_aliasing, check_borrows
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
@@ -174,7 +180,13 @@ def _cmd_build(args: argparse.Namespace) -> int:
         return 1
 
     program, expand_errors = expand_macros(program)
-    diags = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
+    diags = (
+        expand_errors
+        + resolve_names(program)
+        + check_types(program)
+        + check_borrows(program)
+        + check_aliasing(program)
+    )
     for d in diags:
         print(d.format(), file=sys.stderr)
     if any(d.severity is Severity.ERROR for d in diags):

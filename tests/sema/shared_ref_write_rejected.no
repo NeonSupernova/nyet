@@ -1,0 +1,18 @@
+;; Writing through a shared (`&`, not `&!`) reference must be rejected --
+;; a shared borrow grants read access only. Covers both a `&`-typed
+;; parameter (the common case, e.g. an inherent method taking `self:&Self`
+;; by mistake instead of `self:&!Self`) and a `let` bound directly to a
+;; `(& expr)` reference.
+
+(struct Person name:string)
+
+(impl Person
+  (fn bad_mut (self:&Person) -> unit
+    (= (. self name) "hacked")))
+
+(fn main () -> unit
+  (var p:Person (Person name:"Alice"))
+  (bad_mut &p)
+  (let s (&p))
+  (= (. s name) "also hacked")
+  (out! (. p name)))

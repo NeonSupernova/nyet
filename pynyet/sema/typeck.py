@@ -51,6 +51,13 @@ class TypeChecker:
         self.mutable: dict[str, bool] = {}
         # Struct/type declarations
         self.type_decls: dict[str, NyetType] = {}
+        # name -> True if the binding is known to hold a read-only (`&T`,
+        # not `&!T`) reference -- populated for params (from the
+        # annotation) and for `let`/`var` bound directly to `(& expr)`.
+        # Used only to reject *writing through* such a binding
+        # (`(= (. r field) v)`); reassigning the binding name itself is
+        # governed separately by `self.mutable`/`let` vs `var`.
+        self._readonly_refs: dict[str, bool] = {}
 
     def check(self, program: list[N.Node]) -> list[Diagnostic]:
         # First pass: register all top-level declarations
@@ -191,15 +198,21 @@ class TypeChecker:
             # Save outer env, create inner for params
             saved = dict(self.env)
             saved_mutable = dict(self.mutable)
+            saved_readonly_refs = dict(self._readonly_refs)
             for p in node.params:
                 self.env[p.name] = self._resolve_type_node(p.type) if p.type else ERROR
                 # Params shadow any outer let/var of the same name -- don't
                 # let a stale immutability entry leak in from another scope.
                 self.mutable.pop(p.name, None)
+                if isinstance(p.type, N.RefType) and not p.type.mutable:
+                    self._readonly_refs[p.name] = True
+                else:
+                    self._readonly_refs.pop(p.name, None)
             if node.body is not None:
                 self._infer(node.body)
             self.env = saved
             self.mutable = saved_mutable
+            self._readonly_refs = saved_readonly_refs
 
         elif isinstance(node, N.LetDecl):
             if node.value is not None:
@@ -219,6 +232,20 @@ class TypeChecker:
                 else:
                     self.env[node.name] = val_ty
                 self.mutable[node.name] = node.mutable
+                # `(let s (& expr))` binds `s` to a read-only reference --
+                # tracked directly from the RHS shape rather than from
+                # `val_ty` (generic type inference deliberately unwraps
+                # `&`/`&!` to the referent's own type elsewhere, e.g. so
+                # field access through a reference "just works").
+                if (
+                    isinstance(node.value, N.Call)
+                    and isinstance(node.value.head, N.Ident)
+                    and node.value.head.name == "&"
+                    and len(node.value.args) == 1
+                ):
+                    self._readonly_refs[node.name] = True
+                else:
+                    self._readonly_refs.pop(node.name, None)
 
         elif isinstance(node, N.ImplDecl):
             for item in node.items:
@@ -226,6 +253,24 @@ class TypeChecker:
         elif isinstance(node, N.TraitDecl):
             for item in node.items:
                 self._check_node(item)
+
+    def _assign_root_ident(self, target: N.Node | None) -> N.Ident | None:
+        """Walk an assignment target down through field access and
+        array/tuple indexing (`(= (. (. self a) b) v)`,
+        `(= ((. self arr) i) v)`) to the identifier actually being
+        written through, or None if that can't be determined (in which
+        case the `&`-write-protection check below is simply skipped --
+        conservative, no false positives)."""
+        while True:
+            if isinstance(target, N.Ident):
+                return target
+            if isinstance(target, N.FieldAccess):
+                target = target.target
+                continue
+            if isinstance(target, N.Call):
+                target = target.head
+                continue
+            return None
 
     def _infer(self, node: N.Node | None) -> NyetType:
         """Infer the type of an expression node."""
@@ -409,6 +454,16 @@ class TypeChecker:
                     Diagnostic(
                         Severity.ERROR,
                         f"cannot assign to '{node.target.name}': declared with `let`, not `var`",
+                        node.span,
+                    )
+                )
+            root = self._assign_root_ident(node.target)
+            if root is not None and self._readonly_refs.get(root.name):
+                self.errors.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f"cannot assign through '{root.name}': borrowed as `&`, not `&!` "
+                        "-- a shared reference does not allow mutation",
                         node.span,
                     )
                 )
