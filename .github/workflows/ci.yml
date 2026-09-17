@@ -16,10 +16,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install clang and just
-        run: |
-          sudo apt-get update && sudo apt-get install -y clang
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      # `just` used to be installed by piping https://just.systems/install.sh
+      # into bash. That script resolves the latest release through the GitHub
+      # API unauthenticated, so it is rate-limited per runner IP and returned
+      # `curl: (22) ... error: 403` on a main push (run 35286848913) minutes
+      # after an identical run had passed. This action makes the same download
+      # with the job's GITHUB_TOKEN, which is not subject to that shared limit.
+      - name: Install just
+        uses: extractions/setup-just@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Python dev dependencies
         run: pip install -r requirements-dev.txt
