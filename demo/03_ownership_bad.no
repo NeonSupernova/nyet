@@ -1,0 +1,21 @@
+;; Demo 3b: the borrow checker catching a real bug -- run with `check`,
+;; not `run` (it's supposed to fail to compile):
+;;   nyet check demo\03_ownership_bad.no
+;;
+;; `consume` takes `Person` *by value*, which moves `alice` into it.
+;; The line after tries to read `alice` again -- a use-after-move that
+;; C or C++ would happily compile (and maybe crash on, or leak, or
+;; silently read garbage). Nyet catches it at compile time instead.
+;;
+;; Expected: a compile error, something like
+;;   error: use of moved value 'alice'
+
+(struct Person name:string age:i32)
+
+(fn consume (p:Person) -> unit
+  (out! (. p name)) (out! "\n"))
+
+(fn main () -> unit
+  (let alice (Person name:"alice" age:30))
+  (consume alice)
+  (out! (. alice name)) (out! "\n"))

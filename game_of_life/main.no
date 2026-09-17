@@ -1,0 +1,11 @@
+;;;; Conway's Game of Life, written in Nyet.
+;;;;
+;;;; The engine + TUI live in `game_of_life_lib.no` (repo root) as
+;;;; `run_game_of_life`, so the arcade launcher can
+;;;; `(use game_of_life_lib)` and call into it directly alongside the
+;;;; other games. This file is just the standalone entry point.
+
+(use game_of_life_lib)
+
+(fn main () -> unit
+  (run_game_of_life))

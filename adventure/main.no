@@ -1,0 +1,11 @@
+;;;; A tiny text adventure, written in Nyet.
+;;;;
+;;;; The game logic lives in `adventure_lib.no` (repo root) as
+;;;; `run_adventure`, so the arcade launcher can `(use adventure_lib)`
+;;;; and call into it directly alongside the other games. This file is
+;;;; just the standalone entry point.
+
+(use adventure_lib)
+
+(fn main () -> unit
+  (run_adventure))

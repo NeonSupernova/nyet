@@ -1,0 +1,45 @@
+;; Demo 5: closures + higher-order functions.
+;;
+;; `apply_each` and `fold` both take a function *value* as a parameter
+;; -- either a lambda (`(fn (x:i32) -> i32 ...)`) or a plain named `fn`
+;; like `add`/`mul` below, since both have the same type.
+;;
+;; Expected output:
+;;   doubled:  2 4 6 8 10
+;;   +1:       2 3 4 5 6
+;;   sum = 15
+;;   product = 120
+
+(fn apply_each (arr:&Array[i32] f:(fn i32 -> i32)) -> unit
+  (var i:i32 0)
+  (let n:i32 (len arr))
+  (loop
+    (if (>= i n) (break) (pass))
+    (out! (f (arr i))) (out! " ")
+    (= i (+ i 1)))
+  (out! "\n"))
+
+(fn fold (arr:&Array[i32] init:i32 f:(fn i32 i32 -> i32)) -> i32
+  (var acc:i32 init)
+  (var i:i32 0)
+  (let n:i32 (len arr))
+  (loop
+    (if (>= i n) (break) (pass))
+    (= acc (f acc (arr i)))
+    (= i (+ i 1)))
+  acc)
+
+(fn add (a:i32 b:i32) -> i32 (+ a b))
+(fn mul (a:i32 b:i32) -> i32 (* a b))
+
+(fn main () -> unit
+  (let nums:Array[i32] [1 2 3 4 5])
+
+  (out! "doubled:  ")
+  (apply_each &nums (fn (x:i32) -> i32 (* x 2)))
+
+  (out! "+1:       ")
+  (apply_each &nums (fn (x:i32) -> i32 (+ x 1)))
+
+  (out! "sum = ") (out! (fold &nums 0 add)) (out! "\n")
+  (out! "product = ") (out! (fold &nums 1 mul)) (out! "\n"))

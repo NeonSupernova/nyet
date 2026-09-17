@@ -44,6 +44,14 @@ jobs:
 
   commitlint:
     runs-on: ubuntu-latest
+    # The repo default GITHUB_TOKEN permissions are read-only and don't
+    # extend to listing a PR's commits, which wagoid/commitlint-github-action
+    # needs on the `pull_request` trigger -- without this it fails with
+    # "Resource not accessible by integration" regardless of whether the
+    # commits themselves are compliant.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:

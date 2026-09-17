@@ -12,6 +12,37 @@ from pynyet.lexer.scanner import lex
 from pynyet.source import SourceFile
 
 
+def _repo_root() -> Path:
+    """Root containing `std/` and `runtime/`.
+
+    Normally the checkout root (two levels up from this file). When
+    frozen into a standalone executable (PyInstaller), `std/` and
+    `runtime/` are bundled as data next to the interpreter's extracted
+    files, not next to this source file.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parents[1]
+
+
+def _find_clang() -> list[str]:
+    """Command prefix to invoke clang.
+
+    A frozen build looks for a clang toolchain bundled next to the
+    executable first (`<exe dir>/clang/bin/clang[.exe]`), so a
+    standalone distribution doesn't depend on the host having clang
+    installed. Falls back to whatever `clang` resolves to on PATH,
+    which is the only path a normal (non-frozen) dev checkout uses.
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        name = "clang.exe" if sys.platform == "win32" else "clang"
+        bundled = exe_dir / "clang" / "bin" / name
+        if bundled.is_file():
+            return [str(bundled)]
+    return ["clang"]
+
+
 def _dump_tokens(sf: SourceFile, keep_trivia: bool) -> str:
     lines: list[str] = []
     for tok in lex(sf, keep_trivia=keep_trivia):
@@ -59,8 +90,18 @@ def _load_program_with_deps(entry_path: str) -> list[N.Node]:
     """
     from pynyet.parser.parser import parse
 
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = _repo_root()
     entry = Path(entry_path).resolve()
+    if not entry.is_file():
+        # `load()` below silently no-ops on a missing path -- that's the
+        # right call for a `(use ...)` target that isn't implemented yet,
+        # but applied to the entry file itself it used to mean a typo'd
+        # or wrong path silently compiled as an *empty* program (no
+        # diagnostics, no `main`) instead of failing here. That surfaced
+        # as a baffling downstream clang/linker error with no obvious
+        # connection to the real cause, so check the entry explicitly.
+        print(f"error: file not found: {entry_path}", file=sys.stderr)
+        sys.exit(1)
     seen: set[Path] = set()
     order: list[Path] = []
     loaded: dict[Path, list[N.Node]] = {}
@@ -194,7 +235,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
     # Emit LLVM IR
     ir_text = emit_ir(program)
-    ll_path = Path(args.output + ".ll") if args.output else Path("output.ll")
+    output = args.output
+    frozen_on_windows = getattr(sys, "frozen", False) and sys.platform == "win32"
+    if frozen_on_windows and output and not output.lower().endswith(".exe"):
+        output += ".exe"  # so double-click / bare `name` invocation works in cmd.exe
+        args.output = output  # keep `run`'s post-build exec path in sync
+    ll_path = Path(output + ".ll") if output else Path("output.ll")
     ll_path.write_text(ir_text)
 
     if args.emit_llvm:
@@ -203,16 +249,34 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
     # Compile with clang, linking the C runtime's Map[K V]/Set[T] support
     # (self-contained, matches codegen's plain-C-string representation --
-    # see runtime/map.c) and spawn/await support (runtime/async.c). The
-    # rest of runtime/ uses an incompatible fat-pointer string ABI and
-    # isn't linked.
-    out_path = Path(args.output) if args.output else Path("output")
-    runtime_dir = Path(__file__).resolve().parents[1] / "runtime"
+    # see runtime/map.c), spawn/await support (runtime/async.c), and a
+    # Windows-only console setup shim (runtime/win_console.c -- enables
+    # ANSI/VT escape-sequence interpretation so std/ansi.no colors render
+    # instead of printing as raw escape codes; a no-op object file
+    # everywhere else). The rest of runtime/ uses an incompatible
+    # fat-pointer string ABI and isn't linked.
+    out_path = Path(output) if output else Path("output")
+    runtime_dir = _repo_root() / "runtime"
     runtime_map_c = runtime_dir / "map.c"
     runtime_async_c = runtime_dir / "async.c"
+    runtime_win_console_c = runtime_dir / "win_console.c"
+    # A frozen Windows bundle ships its own mingw-targeted clang with no
+    # guarantee the host has one installed, so link everything statically
+    # (incl. winpthreads, needed by runtime/async.c) rather than depend on
+    # DLLs that won't be next to the produced .exe on another machine.
+    extra_flags = ["-pthread", "-static"] if frozen_on_windows else []
     try:
         result = subprocess.run(
-            ["clang", "-o", str(out_path), str(ll_path), str(runtime_map_c), str(runtime_async_c)],
+            [
+                *_find_clang(),
+                "-o",
+                str(out_path),
+                *extra_flags,
+                str(ll_path),
+                str(runtime_map_c),
+                str(runtime_async_c),
+                str(runtime_win_console_c),
+            ],
             capture_output=True,
             text=True,
         )
@@ -243,8 +307,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+_SUBCOMMANDS = ("lex", "parse", "check", "build", "run")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="pynyet", description="Nyet compiler driver")
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # `nyet -o main.exe file.no` (no subcommand) means `nyet build -o ...` --
+    # the packaged CLI's headline invocation shape. Only kicks in when the
+    # first token isn't already a known subcommand or a help flag, so
+    # `pynyet.driver build -o ...` keeps working unchanged.
+    if raw and raw[0] not in _SUBCOMMANDS and raw[0] not in ("-h", "--help"):
+        raw = ["build", *raw]
+
+    parser = argparse.ArgumentParser(prog="nyet", description="Nyet compiler driver")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_lex = sub.add_parser("lex", help="tokenize a source file")
@@ -271,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("-o", "--output", default=None, help="output file name")
     p_run.set_defaults(func=_cmd_run)
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     return args.func(args)
 
 

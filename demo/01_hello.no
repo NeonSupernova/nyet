@@ -1,0 +1,11 @@
+;; Demo 1: hello world.
+;; Run this first to prove the toolchain works end to end:
+;;   nyet run demo\01_hello.no
+;;
+;; Expected output:
+;;   hello from Nyet!
+;;   compiled straight to a native .exe -- no interpreter at runtime.
+
+(fn main () -> unit
+  (out! "hello from Nyet!\n")
+  (out! "compiled straight to a native .exe -- no interpreter at runtime.\n"))
