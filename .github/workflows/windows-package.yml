@@ -12,9 +12,9 @@ on:
         type: boolean
         default: true
       prerelease:
-        description: "Mark the release as a pre-release"
+        description: "Mark as a pre-release (WARNING: breaks the /releases/latest/ download link)"
         type: boolean
-        default: true
+        default: false
 
 jobs:
   package:
@@ -242,7 +242,16 @@ jobs:
           # Two-space separator, matching sha256sum(1)'s own format, so
           # `sha256sum -c SHA256SUMS.txt` works as-is for anyone on a
           # machine that has it.
-          "$($h.Hash.ToLower())  nyet-windows-x64.zip" | Set-Content SHA256SUMS.txt -Encoding ascii
+          #
+          # Written via WriteAllText rather than Set-Content because
+          # Set-Content terminates lines with CRLF on Windows, and
+          # sha256sum/shasum then look for a file whose name ends in a
+          # literal carriage return -- "FAILED open or read" on every
+          # non-Windows machine, for a file that is actually fine.
+          # Verified against the real published asset; do not "simplify"
+          # this back to Set-Content.
+          $line = "$($h.Hash.ToLower())  nyet-windows-x64.zip`n"
+          [System.IO.File]::WriteAllText((Join-Path $PWD "SHA256SUMS.txt"), $line)
           Get-Content SHA256SUMS.txt
           Write-Host "zip size: $([math]::Round((Get-Item nyet-windows-x64.zip).Length / 1MB))MB"
           Pop-Location
@@ -357,7 +366,16 @@ jobs:
             "--title", "Nyet $tag",
             "--notes-file", "packaging\dist\release\NOTES.md"
           )
-          if ("${{ inputs.prerelease }}" -eq "true") { $ghArgs += "--prerelease" }
+          # GitHub's /releases/latest/ resolves to the newest
+          # NON-prerelease release. Marking a release as a pre-release
+          # therefore 404s the permanent download link the public
+          # README points at -- observed on the first v0.3.0 publish.
+          # Defaults to false for that reason; only pass true when the
+          # public README is not pointing at this build.
+          if ("${{ inputs.prerelease }}" -eq "true") {
+            Write-Host "::warning::Publishing as a pre-release -- /releases/latest/download/nyet-windows-x64.zip will 404 until a non-prerelease build is published."
+            $ghArgs += "--prerelease"
+          }
           $ghArgs += "packaging\dist\release\nyet-windows-x64.zip"
           $ghArgs += "packaging\dist\release\SHA256SUMS.txt"
 
