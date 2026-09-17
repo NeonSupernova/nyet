@@ -1,0 +1,31 @@
+;; A function whose ENTIRE body is a single top-level `(return expr)`
+;; (or a `do` block ending in one) used to emit a spurious second,
+;; invalid trailing `ret` right after the body's own one -- two
+;; terminators in the same block with no label between them. This
+;; happened to still parse for an integer return type (`ret i32 0` is
+;; syntactically valid dead code LLVM's IR parser didn't reject) but is
+;; a hard clang build failure for a pointer return type (`ret ptr 0` --
+;; "integer constant must have integer type"), which any struct/
+;; string/Array[T]-returning function with a bare top-level `return`
+;; hits.
+;; Expected:
+;;   scalar bare return: 10
+;;   array bare return len: 3
+;;   do-tail return: 7
+
+(fn scalar_ret (n:i32) -> i32
+  (return (* n 2)))
+
+(fn array_ret (n:i32) -> Array[i32]
+  (return (array_new n)))
+
+(fn do_tail_ret (n:i32) -> i32
+  (do
+    (let x:i32 (+ n 1))
+    (return x)))
+
+(fn main () -> unit
+  (do
+    (out! (fmt "scalar bare return: {}\n" (scalar_ret 5)))
+    (out! (fmt "array bare return len: {}\n" (len (array_ret 3))))
+    (out! (fmt "do-tail return: {}\n" (do_tail_ret 6)))))

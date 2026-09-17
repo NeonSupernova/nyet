@@ -1,0 +1,3 @@
+=== stdout ===
+direct field write+read: 42
+full grow-and-push cycle: 10 20 30 40 (len=4 cap=4)

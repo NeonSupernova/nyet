@@ -1,0 +1,4 @@
+=== stdout ===
+scalar bare return: 10
+array bare return len: 3
+do-tail return: 7

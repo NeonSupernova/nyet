@@ -96,14 +96,14 @@ PRELUDE_SOURCE = """\
 
 ;; write/read/close each get their own concrete Result-shaped type
 ;; rather than sharing one generic `Result[T E]` instantiated three
-;; ways -- this compiler's generic variant construction resolves
+;; ways. When this was written, generic variant construction resolved
 ;; `(Variant val)` calls by variant name only (`_variant_ctors`,
-;; pynyet/codegen/emit.py), with no per-call-site disambiguation, so
-;; multiple simultaneous instantiations of the *same* generic sum type
-;; collide and silently miscompile (confirmed independently of
-;; IOChannel with a minimal repro -- a pre-existing, documented
-;; limitation, not something specific to this feature). Distinct
-;; concrete types sidestep it entirely.
+;; pynyet/codegen/emit.py), so simultaneous instantiations of the same
+;; generic sum type collided and silently miscompiled. Commit 3cb712f
+;; since added a fallback that recovers the type args from the
+;; enclosing fn's return type or a `let` annotation; the concrete
+;; types were kept as-is rather than reworked onto a generic Result,
+;; and still sidestep the problem entirely.
 
 (type WriteResult (WriteOk usize) (WriteErr IOError))
 (type ReadResult  (ReadOk string) (ReadErr IOError))

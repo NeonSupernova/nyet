@@ -36,6 +36,15 @@ class Emitter:
         # unconditionally declared at the top level definitely ran".
         self._drop_names: dict[str, list[str]] = {}
         self._current_fn_name: str | None = None
+        # The current function's declared `-> Array[T]` element LLVM
+        # type, if any -- see `_emit_expr_as_array`.
+        self._current_fn_array_ret_elem_ty: str | None = None
+        # The current function's raw declared return TypeNode, if any --
+        # see `_resolve_generic_variant`'s use of it to recover type args
+        # a generic sum type variant's own arguments can't fully infer
+        # (e.g. `Err`'s payload type in `(fn f () -> Result[T E] (Ok
+        # v))`, which never appears in `Ok`'s own field types at all).
+        self._current_fn_return_type_node: N.TypeNode | None = None
         # Keyword literals (`:name`) intern to a small integer ID, assigned
         # on first use — allocation-free, compared by identity via plain
         # i32 equality.
@@ -79,6 +88,11 @@ class Emitter:
         # same bug already fixed for array/map reads and chained
         # indexing (see _env_array_elem_nyet/_env_map_val_nyet).
         self._struct_field_nyet: dict[str, dict[str, str]] = {}
+        # struct name → {field name: element LLVM type}, for every field
+        # whose type is `Array[T]`. Lets `_emit_struct_construct` route
+        # an `(array_new n)` field initializer through
+        # `_emit_expr_as_array` -- see `_register_struct`.
+        self._struct_field_array_elem: dict[str, dict[str, str]] = {}
 
         # v0.2: fn signature registry — name → (param_types, ret_type)
         self._fn_sigs: dict[str, tuple[list[str], str]] = {}
@@ -127,6 +141,18 @@ class Emitter:
         # for the Map case) -- (param_llvm_types, ret_llvm_type), so
         # `(let h (arr i)) (h ...)` recognizes `h` as callable.
         self._env_array_elem_fn_sig: dict[str, tuple[list[str], str]] = {}
+        # Same idea again, for an Array[T] whose elements are themselves
+        # arrays (e.g. `Array[Array[i32]]`, a 2D grid) -- name -> the
+        # INNER array's LLVM element type. Without this, `(let row (grid
+        # i))` (no annotation) registered `row` as an opaque scalar
+        # `ptr` binding instead of an array one, so `(row j)` was parsed
+        # as a call to an undefined function literally named `row` --
+        # the same failure shape `_env_array_elem_nyet`/
+        # `_env_array_elem_fn_sig` already fixed for struct/closure
+        # elements, but arrays have no Nyet type NAME to key off (they're
+        # structurally, not nominally, typed), hence a separate registry
+        # rather than reusing `_env_array_elem_nyet`.
+        self._env_array_elem_of_array: dict[str, str] = {}
 
         # Char bindings — names of variables whose Nyet type is `char`.
         # Used by _emit_cast to detect char→int conversions at the call site.
@@ -192,6 +218,13 @@ class Emitter:
         self._dyn_types: dict[str, str] = {}
         self._env_dyn_trait: dict[str, str] = {}
         self._fn_param_dyn_traits: dict[str, list[str | None]] = {}
+        # Parallel to `_fn_param_dyn_traits`: which of a function's
+        # parameters are `Array[T]`, and T's LLVM element type -- lets a
+        # call site route a bare `(array_new n)` ARGUMENT through
+        # `_emit_expr_as_array` instead of the plain `_emit_expr` that
+        # can't infer array_new's element type from its own bare integer
+        # argument alone.
+        self._fn_param_array_elem: dict[str, list[str | None]] = {}
 
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
@@ -487,6 +520,7 @@ class Emitter:
         fields = []
         string_fields: set[str] = set()
         field_nyet: dict[str, str] = {}
+        field_array_elem: dict[str, str] = {}
         for p in node.fields:
             ty = self._llvm_type(p.type)
             fields.append((p.name, ty))
@@ -495,9 +529,16 @@ class Emitter:
                 string_fields.add(p.name)
             if nyet_name is not None:
                 field_nyet[p.name] = nyet_name
+            arr_elem = self._array_elem_llvm_type(p.type)
+            if arr_elem is not None:
+                field_array_elem[p.name] = arr_elem
         self._structs[node.name] = fields
         self._struct_string_fields[node.name] = string_fields
         self._struct_field_nyet[node.name] = field_nyet
+        # `Array[T]`-typed fields, keyed by field name -> T's LLVM type --
+        # see `_emit_struct_construct`'s use of it to route an
+        # `(array_new n)` field initializer through `_emit_expr_as_array`.
+        self._struct_field_array_elem[node.name] = field_array_elem
         llvm_fields = ", ".join(ty for _, ty in fields)
         self._struct_type_lines.append(f"%{node.name} = type {{ {llvm_fields} }}")
 
@@ -1142,6 +1183,21 @@ class Emitter:
                 return self._llvm_type(tn.args[0])
         return None
 
+    def _array_of_array_elem_llvm_type(self, tn: N.TypeNode | None) -> str | None:
+        """If `tn` is `Array[Array[U]]` (or `&Array[Array[U]]`), return
+        U's LLVM element type -- i.e. one level deeper than
+        `_array_elem_llvm_type`. See `_env_array_elem_of_array`."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._array_of_array_elem_llvm_type(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Array" and tn.args:
+                return self._array_elem_llvm_type(tn.args[0])
+        return None
+
     def _array_elem_nyet_name(self, tn: N.TypeNode | None) -> str | None:
         """Return the Nyet element type name if `tn` is `Array[T]` (or
         `&Array[T]`) and `T` is a named type (e.g. a struct/sum type).
@@ -1270,6 +1326,8 @@ class Emitter:
             "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
+            "current_fn_array_ret_elem_ty": self._current_fn_array_ret_elem_ty,
+            "current_fn_return_type_node": self._current_fn_return_type_node,
         }
 
     def _restore_fn_state(self, saved: dict) -> None:
@@ -1290,6 +1348,8 @@ class Emitter:
         self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
+        self._current_fn_array_ret_elem_ty = saved["current_fn_array_ret_elem_ty"]
+        self._current_fn_return_type_node = saved["current_fn_return_type_node"]
 
     def _register_fn_sig(self, node: N.FnDecl) -> None:
         """Pre-populate `_fn_sigs` so call sites resolve regardless of
@@ -1311,6 +1371,33 @@ class Emitter:
         dyn_traits = [self._dyn_trait_name(p.type) for p in node.params]
         if any(t is not None for t in dyn_traits):
             self._fn_param_dyn_traits[node.name] = dyn_traits
+        array_elems = [self._array_elem_llvm_type(p.type) for p in node.params]
+        if any(t is not None for t in array_elems):
+            self._fn_param_array_elem[node.name] = array_elems
+
+    def _body_definitely_returns(self, node: N.Node | None) -> bool:
+        """True if executing `node` is guaranteed to already have emitted
+        its own `ret` terminator -- a bare `(return expr)` (or a `do`
+        block whose last statement is one) as a function's ENTIRE body
+        yields no SSA value back to `_emit_fn` (by design -- see the
+        `N.Return` case in `_emit_expr`), which `_emit_fn` used to treat
+        exactly like a fallthrough with no explicit return, appending a
+        second, invalid trailing `ret` right after the body's own one
+        (`ret ptr %t6` followed by `ret ptr 0` -- two terminators in the
+        same block with no label between them). This happened to still
+        parse for every INTEGER return type (`ret i32 0` is syntactically
+        valid on its own even as dead code LLVM's IR parser evidently
+        doesn't reject), silently leaving genuinely malformed IR behind,
+        but is a hard, unmissable clang build failure for any pointer
+        return type (`ret ptr 0` -- "integer constant must have integer
+        type") -- exactly the shape a `-> Array[T]`/struct/string-
+        returning function with a bare top-level `(return ...)` takes.
+        """
+        if isinstance(node, N.Return):
+            return True
+        if isinstance(node, N.Do) and node.exprs:
+            return self._body_definitely_returns(node.exprs[-1])
+        return False
 
     def _emit_drops(self) -> None:
         """Free this function's dropped struct locals (see _drop_names'
@@ -1332,6 +1419,8 @@ class Emitter:
         self._fn_lines = []
         self._fn_alloca_lines = []
         self._current_fn_name = node.name
+        self._current_fn_array_ret_elem_ty = None
+        self._current_fn_return_type_node = node.return_type if node.name != "main" else None
 
         # Emit into a local buffer, then flush to self._lines at end.
         body_lines: list[str] = []
@@ -1357,6 +1446,11 @@ class Emitter:
             ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
             if ret_nyet:
                 self._fn_ret_nyet_names[node.name] = ret_nyet
+            # A declared `-> Array[T]` return type -- consulted below (and
+            # by the `N.Return` case in `_emit_expr`) so `(array_new n)`
+            # works as a function's tail-return value or an explicit
+            # `(return (array_new n))`, not just a `let`'s direct RHS.
+            self._current_fn_array_ret_elem_ty = self._array_elem_llvm_type(node.return_type)
             if isinstance(node.return_type, N.TupleType):
                 elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
                 elem_nyet = [self._nyet_type_name(et) for et in node.return_type.elements]
@@ -1473,14 +1567,22 @@ class Emitter:
                     self._env_unsigned_names.add(n)
 
             if node.body is not None:
-                result = self._emit_expr(node.body)
-                self._emit_drops()
-                if ret_type == "void":
-                    self._emit_line("ret void")
-                elif result is not None:
-                    self._emit_line(f"ret {ret_type} {result}")
+                if self._current_fn_array_ret_elem_ty is not None:
+                    result = self._emit_expr_as_array(node.body, self._current_fn_array_ret_elem_ty)
                 else:
-                    self._emit_line(f"ret {ret_type} 0")
+                    result = self._emit_expr(node.body)
+                if self._body_definitely_returns(node.body):
+                    # The body's own `(return ...)` already emitted this
+                    # block's terminator -- see `_body_definitely_returns`.
+                    pass
+                else:
+                    self._emit_drops()
+                    if ret_type == "void":
+                        self._emit_line("ret void")
+                    elif result is not None:
+                        self._emit_line(f"ret {ret_type} {result}")
+                    else:
+                        self._emit_line(f"ret {ret_type} 0")
             else:
                 self._emit_drops()
                 self._emit_line("ret void" if ret_type == "void" else f"ret {ret_type} 0")
@@ -1884,8 +1986,13 @@ class Emitter:
             # Both `(return)` and `(return ())` mean the same thing in a
             # `-> unit` function, so treat them the same.
             if node.value is not None and not isinstance(node.value, N.UnitLit):
-                val = self._emit_expr(node.value)
-                ty = self._infer_llvm_type(node.value)
+                if self._current_fn_array_ret_elem_ty is not None:
+                    # `(return (array_new n))` -- see `_emit_expr_as_array`.
+                    val = self._emit_expr_as_array(node.value, self._current_fn_array_ret_elem_ty)
+                    ty = "ptr"
+                else:
+                    val = self._emit_expr(node.value)
+                    ty = self._infer_llvm_type(node.value)
                 self._emit_line(f"ret {ty} {val}")
             else:
                 self._emit_line("ret void")
@@ -2127,6 +2234,15 @@ class Emitter:
             mangled = self._method_impls.get((target_name, method_name))
             if mangled is not None:
                 return self._emit_user_call(mangled, node.args)
+        if (
+            isinstance(node.head, (N.FieldAccess, N.Call))
+            and len(node.args) == 1
+            and self._array_elem_ty_of_expr(node.head) is not None
+        ):
+            # `((. v data) i)` or `((grid i) j)` -- indexing an
+            # `Array[T]` value produced by a further expression. See
+            # `_emit_array_index_nested`.
+            return self._emit_array_index_nested(node.head, node.args[0])
         return None
 
     # ------------------------------------------------------------------
@@ -2149,6 +2265,22 @@ class Emitter:
             return None
         return self._monomorphize_struct(name, type_args)
 
+    def _sum_type_args_from_type_node(
+        self, tn: N.TypeNode | None, sum_name: str
+    ) -> tuple[str, ...] | None:
+        """If `tn` is `sum_name[concrete_args...]` (or `&sum_name[...]`),
+        return the concrete Nyet type-arg names -- used as a fallback
+        source of generic type args a variant's own field types can't
+        fully determine (see `_resolve_generic_variant`)."""
+        if isinstance(tn, N.RefType):
+            return self._sum_type_args_from_type_node(tn.inner, sum_name)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == sum_name and tn.args:
+                return tuple(self._nyet_type_name_of_node(a) or "unk" for a in tn.args)
+        return None
+
     def _resolve_generic_variant(self, vname: str, args: list[N.Expr]) -> str | None:
         """Find the generic sum type this variant belongs to and monomorphize.
 
@@ -2170,7 +2302,26 @@ class Emitter:
                     break
             type_args = self._infer_type_args_for_variant(tmpl, variant_types, args)
             if type_args is None:
-                continue
+                # A variant that doesn't reference every one of the sum
+                # type's generic params in its own field types (e.g.
+                # `Err`'s payload type never appears in `Ok`'s fields)
+                # can't be fully resolved from the constructor call's
+                # own arguments alone -- fall back to the enclosing
+                # function's declared return type, when the variant
+                # construction is (as it almost always is) that
+                # function's return value. Without this, unresolved
+                # inference silently fell through to the bare-name
+                # `_variant_ctors[vname]` lookup below in `_emit_call`,
+                # which whichever sum type instantiation registered
+                # LAST for this variant name always won -- a silent
+                # wrong-type miscompile (or an outright ill-typed store)
+                # for every OTHER instantiation of the same generic sum
+                # type in the same program.
+                type_args = self._sum_type_args_from_type_node(
+                    self._current_fn_return_type_node, sum_name
+                )
+                if type_args is None or len(type_args) != len(tmpl.generics):
+                    continue
             mangled_sum = self._monomorphize_sum_type(sum_name, type_args)
             if mangled_sum is None:
                 continue
@@ -3930,17 +4081,27 @@ class Emitter:
         """
         fields = self._structs[name]
         ptr = self._heap_alloc_struct(name, self._struct_size_bytes(name))
+        field_array_elem = self._struct_field_array_elem.get(name, {})
 
         # Match args to fields — support both positional and keyword
         vals: dict[str, str] = {}
         positional = 0
         for arg in args:
             if isinstance(arg, N.KeywordArg) and arg.value is not None:
-                v = self._emit_expr(arg.value)
+                elem_ty = field_array_elem.get(arg.name)
+                if elem_ty is not None:
+                    v = self._emit_expr_as_array(arg.value, elem_ty)
+                else:
+                    v = self._emit_expr(arg.value)
                 if v is not None:
                     vals[arg.name] = v
             else:
-                v = self._emit_expr(arg)
+                fname = fields[positional][0] if positional < len(fields) else None
+                elem_ty = field_array_elem.get(fname) if fname is not None else None
+                if elem_ty is not None:
+                    v = self._emit_expr_as_array(arg, elem_ty)
+                else:
+                    v = self._emit_expr(arg)
                 if v is not None and positional < len(fields):
                     vals[fields[positional][0]] = v
                 positional += 1
@@ -4672,6 +4833,20 @@ class Emitter:
             elem_ty = self._array_elem_llvm_type(node.type)
         if elem_ty is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
             elem_ty = self._infer_llvm_type(node.value.elements[0])
+        # `(let row (grid i))`, no annotation -- `grid` is itself an
+        # Array[Array[U]] binding, so its element (an Array[U]) needs
+        # the same array-ness threaded onto `row`. See
+        # `_env_array_elem_of_array`.
+        elem_of_array_src: str | None = None
+        if (
+            elem_ty is None
+            and isinstance(node.value, N.Call)
+            and isinstance(node.value.head, N.Ident)
+            and node.value.head.name in self._env_array_elem_of_array
+            and len(node.value.args) == 1
+        ):
+            elem_of_array_src = node.value.head.name
+            elem_ty = self._env_array_elem_of_array[elem_of_array_src]
         if elem_ty is not None:
             elem_nyet: str | None = None
             if node.type is not None:
@@ -4681,21 +4856,17 @@ class Emitter:
             elem_fn_sig: tuple[list[str], str] | None = None
             if isinstance(node.value, N.ArrayLit) and node.value.elements:
                 elem_fn_sig = self._fn_sig_of_value(node.value.elements[0])
+            # `elem_of_array` is only set from an explicit nested
+            # `Array[Array[U]]` annotation -- NOT inherited from
+            # `elem_of_array_src` above, which would incorrectly mark a
+            # plain `Array[U]` binding (`row`, one level in) as itself
+            # holding arrays (U's own element type), corrupting any
+            # further indexing into `row`'s own results.
+            elem_of_array: str | None = None
+            if node.type is not None:
+                elem_of_array = self._array_of_array_elem_llvm_type(node.type)
             ptr = self._emit_alloca("ptr")
-            if (
-                isinstance(node.value, N.Call)
-                and isinstance(node.value.head, N.Ident)
-                and node.value.head.name == "array_new"
-                and len(node.value.args) == 1
-            ):
-                # `array_new` isn't dispatched through the general
-                # _emit_call builtin table like map/filter -- it needs
-                # the element type, and this is the one place that's
-                # already resolved from an explicit Array[T] annotation
-                # regardless of the RHS shape (see the comment above).
-                val = self._emit_array_new(node.value.args[0], elem_ty)
-            else:
-                val = self._emit_expr(node.value) if node.value is not None else None
+            val = self._emit_expr_as_array(node.value, elem_ty) if node.value is not None else None
             if val is not None:
                 self._emit_line(f"store ptr {val}, ptr {ptr}")
             else:
@@ -4706,6 +4877,8 @@ class Emitter:
                 self._env_array_elem_nyet[node.name] = elem_nyet
             if elem_fn_sig is not None:
                 self._env_array_elem_fn_sig[node.name] = elem_fn_sig
+            if elem_of_array is not None:
+                self._env_array_elem_of_array[node.name] = elem_of_array
             return None
 
         # Tuple bindings: store the heap pointer and remember the
@@ -4785,7 +4958,17 @@ class Emitter:
         if is_aggregate:
             # Value is a ptr to the struct — store the ptr itself
             if node.value is not None:
+                # Thread this `let`'s own annotation through as a
+                # fallback type-arg source for a generic sum-type
+                # variant constructor whose own field types can't fully
+                # resolve every generic param (e.g. `(let r:Result[i32
+                # string] (Ok v))`, where `Ok`'s field never mentions
+                # `string`) -- see `_resolve_generic_variant`.
+                saved_ret_type_node = self._current_fn_return_type_node
+                if node.type is not None:
+                    self._current_fn_return_type_node = node.type
                 val = self._emit_expr(node.value)
+                self._current_fn_return_type_node = saved_ret_type_node
                 if val is not None:
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr {val}, ptr {ptr}")
@@ -4994,6 +5177,16 @@ class Emitter:
             and len(target.args) == 1
         ):
             return self._emit_array_assign(target.head.name, target.args[0], node.value)
+        # Indexed assignment into an `Array[T]` value produced by a
+        # further expression: `(= ((. v data) i) x)` or
+        # `(= ((grid i) j) x)`. See `_emit_array_assign_nested`.
+        if (
+            isinstance(target, N.Call)
+            and isinstance(target.head, (N.FieldAccess, N.Call))
+            and len(target.args) == 1
+            and self._array_elem_ty_of_expr(target.head) is not None
+        ):
+            return self._emit_array_assign_nested(target.head, target.args[0], node.value)
         # Map insert/update: `(= (m key) v)`.
         if (
             isinstance(target, N.Call)
@@ -5013,7 +5206,13 @@ class Emitter:
             return None
         if isinstance(target, N.Ident) and target.name in self._env:
             ptr, ty = self._env[target.name]
-            val = self._emit_expr(node.value)
+            if target.name in self._env_array_elem:
+                # `(= arr (array_new n))` -- reassigning a `var Array[T]`
+                # to a freshly-allocated array (e.g. a grow-by-reallocate
+                # pattern). See `_emit_expr_as_array`.
+                val = self._emit_expr_as_array(node.value, self._env_array_elem[target.name])
+            else:
+                val = self._emit_expr(node.value)
             if val is not None:
                 self._emit_line(f"store {ty} {val}, ptr {ptr}")
             return None
@@ -5174,9 +5373,13 @@ class Emitter:
         assignment before reading it back (exactly how
         `_emit_hof_map`/`_emit_hof_filter` already build their own
         result arrays internally -- this just exposes the same pattern
-        as a callable). Only reachable from `_emit_let`, which is the
-        one place `elem_ty` is already resolved from an explicit
-        `Array[T]` annotation regardless of the RHS shape.
+        as a callable). `array_new` isn't dispatched through the
+        general `_emit_call` builtin table like `map`/`filter` since,
+        unlike them, it needs an element type that isn't recoverable
+        from its own argument (a bare integer count) -- every caller
+        that already knows the expected `Array[T]` shape from context
+        should go through `_emit_expr_as_array` instead of calling this
+        directly.
         """
         n_val = self._emit_expr(n_arg)
         if n_val is None:
@@ -5194,12 +5397,46 @@ class Emitter:
         self._emit_line(f"store i64 {n64}, ptr {out}")
         return out
 
-    def _emit_array_index(self, name: str, idx_arg: N.Expr) -> str:
-        ptr_slot, _ = self._env[name]
-        elem_ty = self._env_array_elem[name]
-        arr = self._fresh_tmp()
-        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+    def _emit_expr_as_array(self, node: N.Node | None, elem_ty: str) -> str | None:
+        """Emit `node` knowing it's expected to produce an `Array[T]`
+        with LLVM element type `elem_ty`.
 
+        Before this, `(array_new n)` only ever worked as the literal,
+        direct RHS of a `let`/`var` with an explicit `Array[T]`
+        annotation (`_emit_let`'s own special case) -- anywhere else
+        `array_new` was written (a function's implicit tail-return
+        value, an explicit `(return (array_new n))`, a `do` block's
+        tail position, reassigning an existing array `var`), it fell
+        through the ordinary `_emit_call` dispatch to `_emit_user_call`,
+        which has no idea `array_new` means anything special and
+        compiled it as a call to an undefined external function
+        (`call i32 @array_new(...)`, the wrong return type entirely --
+        a hard clang build failure, not a silent miscompile). This is
+        the single choke point every one of those call sites now routes
+        through instead of a plain `_emit_expr`, recursing into a `do`
+        block's tail position (mirroring how `_infer_llvm_type` already
+        recurses into `do`/`if` tails for ordinary type inference) so
+        `(do ... (array_new n))` works the same as a bare `(array_new n)`.
+        """
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name == "array_new"
+            and len(node.args) == 1
+        ):
+            return self._emit_array_new(node.args[0], elem_ty)
+        if isinstance(node, N.Do) and node.exprs:
+            for stmt in node.exprs[:-1]:
+                self._emit_expr(stmt)
+            return self._emit_expr_as_array(node.exprs[-1], elem_ty)
+        return self._emit_expr(node)
+
+    def _emit_array_index_val(self, arr: str, elem_ty: str, idx_arg: N.Expr) -> str:
+        """Core `(arr i)` lowering given an already-computed array
+        pointer and element type -- shared by `_emit_array_index`
+        (named local binding) and `_emit_array_index_on_field`
+        (an `Array[T]`-typed struct field indexed directly, e.g.
+        `((. v data) i)`, with no intermediate local binding)."""
         idx_val = self._emit_expr(idx_arg)
         idx_ty = self._infer_llvm_type(idx_arg)
         idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
@@ -5211,6 +5448,61 @@ class Emitter:
         result = self._fresh_tmp()
         self._emit_line(f"{result} = load {elem_ty}, ptr {elem_ptr}")
         return result
+
+    def _emit_array_index(self, name: str, idx_arg: N.Expr) -> str:
+        ptr_slot, _ = self._env[name]
+        elem_ty = self._env_array_elem[name]
+        arr = self._fresh_tmp()
+        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+        return self._emit_array_index_val(arr, elem_ty, idx_arg)
+
+    def _array_elem_ty_of_expr(self, node: N.Node) -> str | None:
+        """Return the LLVM element type if evaluating `node` yields an
+        `Array[T]` pointer, for the two shapes not already covered by a
+        plain `Ident` bound in `_env_array_elem`:
+          - a `FieldAccess` into an `Array[T]`-typed struct field, e.g.
+            `(. v data)` -- see `_struct_field_array_elem`.
+          - a `Call` indexing an `Array[Array[U]]`-typed binding, e.g.
+            `(grid i)` -- see `_env_array_elem_of_array`.
+        Used by `_emit_call`/`_emit_assign` to dispatch a further level
+        of indexing directly (`((. v data) i)`, `((grid i) j)`) without
+        requiring an intermediate `let` binding for the inner array."""
+        if isinstance(node, N.FieldAccess):
+            struct_name = self._struct_name_of(node.target)
+            if struct_name is None:
+                return None
+            return self._struct_field_array_elem.get(struct_name, {}).get(node.field_name)
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name in self._env_array_elem_of_array
+            and len(node.args) == 1
+        ):
+            return self._env_array_elem_of_array[node.head.name]
+        return None
+
+    def _emit_array_index_nested(self, head: N.Node, idx_arg: N.Expr) -> str | None:
+        """`((. v data) i)` or `((grid i) j)` -- indexing an `Array[T]`
+        value produced by a further expression (a struct field, or
+        another array-of-arrays index), without first binding it to a
+        local. Before this, `_emit_call` only ever recognized array
+        indexing when its head was a plain `Ident` bound in
+        `_env_array_elem`; any other head shape fell through every
+        dispatch case and silently evaluated to `None` -- dropped
+        output for a read, and (via `_emit_assign`'s matching gap) a
+        silently no-op'd write. The FieldAccess case is precisely the
+        shape a growable-Vector-style struct (`(struct Vector len:i32
+        cap:i32 data:Array[T])`) needs for its own methods to index
+        `data` directly; the nested-Call case is the natural way to
+        index a 2D `Array[Array[U]]` grid without an intermediate
+        `let`."""
+        elem_ty = self._array_elem_ty_of_expr(head)
+        if elem_ty is None:
+            return None
+        arr = self._emit_expr(head)
+        if arr is None:
+            return None
+        return self._emit_array_index_val(arr, elem_ty, idx_arg)
 
     def _emit_string_index(self, name: str, idx_arg: N.Expr) -> str:
         """Lower `(str i)` to a byte load: index into the null-terminated
@@ -5322,12 +5614,13 @@ class Emitter:
         self._emit_line(f"{result} = load {ftype}, ptr {fptr}")
         return result
 
-    def _emit_array_assign(self, name: str, idx_arg: N.Expr, value: N.Expr | None) -> str | None:
-        ptr_slot, _ = self._env[name]
-        elem_ty = self._env_array_elem[name]
-        arr = self._fresh_tmp()
-        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
-
+    def _emit_array_assign_val(
+        self, arr: str, elem_ty: str, idx_arg: N.Expr, value: N.Expr | None
+    ) -> str | None:
+        """Core `(= (arr i) v)` lowering given an already-computed array
+        pointer and element type -- shared by `_emit_array_assign`
+        (named local binding) and `_emit_array_assign_on_field` (an
+        `Array[T]`-typed struct field indexed directly)."""
         idx_val = self._emit_expr(idx_arg)
         idx_ty = self._infer_llvm_type(idx_arg)
         idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
@@ -5352,6 +5645,27 @@ class Emitter:
         self._emit_line(f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}")
         self._emit_line(f"store {elem_ty} {val}, ptr {elem_ptr}")
         return None
+
+    def _emit_array_assign(self, name: str, idx_arg: N.Expr, value: N.Expr | None) -> str | None:
+        ptr_slot, _ = self._env[name]
+        elem_ty = self._env_array_elem[name]
+        arr = self._fresh_tmp()
+        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+        return self._emit_array_assign_val(arr, elem_ty, idx_arg, value)
+
+    def _emit_array_assign_nested(
+        self, head: N.Node, idx_arg: N.Expr, value: N.Expr | None
+    ) -> str | None:
+        """`(= ((. v data) i) x)` or `(= ((grid i) j) x)` -- the
+        write-side counterpart to `_emit_array_index_nested`; see its
+        docstring."""
+        elem_ty = self._array_elem_ty_of_expr(head)
+        if elem_ty is None:
+            return None
+        arr = self._emit_expr(head)
+        if arr is None:
+            return None
+        return self._emit_array_assign_val(arr, elem_ty, idx_arg, value)
 
     # ------------------------------------------------------------------
     # Higher-order functions over Array[T]: map, filter, fold, any, all, zip
@@ -5899,6 +6213,7 @@ class Emitter:
 
     def _emit_user_call(self, name: str, args: list[N.Expr]) -> str | None:
         dyn_traits = self._fn_param_dyn_traits.get(name)
+        array_elems = self._fn_param_array_elem.get(name)
         arg_vals: list[tuple[str, str]] = []
         for i, arg in enumerate(args):
             trait_name = dyn_traits[i] if dyn_traits and i < len(dyn_traits) else None
@@ -5907,9 +6222,14 @@ class Emitter:
                 if v is not None:
                     arg_vals.append(("ptr", v))
                 continue
-            v = self._emit_expr(arg)
-            if v is not None:
+            elem_ty = array_elems[i] if array_elems and i < len(array_elems) else None
+            if elem_ty is not None:
+                v = self._emit_expr_as_array(arg, elem_ty)
+                ty = "ptr"
+            else:
+                v = self._emit_expr(arg)
                 ty = self._infer_llvm_type(arg)
+            if v is not None:
                 arg_vals.append((ty, v))
 
         # Use registered signature if available
