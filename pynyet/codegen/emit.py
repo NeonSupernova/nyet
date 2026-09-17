@@ -45,6 +45,7 @@ class Emitter:
         self._fmt_f64: str | None = None
         self._fmt_u32: str | None = None
         self._fmt_u64: str | None = None
+        self._fmt_char: str | None = None
         self._tmp = 0
         self._label = 0
         self._env: dict[str, tuple[str, str]] = {}  # name → (llvm_ptr, llvm_type)
@@ -1024,6 +1025,11 @@ class Emitter:
         if self._fmt_u32 is None:
             self._fmt_u32 = self._get_format_string("%u", "u32")
         return self._fmt_u32
+
+    def _get_fmt_char(self) -> str:
+        if self._fmt_char is None:
+            self._fmt_char = self._get_format_string("%c", "char")
+        return self._fmt_char
 
     def _get_fmt_u64(self) -> str:
         if self._fmt_u64 is None:
@@ -2428,6 +2434,16 @@ class Emitter:
                 self._emit_printf_call(file_ptr, self._get_fmt_u64(), "i64", val)
             elif ty == "i64":
                 self._emit_printf_call(file_ptr, self._get_fmt_i64(), "i64", val)
+            elif self._node_is_char(arg):
+                # `char` is stored as `i32` (a Unicode scalar value --
+                # see CLAUDE.md), same LLVM shape as any other int, so
+                # without this case it fell into the generic i32/`%d`
+                # branch below and printed the numeric codepoint
+                # instead of the character (confirmed: `(let ch:char
+                # 65) (out! ch)` printed "65", not "A"). `%c` reads an
+                # `int` varargs slot and takes its low byte, matching
+                # `i32`'s width exactly -- no coercion needed.
+                self._emit_printf_call(file_ptr, self._get_fmt_char(), "i32", val)
             elif self._node_is_unsigned(arg):
                 val = self._coerce_int_to(val, ty, "i32", unsigned=True)
                 self._emit_printf_call(file_ptr, self._get_fmt_u32(), "i32", val)
@@ -3281,6 +3297,11 @@ class Emitter:
                     if llvm_ty == "i64" and unsigned
                     else "%lld"
                     if llvm_ty == "i64"
+                    # Same fix as _emit_out's char case: char is i32-shaped,
+                    # so without this it silently printed the numeric
+                    # codepoint via %d instead of the character via %c.
+                    else "%c"
+                    if self._node_is_char(arg_node)
                     else "%u"
                     if unsigned
                     else "%d"
