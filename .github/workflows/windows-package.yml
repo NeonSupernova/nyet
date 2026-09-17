@@ -5,7 +5,16 @@ name: Windows demo package
 # the Actions tab (or `gh workflow run windows-package.yml`) when you
 # need a fresh nyet-windows-demo.zip.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a release to the public NeonSupernova/nyet-releases repo"
+        type: boolean
+        default: true
+      prerelease:
+        description: "Mark the release as a pre-release"
+        type: boolean
+        default: true
 
 jobs:
   package:
@@ -204,8 +213,195 @@ jobs:
           }
           Write-Host "All smoke tests passed."
 
+      - name: Read the compiler version
+        id: ver
+        shell: pwsh
+        run: |
+          # pynyet/__init__.py's __version__ is the single source of
+          # truth for the release tag -- cutting a release means
+          # bumping that line and running this workflow, nothing else.
+          $v = (python -c "import pynyet; print(pynyet.__version__)").Trim()
+          if (-not $v) { throw "could not read pynyet.__version__" }
+          Write-Host "version = $v"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          $rel = "packaging\dist\release"
+          New-Item -ItemType Directory -Path $rel -Force | Out-Null
+
+          # Deliberately an UNVERSIONED asset name: it's what makes
+          # https://github.com/NeonSupernova/nyet-releases/releases/latest/download/nyet-windows-x64.zip
+          # a permanent link that always resolves to the newest build.
+          # The version lives in the release tag, not the file name.
+          Move-Item packaging\dist\nyet-windows-demo.zip "$rel\nyet-windows-x64.zip" -Force
+
+          Push-Location $rel
+          $h = Get-FileHash nyet-windows-x64.zip -Algorithm SHA256
+          # Two-space separator, matching sha256sum(1)'s own format, so
+          # `sha256sum -c SHA256SUMS.txt` works as-is for anyone on a
+          # machine that has it.
+          "$($h.Hash.ToLower())  nyet-windows-x64.zip" | Set-Content SHA256SUMS.txt -Encoding ascii
+          Get-Content SHA256SUMS.txt
+          Write-Host "zip size: $([math]::Round((Get-Item nyet-windows-x64.zip).Length / 1MB))MB"
+          Pop-Location
+
+      - name: Compose release notes
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          $tc = Get-Content packaging\dist\toolchain.json -Raw | ConvertFrom-Json
+
+          # Built as a string array rather than a here-string: the notes
+          # contain both `$`-prefixed words and backslash Windows paths,
+          # and a here-string would expand or mangle them.
+          $lines = @(
+            "## Download",
+            "",
+            "**nyet-windows-x64.zip** -- Windows x64. Unzip it anywhere, run ``add-to-path.bat``, then:",
+            "",
+            "``````",
+            "nyet run demo\01_hello.no",
+            "``````",
+            "",
+            "No installer, no admin rights, and nothing else needs to be on the machine -- the",
+            "bundled toolchain is what makes the download large.",
+            "",
+            "Verify the download against ``SHA256SUMS.txt``:",
+            "",
+            "``````powershell",
+            "Get-FileHash nyet-windows-x64.zip -Algorithm SHA256",
+            "``````",
+            "",
+            "## What is in the bundle",
+            "",
+            "| | |",
+            "|---|---|",
+            "| ``nyet.exe`` | The compiler. ``nyet --version`` prints ``nyet $version``. |",
+            "| ``clang\`` | The bundled C/LLVM toolchain ``nyet`` links with. |",
+            "| ``demo\`` | Short programs, one language feature each. Start with ``01_hello.no``. |",
+            "| ``arcade\`` | Five small games behind one menu: ``nyet run arcade\main.no``. |",
+            "| ``lib\`` | The arcade's actual source, in readable Nyet. |",
+            "| ``main.no`` | The language reference, in one commented file. |",
+            "",
+            "## Bundled toolchain",
+            "",
+            "This build redistributes WinLibs ``$($tc.releaseTag)`` (``$($tc.asset)``, published $($tc.publishedAt)).",
+            "Some components in it are GPL-licensed, which entitles you to the matching source code;",
+            "WinLibs publishes it with that release:",
+            "",
+            "- $($tc.releaseUrl)",
+            "",
+            "See [THIRD-PARTY-NOTICES.md](https://github.com/NeonSupernova/nyet-releases/blob/main/THIRD-PARTY-NOTICES.md)",
+            "for the full breakdown.",
+            "",
+            "## Changes",
+            "",
+            "See [CHANGELOG.md](https://github.com/NeonSupernova/nyet-releases/blob/main/CHANGELOG.md).",
+            "",
+            "## Reporting a problem",
+            "",
+            "[Open an issue](https://github.com/NeonSupernova/nyet-releases/issues/new/choose) with the",
+            "version above, the ``.no`` program, and the exact output."
+          )
+          Set-Content -Path packaging\dist\release\NOTES.md -Value $lines -Encoding utf8
+          Write-Host "--- release notes ---"
+          Get-Content packaging\dist\release\NOTES.md
+
       - uses: actions/upload-artifact@v4
         with:
           name: nyet-windows-demo
-          path: packaging/dist/nyet-windows-demo.zip
+          path: |
+            packaging/dist/release/nyet-windows-x64.zip
+            packaging/dist/release/SHA256SUMS.txt
+            packaging/dist/release/NOTES.md
           retention-days: 30
+
+      # Everything below publishes to the PUBLIC repo. This repo is
+      # private, so its own releases and artifacts are private too --
+      # NeonSupernova/nyet-releases is the only place an anonymous
+      # download can come from. The built-in GITHUB_TOKEN cannot write
+      # to another repository, hence a separate fine-grained PAT in
+      # secrets.RELEASE_TOKEN (contents: write, scoped to that one repo).
+      - name: Publish the release
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          $tag = "v${{ steps.ver.outputs.version }}"
+          $repo = "NeonSupernova/nyet-releases"
+
+          if (-not $env:GH_TOKEN) {
+            throw "secrets.RELEASE_TOKEN is not set -- see packaging/RELEASING.md for how to create it."
+          }
+
+          # Refuse to overwrite a download people may already have a
+          # link to -- bumping __version__ is the intended way forward.
+          # Checked with `release list` rather than `release view`: view
+          # exits nonzero and writes to stderr for the (normal, expected)
+          # case of the tag not existing yet, which is awkward to
+          # distinguish from a real failure. list exits 0 even with no
+          # releases at all.
+          $existing = gh release list --repo $repo --limit 200 --json tagName --jq ".[].tagName"
+          if ($LASTEXITCODE -ne 0) { throw "could not list releases on $repo -- is RELEASE_TOKEN valid and scoped to it?" }
+          if ($existing -contains $tag) {
+            throw "$tag already exists on $repo. Bump __version__ in pynyet/__init__.py and re-run."
+          }
+
+          # Not named $args: that is a PowerShell automatic variable.
+          $ghArgs = @(
+            "release", "create", $tag,
+            "--repo", $repo,
+            "--title", "Nyet $tag",
+            "--notes-file", "packaging\dist\release\NOTES.md"
+          )
+          if ("${{ inputs.prerelease }}" -eq "true") { $ghArgs += "--prerelease" }
+          $ghArgs += "packaging\dist\release\nyet-windows-x64.zip"
+          $ghArgs += "packaging\dist\release\SHA256SUMS.txt"
+
+          & gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+          Write-Host "Published https://github.com/$repo/releases/tag/$tag"
+
+      - name: Sync examples/ into the public repo
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          # The public repo mirrors the demo sources so the language can
+          # be read on the web without downloading 400MB. Regenerated
+          # from this repo on every release so the two cannot drift.
+          python packaging/stage_public_examples.py --out "$env:RUNNER_TEMP\examples"
+
+          $env:GIT_TERMINAL_PROMPT = "0"
+          git clone --quiet --depth 1 "https://x-access-token:$env:GH_TOKEN@github.com/NeonSupernova/nyet-releases.git" "$env:RUNNER_TEMP\public"
+          if ($LASTEXITCODE -ne 0) { throw "could not clone the public repo" }
+          $pub = "$env:RUNNER_TEMP\public"
+
+          # examples/LICENSE is the public repo's own file, not generated
+          # from here -- preserve it across the wipe-and-replace.
+          $license = "$pub\examples\LICENSE"
+          $keep = if (Test-Path $license) { Get-Content $license -Raw } else { $null }
+
+          if (Test-Path "$pub\examples") { Remove-Item "$pub\examples" -Recurse -Force }
+          Copy-Item "$env:RUNNER_TEMP\examples" "$pub\examples" -Recurse -Force
+          if ($keep) { Set-Content -Path $license -Value $keep -NoNewline }
+
+          Push-Location $pub
+          git config user.name "nyet release bot"
+          git config user.email "noreply@github.com"
+          git add examples
+          $changed = git diff --cached --name-only
+          if (-not $changed) {
+            Write-Host "examples/ already up to date, nothing to sync."
+            Pop-Location
+            exit 0
+          }
+          Write-Host "syncing:`n$changed"
+          git commit --quiet -m "chore(examples): sync from compiler v${{ steps.ver.outputs.version }}"
+          git push --quiet
+          if ($LASTEXITCODE -ne 0) { throw "could not push the examples/ sync" }
+          Pop-Location
