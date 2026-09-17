@@ -11,4 +11,4 @@ construction. Import specific modules directly:
 # workflow (.github/workflows/windows-package.yml) reads this to name
 # the release tag in the public NeonSupernova/nyet-releases repo, so
 # cutting a release means bumping this line -- nothing else.
-__version__ = "0.3.0"
+__version__ = "0.4.0"
