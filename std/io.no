@@ -1,0 +1,26 @@
+;;;; std/io.no
+;;;
+;;; Real Nyet source, not a Python compiler builtin -- small
+;;; interactive-console helpers built on the core `in`/`out!`/`now`
+;;; primitives: a labeled single-line prompt, and a CPU-spin pacing
+;;; delay for simple terminal animation. There's no sleep()/
+;;; nanosleep() primitive to build a real sleep on top of; `busy_wait`
+;;; is typically paired with `std/ansi.no`'s `CLEAR_SCREEN` for a
+;;; clear-and-redraw animation loop.
+
+(module std/io)
+
+;;; `(prompt_line label)` -- prints `label` with no trailing newline,
+;;; then reads and returns one line of input.
+(pub fn prompt_line (label:string) -> string
+  (do (out! label) (in)))
+
+;;; `(busy_wait secs)` -- spins until `secs` seconds of CPU time have
+;;; elapsed (via the `now` primitive). A spin loop is *actively
+;;; consuming* CPU the whole time it waits -- no blocking syscall in
+;;; the loop -- so CPU time and elapsed real time coincide here, even
+;;; though `now` itself measures CPU time, not wall-clock.
+(pub fn busy_wait (secs:f64) -> unit
+  (let start:f64 (now))
+  (loop
+    (if (>= (- (now) start) secs) (break) pass)))
