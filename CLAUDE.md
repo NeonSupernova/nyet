@@ -126,6 +126,27 @@ implemented today; treat it as aspirational in places, not as proof a
 construct works. `examples/` and `tests/{lexer,parser,sema,codegen}/`
 are what's actually verified.
 
+## Distribution
+
+This repo is private and stays private. Public downloads come from a
+separate public repo, **[NeonSupernova/nyet-releases][rel]**, which
+holds the README, the binary license and third-party notices, the
+issue tracker, a mirror of the demo sources, and the release assets —
+no compiler code.
+
+[rel]: https://github.com/NeonSupernova/nyet-releases
+
+`.github/workflows/windows-package.yml` (manual trigger) builds the
+Windows bundle here, smoke-tests it, and publishes it there. See
+**packaging/RELEASING.md** for the full runbook, including the
+`RELEASE_TOKEN` secret it needs and the GPL source-offer obligation
+that comes with redistributing the bundled WinLibs toolchain.
+
+`__version__` in `pynyet/__init__.py` is the single source of truth for
+the release version — the workflow reads it to name the tag, and
+`nyet --version` prints it. `packaging/stage_public_examples.py`
+defines exactly which `.no` files get mirrored publicly.
+
 ## Dependencies
 
 - **clang** — only external dependency, used to compile emitted `.ll`
