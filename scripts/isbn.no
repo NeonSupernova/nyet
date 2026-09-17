@@ -47,23 +47,23 @@
 ;; Accumulate one weighted digit into `sum`. The macro introduces its
 ;; own `w` binding; hygiene auto-renames it, so it can never capture a
 ;; `w` that happens to exist at the call site.
-(macro add_weight! (sum digit pos)
+(macro add_weight (sum digit pos)
   (do
-    (let w:i32 (weighted digit pos))
+    (let w:i32 (weighted! digit pos))
     (= sum (+ sum w))))
 
 ;; (expect CODE VALID?) — validate CODE, echo its source with `quote`,
 ;; and assert the outcome matches expectation. The heart of the DSL.
 (macro expect (code should_be)
   (do
-    (out "  ") (out (quote code)) (out "  ")
-    (assert (== (render (validate &(Isbn text:code))) should_be))))
+    (out! "  ") (out! (quote code)) (out! "  ")
+    (assert! (== (render (validate &(Isbn text:code))) should_be))))
 
 ;; (suite LABEL cases ...) — a titled, variadic block of expectations.
 (macro suite (label cases ...)
   (do
-    (out label) (out "\n")
-    (do_all cases ...)))
+    (out! label) (out! "\n")
+    (do_all! cases ...)))
 
 ;;; --- Core logic ---------------------------------------------------
 
@@ -112,11 +112,11 @@
   (match v
     ((Valid sum)
       (do
-        (out "valid  (weighted sum ") (out sum) (out ", 0 mod 11)\n")
+        (out! "valid  (weighted sum ") (out! sum) (out! ", 0 mod 11)\n")
         true))
     ((Invalid why)
       (do
-        (out "invalid  (") (out why) (out ")\n")
+        (out! "invalid  (") (out! why) (out! ")\n")
         false))))
 
 ;;; --- Entry point --------------------------------------------------
@@ -125,18 +125,18 @@
   (do
     ;; A self-test suite written in the validation DSL. `quote` echoes
     ;; each case's source; `assert` (from the prelude) enforces it.
-    (suite "self-tests:"
-      (expect "0306406152" true)     ; classic valid ISBN-10
-      (expect "080442957X" true)     ; valid, 'X' check digit
-      (expect "0306406153" false)    ; last digit wrong
-      (expect "030640615X" false)    ; misplaced / wrong 'X'
-      (expect "12345" false)         ; too short
-      (expect "12345abcde" false))   ; non-digit bytes
-    (out "all self-tests passed\n\n")
+    (suite! "self-tests:"
+      (expect! "0306406152" true)     ; classic valid ISBN-10
+      (expect! "080442957X" true)     ; valid, 'X' check digit
+      (expect! "0306406153" false)    ; last digit wrong
+      (expect! "030640615X" false)    ; misplaced / wrong 'X'
+      (expect! "12345" false)         ; too short
+      (expect! "12345abcde" false))   ; non-digit bytes
+    (out! "all self-tests passed\n\n")
 
     ;; Then validate one code read from stdin.
-    (out "Enter a 10-char ISBN-10 (digits, trailing 'X' ok): ")
+    (out! "Enter a 10-char ISBN-10 (digits, trailing 'X' ok): ")
     (let line:string (in string))
     (let code (Isbn text:line))
-    (out "  ") (out &code) (out "  ")
+    (out! "  ") (out! &code) (out! "  ")
     (let _ok:bool (render (validate &code)))))

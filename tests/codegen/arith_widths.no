@@ -11,9 +11,9 @@
     ;; i64 arithmetic that overflows i32 if truncated.
     (let x:i64 5000000000i64)
     (let y:i64 3i64)
-    (out (+ x y)) (out "\n")
-    (out (- x y)) (out "\n")
-    (out (* y 2i64)) (out "\n")
+    (out! (+ x y)) (out! "\n")
+    (out! (- x y)) (out! "\n")
+    (out! (* y 2i64)) (out! "\n")
 
     ;; i64 var mutated in a loop via `(+ i 1)` -- the exact pattern that
     ;; exposed the original bug (accumulator truncated to i32 mid-loop).
@@ -23,7 +23,7 @@
       (if (>= i 5) (break pass) pass)
       (= acc (+ acc 1))
       (= i (+ i 1)))
-    (out acc) (out "\n")
+    (out! acc) (out! "\n")
 
     ;; i64 operand paired with a bare int literal (literal yields to i64).
-    (out (+ x 1)) (out "\n")))
+    (out! (+ x 1)) (out! "\n")))

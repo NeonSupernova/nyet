@@ -22,10 +22,10 @@
 
 (fn main () -> unit
   (let c:Shape (Circle 5.0))
-  (out "circle r=5 area=") (out (area c)) (out "\n")
+  (out! "circle r=5 area=") (out! (area c)) (out! "\n")
 
   (let r:Shape (Rect 4.0 6.0))
-  (out "rect   4x6 area=") (out (area r)) (out "\n")
+  (out! "rect   4x6 area=") (out! (area r)) (out! "\n")
 
   (let t:Shape (Tri 4.0 3.0))
-  (out "tri    b=4 h=3 area=") (out (area t)) (out "\n"))
+  (out! "tri    b=4 h=3 area=") (out! (area t)) (out! "\n"))

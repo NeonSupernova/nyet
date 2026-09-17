@@ -6,13 +6,13 @@
 
 (macro show (x)
   (do
-    (out (quote x))
-    (out " = ")
-    (out x)
-    (out "\n")))
+    (out! (quote x))
+    (out! " = ")
+    (out! x)
+    (out! "\n")))
 
 (fn main () -> unit
-  (do_all
-    (show 42)
-    (show (+ 1 2))
-    (out "all done\n")))
+  (do_all!
+    (show! 42)
+    (show! (+ 1 2))
+    (out! "all done\n")))

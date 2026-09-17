@@ -1,0 +1,77 @@
+;;;; Nyet Arcade -- a menu launcher that links all five games in this
+;;;; suite into ONE compiled binary and dispatches between them,
+;;;; purely by `(use ...)`ing each game's own module and calling its
+;;;; public entry function directly (`run_minibase`, `run_adventure`,
+;;;; `run_game_of_life`, `run_pipe_dreams`, `run_hangman`) -- real
+;;;; multi-module composition via Nyet's module system, not five
+;;;; separate processes shelled out to.
+;;;;
+;;;; Each game still builds and runs perfectly standalone from its own
+;;;; directory (`minibase/main.no`, `adventure/main.no`, etc.) -- this
+;;;; is the SAME code, just linked together a second way. Making that
+;;;; possible took a real refactor: every game's actual logic moved
+;;;; out to a repo-root `_lib`/`_repl`/`_core` module (its own
+;;;; directory's `main.no` is now a two-line wrapper), and anything
+;;;; that would otherwise collide once five programs' top-level names
+;;;; share one flattened namespace -- `Option[T]`, ANSI color consts,
+;;;; a couple of small I/O/RNG helpers, `print_help`-style names, each
+;;;; game's own `seed` -- got shared through a small `prelude_*`
+;;;; module or renamed with a game-specific prefix. See
+;;;; minibase_repl.no / adventure_lib.no / game_of_life_lib.no /
+;;;; pipe_dreams_lib.no / hangman_lib.no for the individual games.
+
+(use minibase_repl)
+(use adventure_lib)
+(use game_of_life_lib)
+(use pipe_dreams_lib)
+(use hangman_lib)
+(use std/ansi)
+(use std/io)
+
+(fn print_banner () -> unit
+  (out! DIM)
+  (out! "=======================================\n")
+  (out! "            N Y E T   A R C A D E\n")
+  (out! "=======================================\n")
+  (out! RESET))
+
+(fn print_arcade_menu () -> unit
+  (out! "  1) minibase      -- a CRUD console database\n")
+  (out! "  2) adventure     -- a tiny text adventure\n")
+  (out! "  3) game of life  -- Conway's Game of Life (animated TUI)\n")
+  (out! "  4) pipe dreams   -- a |> pipeline puzzle\n")
+  (out! "  5) hangman       -- classic word-guessing\n")
+  (out! "  q) quit the arcade\n"))
+
+(fn main () -> unit
+  (var running:bool true)
+
+  (loop
+    (if (! running) (break) pass)
+    (out! CLEAR_SCREEN)
+    (print_banner)
+    (print_arcade_menu)
+    (out! "> ")
+    (let cmd:string (in))
+
+    ;; Every game's own final message (a win/loss line, a closing
+    ;; tally, a plain "bye") is the last thing it prints before
+    ;; returning here -- with nothing pausing for it, the very next
+    ;; loop iteration's CLEAR_SCREEN above would wipe it from the
+    ;; screen before anyone had a chance to read it. Waiting on an
+    ;; explicit Enter (the `_pause` binding is never read again) makes
+    ;; returning to the menu a deliberate step instead.
+    (match cmd
+      ("1" (do (run_minibase) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("2" (do (run_adventure) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("3" (do (run_game_of_life) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("4" (do (run_pipe_dreams) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+      ("5" (do (run_hangman) (let _pause:string (prompt_line "\npress Enter to return to the arcade... ")) pass))
+
+      ("q"    (do (= running false) pass))
+      ("quit" (do (= running false) pass))
+
+      (other
+        (do (out! (fmt "{}unknown option: '{}'{}\n" DIM other RESET)) pass))))
+
+  (out! "thanks for visiting the arcade!\n"))

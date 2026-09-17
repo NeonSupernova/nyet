@@ -26,19 +26,19 @@
 
 (fn main () -> unit
   (do
-    (match (make_ok_i32) ((Ok2 v) (out (fmt "fn return position (i32 instantiation): {}\n" v))) ((Err2 e) pass))
-    (match (make_ok_str "hi") ((Ok2 v) (out (fmt "fn return position (string instantiation): {}\n" v))) ((Err2 e) pass))
+    (match (make_ok_i32) ((Ok2 v) (out! (fmt "fn return position (i32 instantiation): {}\n" v))) ((Err2 e) pass))
+    (match (make_ok_str "hi") ((Ok2 v) (out! (fmt "fn return position (string instantiation): {}\n" v))) ((Err2 e) pass))
 
     (let r:MyResult[i32 string] (Ok2 42))
-    (match r ((Ok2 v) (out (fmt "let annotation (i32 instantiation): {}\n" v))) ((Err2 e) pass))
+    (match r ((Ok2 v) (out! (fmt "let annotation (i32 instantiation): {}\n" v))) ((Err2 e) pass))
 
     (let a:MyResult[i32 string] (Ok2 1))
     (let b:MyResult[string bool] (Ok2 "two"))
-    (out "both instantiations in one function: ")
-    (match a ((Ok2 v) (out v)) ((Err2 e) pass))
-    (out " ")
-    (match b ((Ok2 v) (out v)) ((Err2 e) pass))
-    (out "\n")
+    (out! "both instantiations in one function: ")
+    (match a ((Ok2 v) (out! v)) ((Err2 e) pass))
+    (out! " ")
+    (match b ((Ok2 v) (out! v)) ((Err2 e) pass))
+    (out! "\n")
 
-    (match (make_err_i32) ((Ok2 v) pass) ((Err2 e) (out (fmt "Err variant (i32 instantiation): {}\n" e))))
-    (match (make_err_str "boom") ((Ok2 v) pass) ((Err2 e) (out (fmt "Err variant (string instantiation): {}\n" e))))))
+    (match (make_err_i32) ((Ok2 v) pass) ((Err2 e) (out! (fmt "Err variant (i32 instantiation): {}\n" e))))
+    (match (make_err_str "boom") ((Ok2 v) pass) ((Err2 e) (out! (fmt "Err variant (string instantiation): {}\n" e))))))

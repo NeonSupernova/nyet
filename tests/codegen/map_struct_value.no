@@ -14,6 +14,6 @@
   (do
     (var m:Map[string Point] {"origin" (Point x:0 y:0) "unit" (Point x:1 y:1)})
     (let p (m "origin"))
-    (out (. p x)) (out "\n")
+    (out! (. p x)) (out! "\n")
     (let q (m "unit"))
-    (out (. q x)) (out "\n")))
+    (out! (. q x)) (out! "\n")))

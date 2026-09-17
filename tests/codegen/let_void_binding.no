@@ -8,8 +8,8 @@
 ;; that binds a caller-supplied body's result regardless of its type.
 ;; Expected: did it / after
 
-(fn do_thing () -> unit (out "did it\n"))
+(fn do_thing () -> unit (out! "did it\n"))
 
 (fn main () -> unit
   (let r (do_thing))
-  (out "after\n"))
+  (out! "after\n"))

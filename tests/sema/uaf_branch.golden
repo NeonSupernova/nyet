@@ -1,3 +1,3 @@
-tests/sema/uaf_branch.no:13:11: error: use of moved value 'p'
-      (out (. p name)))
-              ^
+tests/sema/uaf_branch.no:13:12: error: use of moved value 'p'
+      (out! (. p name)))
+               ^

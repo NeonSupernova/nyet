@@ -46,18 +46,18 @@
       (loop
         (= i (+ i 1))
         (if (== i 3) (break (* i 10)) pass)))
-    (out (fmt "{}\n" n))
+    (out! (fmt "{}\n" n))
 
     (let e:f32 1.5)
-    (out (fmt "{}\n" e))
+    (out! (fmt "{}\n" e))
 
     (let ada (Person name:"Ada"))
-    (out (introduce &ada)) (out "\n")
+    (out! (introduce &ada)) (out! "\n")
     (let bot (Robot id:1))
-    (out (introduce &bot)) (out "\n")
+    (out! (introduce &bot)) (out! "\n")
 
     (let v (Vec2 x:3.0 y:4.0))
-    (out (fmt "{}\n" (len &v)))
+    (out! (fmt "{}\n" (len &v)))
     (let xs:Array[i32] [1 2 3])
     (let count:i32 (len xs))
-    (out (fmt "{}\n" count))))
+    (out! (fmt "{}\n" count))))

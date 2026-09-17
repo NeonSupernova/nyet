@@ -1,0 +1,194 @@
+;;;; hangman_lib -- classic Hangman, written in Nyet. Guess letters
+;;;; one at a time to reveal a hidden word before the gallows fill in.
+;;;;
+;;;; Extracted into a repo-root module (rather than living directly in
+;;;; hangman/main.no) so the arcade launcher can `(use hangman_lib)`
+;;;; and call `run_hangman` directly, alongside the other games it
+;;;; also links in. hangman/main.no keeps working standalone as a
+;;;; two-line wrapper around `run_hangman`.
+;;;;
+;;;; Guessed letters are tracked as a plain `Array[char]` scanned
+;;;; linearly (there's no Set[T] in Nyet -- `main.no` documents it but
+;;;; nothing backs it) -- fine at "at most 26 distinct letters" scale.
+;;;; Printing a char found by indexing that array needs an
+;;;; intermediate `let` binding, not `(out! (guessed i))` directly --
+;;;; `_node_is_char`'s char-vs-plain-i32 classifier (same one `%c`
+;;;; printing relies on) only recognizes a `let`/`var`-bound
+;;;; identifier, not an arbitrary index expression (same "direct
+;;;; bindings only" scope every other type classifier in this codegen
+;;;; has -- confirmed directly: `(out! (guessed 0))` printed "97", the
+;;;; numeric codepoint, `(let g:char (guessed 0)) (out! g)` printed
+;;;; "a").
+
+(module hangman_lib)
+
+(use std/ansi)
+(use std/io)
+(use prelude_rng)
+
+(const MAX_WRONG:i32 6)
+(const WORD_COUNT:i32 8)
+
+(fn word_bank (i:i32) -> string
+  (match i
+    (0 "nyet")
+    (1 "pipeline")
+    (2 "compiler")
+    (3 "lexer")
+    (4 "parser")
+    (5 "borrow")
+    (6 "closure")
+    (other "generic")))
+
+;; `ch:&char`, not `ch:char` -- `char` isn't Copy in this compiler
+;; (like every struct/sum type; confirmed directly: passing a `char`
+;; by value into a function, then using that same local binding again
+;; afterward, is a hard "use of moved value" borrow-check error), so a
+;; by-value char param would move the caller's char on the very first
+;; call, and every one of these gets called with the same `ch`
+;; repeatedly across a guess (dedup check, record, in-word check).
+(fn was_guessed (guessed:&Array[char] count:i32 ch:&char) -> bool
+  (var i:i32 0)
+  (loop
+    (if (>= i count) (break) pass)
+    (let g:char (guessed i))
+    (if (== &g ch) (return true) pass)
+    (= i (+ i 1)))
+  false)
+
+(fn char_in_string (s:&string ch:&char) -> bool
+  (let n:i32 (len s))
+  (var i:i32 0)
+  (loop
+    (if (>= i n) (break) pass)
+    (let sc:char (s i))
+    (if (== &sc ch) (return true) pass)
+    (= i (+ i 1)))
+  false)
+
+;; True once every letter of `word` has been guessed.
+(fn word_complete (word:&string guessed:&Array[char] count:i32) -> bool
+  (let n:i32 (len word))
+  (var i:i32 0)
+  (loop
+    (if (>= i n) (break) pass)
+    (let ch:char (word i))
+    (if (! (was_guessed guessed count &ch)) (return false) pass)
+    (= i (+ i 1)))
+  true)
+
+(fn print_blanked_word (word:&string guessed:&Array[char] count:i32) -> unit
+  (let n:i32 (len word))
+  (var i:i32 0)
+  (loop
+    (if (>= i n) (break) pass)
+    (let ch:char (word i))
+    (if (was_guessed guessed count &ch)
+      (out! ch)
+      (out! "_"))
+    (out! " ")
+    (= i (+ i 1)))
+  (out! "\n"))
+
+(fn print_guessed_letters (guessed:&Array[char] count:i32) -> unit
+  (out! "guessed: ")
+  (var i:i32 0)
+  (loop
+    (if (>= i count) (break) pass)
+    (let g:char (guessed i))
+    (out! g) (out! " ")
+    (= i (+ i 1)))
+  (out! "\n"))
+
+(fn gallows (wrong:i32) -> string
+  (match wrong
+    (0 "  +---+\n  |   |\n      |\n      |\n      |\n      |\n=========\n")
+    (1 "  +---+\n  |   |\n  O   |\n      |\n      |\n      |\n=========\n")
+    (2 "  +---+\n  |   |\n  O   |\n  |   |\n      |\n      |\n=========\n")
+    (3 "  +---+\n  |   |\n  O   |\n /|   |\n      |\n      |\n=========\n")
+    (4 "  +---+\n  |   |\n  O   |\n /|\\  |\n      |\n      |\n=========\n")
+    (5 "  +---+\n  |   |\n  O   |\n /|\\  |\n /    |\n      |\n=========\n")
+    (other "  +---+\n  |   |\n  O   |\n /|\\  |\n / \\  |\n      |\n=========\n")))
+
+;; A shared header for every redraw, since the whole screen gets wiped
+;; and rebuilt each turn rather than scrolling -- without this, the
+;; game title and how-to-play reminder would only ever flash by once,
+;; right before getting cleared away.
+(fn header () -> unit
+  (out! CLEAR_SCREEN)
+  (out! DIM) (out! "=== Hangman ===") (out! RESET)
+  (out! "  (guess a letter at a time, 'quit' to leave)\n\n"))
+
+(pub fn run_hangman () -> unit
+  (var seed:i32 (as (* (now) 1000000.0) i32))
+  (var wins:i32 0)
+  (var losses:i32 0)
+  (var running:bool true)
+
+  (loop
+    (if (! running) (break) pass)
+
+    (= seed (next_seed seed))
+    (let word_idx:i32 (in_range seed 0 (- WORD_COUNT 1)))
+    (let word:string (word_bank word_idx))
+
+    (var guessed:Array[char] (array_new 26))
+    (var guess_count:i32 0)
+    (var wrong:i32 0)
+    (var playing:bool true)
+    (var won:bool false)
+
+    (loop
+      (if (! playing) (break) pass)
+
+      (header)
+      (out! (gallows wrong))
+      (out! (fmt "wrong guesses: {} / {}\n" wrong MAX_WRONG))
+      (print_blanked_word &word &guessed guess_count)
+      (print_guessed_letters &guessed guess_count)
+
+      (let line:string (prompt_line "guess a letter: "))
+
+      (if (|| (== line "quit") (== line "q"))
+        (do (= playing false) (= running false) pass)
+        (if (== (len &line) 1)
+          (do
+            (let ch:char (line 0))
+            (if (was_guessed &guessed guess_count &ch)
+              (do (out! "already guessed that one\n") (busy_wait 0.8) pass)
+              (do
+                (= (guessed guess_count) ch)
+                (= guess_count (+ guess_count 1))
+                (if (char_in_string &word &ch) pass (do (= wrong (+ wrong 1)) pass))
+                pass))
+            pass)
+          (do (out! "guess exactly one letter (or 'quit')\n") (busy_wait 0.8) pass)))
+
+      (if (&& playing (word_complete &word &guessed guess_count))
+        (do (= won true) (= playing false) pass)
+        pass)
+      (if (&& playing (>= wrong MAX_WRONG))
+        (do (= playing false) pass)
+        pass))
+
+    (if running
+      (do
+        (header)
+        (out! (gallows wrong))
+        (if won
+          (do
+            (out! GREEN) (out! (fmt "*** you got it! the word was '{}' ***\n" word)) (out! RESET)
+            (= wins (+ wins 1))
+            pass)
+          (do
+            (out! RED) (out! (fmt "*** out of guesses -- the word was '{}' ***\n" word)) (out! RESET)
+            (= losses (+ losses 1))
+            pass))
+        (out! "\n")
+        (let cont:string (prompt_line "press Enter for another round ('quit' to leave): "))
+        (if (|| (== cont "quit") (== cont "q")) (= running false) pass)
+        pass)
+      pass))
+
+  (out! (fmt "final score -- wins: {}  losses: {}\n" wins losses))
+  (out! "thanks for playing!\n"))

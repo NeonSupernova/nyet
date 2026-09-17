@@ -8,11 +8,11 @@
 ;; Expected: a / before / b / unreachable
 
 (fn early_out (skip:bool) -> unit
-  (if skip (do (out "before\n") (return ())) pass)
-  (out "unreachable\n"))
+  (if skip (do (out! "before\n") (return ())) pass)
+  (out! "unreachable\n"))
 
 (fn main () -> unit
-  (out "a\n")
+  (out! "a\n")
   (early_out true)
-  (out "b\n")
+  (out! "b\n")
   (early_out false))

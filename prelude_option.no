@@ -1,0 +1,18 @@
+;;;; prelude_option — a shared `Option[T]`, so the arcade suite's five
+;;;; games (adventure/pipe_dreams/hangman) don't each independently
+;;;; declare their own identical copy. Declared once and imported via
+;;;; `(use prelude_option)` specifically because the arcade launcher
+;;;; `(use ...)`s several of these games together into one binary, and
+;;;; `_load_program_with_deps` flattens every imported module's
+;;;; top-level decls into one shared namespace -- two independent
+;;;; `(type Option[T] ...)` declarations with the same name landing in
+;;;; that one namespace is exactly the kind of collision this file
+;;;; exists to avoid (see the generic-sum-type-collision bug class
+;;;; already found once this project's history, a different shape of
+;;;; the same "same name registered twice" risk).
+
+(module prelude_option)
+
+(pub type Option[T]
+  (Some T)
+  (None))

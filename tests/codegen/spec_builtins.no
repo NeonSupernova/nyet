@@ -2,7 +2,7 @@
 ;;
 ;;   - `(parse s)` compiled to a call to an undefined `@parse`. It now returns
 ;;     `Result[i32 string]`, built from the program's own `Result`.
-;;   - `(err "msg")` compiled to a call to an undefined `@err`.
+;;   - `(err! "msg")` compiled to a call to an undefined `@err`.
 ;;   - A slash-named macro like `log/debug` never expanded: its call head
 ;;     parses as a path.
 ;;   - `==` between a computed string -- a `fmt` result, a call returning
@@ -39,26 +39,26 @@
 (macro log/debug (expr)
   (do
     (let result expr)
-    (out (fmt "DEBUG {} = {}\n" (quote expr) result))
+    (out! (fmt "DEBUG {} = {}\n" (quote expr) result))
     result))
 
 (fn greet (name:string) -> string (+ "hi " name))
 (fn shout (msg:string) -> string (+ msg "!"))
 (fn show (val:&dyn Display) -> string (display val))
-(fn print_item (x:i32) -> unit (out (fmt "item {}\n" x)))
+(fn print_item (x:i32) -> unit (out! (fmt "item {}\n" x)))
 
 (fn main () -> unit
   (do
     (let bad (match (parse "4x2") ((Ok n) "?") ((Err e) e)))
-    (match (parse "42") ((Ok n) (out (fmt "{} {} " n bad))) ((Err _) (out "? ")))
-    (match (parse "7\n") ((Ok n) (out (fmt "{}\n" n))) ((Err _) (out "?\n")))
-    (err "this goes to stderr\n")
+    (match (parse "42") ((Ok n) (out! (fmt "{} {} " n bad))) ((Err _) (out! "? ")))
+    (match (parse "7\n") ((Ok n) (out! (fmt "{}\n" n))) ((Err _) (out! "?\n")))
+    (err! "this goes to stderr\n")
 
-    (let five (log/debug (+ 2 3)))
+    (let five (log/debug! (+ 2 3)))
     (let msg (fmt "n={}" five))
     (let handle (spawn (shout "go")))
     (let awaited (await handle))
-    (out (fmt "{} {} {} {}\n"
+    (out! (fmt "{} {} {} {}\n"
               (if (== msg "n=5") "true" "false")
               (if (== (greet "Ada") "hi Ada") "true" "false")
               (if (== (+ "a" "b" "c") "abc") "true" "false")
@@ -67,7 +67,7 @@
     (let items:Array[i32] [1 2])
     (map (fn (x:i32) -> unit (print_item x)) items)
 
-    (out (fmt "{} {}\n" (show &42) (show &"hi")))
+    (out! (fmt "{} {}\n" (show &42) (show &"hi")))
 
     (let n "an unrelated outer n")
     (let inputs:Array[string] ["x" "12"])
@@ -79,7 +79,7 @@
         (match (parse s)
           ((Ok n)  (break n))
           ((Err _) pass))))
-    (out (fmt "parsed {}\n" parsed))
+    (out! (fmt "parsed {}\n" parsed))
 
     (let w (Wrap inner:3))
-    (match w ((Wrap v) (out (fmt "wrapped {}\n" v))))))
+    (match w ((Wrap v) (out! (fmt "wrapped {}\n" v))))))

@@ -41,7 +41,7 @@ def test_generic_struct_with_all_keyword_args_monomorphizes():
         (fn main () -> unit
           (do
             (let p (make_pair 5 "hello"))
-            (out (. p first))))
+            (out! (. p first))))
     """)
     assert "%Pair__i32_string = type { i32, ptr }" in ir
 
@@ -57,7 +57,7 @@ def test_generic_struct_with_mixed_positional_and_keyword_args():
         (fn main () -> unit
           (do
             (let p (make_pair 5 "hello"))
-            (out (. p first))))
+            (out! (. p first))))
     """)
     assert "%Pair__i32_string = type { i32, ptr }" in ir
 
@@ -65,6 +65,6 @@ def test_generic_struct_with_mixed_positional_and_keyword_args():
 def test_non_generic_struct_keyword_construction_is_unaffected():
     ir = _ir_for("""
         (struct Point x:i32 y:i32)
-        (fn main () -> unit (out (. (Point x:1 y:2) x)))
+        (fn main () -> unit (out! (. (Point x:1 y:2) x)))
     """)
     assert "%Point = type { i32, i32 }" in ir

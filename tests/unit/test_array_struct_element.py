@@ -49,7 +49,7 @@ def test_struct_read_from_array_index_gets_a_field_load():
           (do
             (let pts:Array[Point] [(Point x:1 y:2)])
             (let a (pts 0))
-            (out (. a x))))
+            (out! (. a x))))
     """)
     # A real field load through the struct's own GEP index, not a
     # dropped/no-op reference.
@@ -71,7 +71,7 @@ def test_array_elem_type_annotation_also_tracks_nyet_name():
         (fn main () -> unit
           (do
             (let pts:Array[Point] [(Point x:7 y:8)])
-            (out (first &pts))))
+            (out! (first &pts))))
     """)
     assert "getelementptr inbounds %Point" in ir
 
@@ -84,7 +84,7 @@ def test_non_struct_array_element_is_unaffected():
           (do
             (let xs:Array[i32] [1 2 3])
             (let a (xs 0))
-            (out a)))
+            (out! a)))
     """)
     assert "getelementptr inbounds %" not in ir
 
@@ -100,7 +100,7 @@ def test_field_access_chained_directly_onto_array_index_reads():
         (fn main () -> unit
           (do
             (let pts:Array[Point] [(Point x:1 y:2)])
-            (out (. (pts 0) x))))
+            (out! (. (pts 0) x))))
     """)
     assert "getelementptr inbounds %Point" in ir
     assert "load i32," in ir

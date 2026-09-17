@@ -87,7 +87,7 @@ def test_const_reference_inside_loop_guard_is_not_dropped():
             (loop
               (if (== i MAX) (break) pass)
               (= i (+ i 1)))
-            (out i)))
+            (out! i)))
     """)
     # Before the fix this comparison's second operand simply vanished
     # (the guard was deleted entirely), making the loop infinite.
@@ -97,7 +97,7 @@ def test_const_reference_inside_loop_guard_is_not_dropped():
 def test_const_reference_in_arithmetic_is_not_dropped():
     ir = _ir_for("""
         (const STEP:i32 3)
-        (fn main () -> unit (out (+ 10 STEP)))
+        (fn main () -> unit (out! (+ 10 STEP)))
     """)
     assert re.search(r"add i32 10, 3\b", ir)
 
@@ -109,7 +109,7 @@ def test_const_usable_before_its_declaration_in_source_order():
     ir = _ir_for("""
         (fn get_limit () -> i32 LIMIT)
         (const LIMIT:i32 42)
-        (fn main () -> unit (out (get_limit)))
+        (fn main () -> unit (out! (get_limit)))
     """)
     assert re.search(r"ret i32 42\b", ir)
 

@@ -16,5 +16,5 @@
 (fn main () -> unit
   (do
     (let t #(7 8))
-    (out (first &t)) (out "\n")
-    (out (second &t)) (out "\n")))
+    (out! (first &t)) (out! "\n")
+    (out! (second &t)) (out! "\n")))

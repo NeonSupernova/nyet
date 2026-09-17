@@ -31,7 +31,7 @@ def test_unreturned_struct_local_is_dropped():
         (fn scratch () -> unit
           (do
             (let p (Point x:1 y:2))
-            (out (. p x))))
+            (out! (. p x))))
     """)
     assert names.get("scratch") == ["p"]
 
@@ -70,7 +70,7 @@ def test_struct_passed_by_value_to_another_call_is_not_dropped():
     alias to it at the time of the call."""
     names = _drop_names("""
         (struct Point x:i32 y:i32)
-        (fn consume (p:Point) -> unit (out (. p x)))
+        (fn consume (p:Point) -> unit (out! (. p x)))
         (fn scratch () -> unit
           (do
             (let p (Point x:1 y:2))
@@ -87,7 +87,7 @@ def test_builtin_borrow_call_does_not_block_drop():
         (fn scratch () -> unit
           (do
             (let p (Point x:1 y:2))
-            (out p)))
+            (out! p)))
     """)
     assert names.get("scratch") == ["p"]
 
@@ -95,7 +95,7 @@ def test_builtin_borrow_call_does_not_block_drop():
 def test_borrowed_struct_local_is_not_dropped():
     names = _drop_names("""
         (struct Point x:i32 y:i32)
-        (fn peek (p:&Point) -> unit (out (. p x)))
+        (fn peek (p:&Point) -> unit (out! (. p x)))
         (fn scratch () -> unit
           (do
             (let p (Point x:1 y:2))
@@ -112,7 +112,7 @@ def test_borrowed_struct_local_is_not_dropped():
 def test_params_are_never_dropped():
     names = _drop_names("""
         (struct Point x:i32 y:i32)
-        (fn scratch (p:Point) -> unit (out (. p x)))
+        (fn scratch (p:Point) -> unit (out! (. p x)))
     """)
     assert "p" not in names.get("scratch", [])
 
@@ -122,13 +122,13 @@ def test_non_struct_locals_are_not_dropped():
         (fn scratch () -> unit
           (do
             (let x:i32 1)
-            (out x)))
+            (out! x)))
     """)
     assert names.get("scratch", []) == []
 
 
 def test_function_with_no_locals_has_no_drops():
-    assert _drop_names("(fn main () -> unit (out 1))") == {}
+    assert _drop_names("(fn main () -> unit (out! 1))") == {}
 
 
 def test_struct_read_out_of_array_by_index_is_not_dropped():
@@ -146,7 +146,7 @@ def test_struct_read_out_of_array_by_index_is_not_dropped():
           (do
             (let pts:Array[Point] [(Point x:1 y:2)])
             (let a:Point (pts 0))
-            (out (. a x))))
+            (out! (. a x))))
     """)
     assert "a" not in names.get("scratch", [])
 
@@ -157,7 +157,7 @@ def test_struct_read_out_of_array_param_by_index_is_not_dropped():
         (fn scratch (pts:&Array[Point]) -> unit
           (do
             (let a:Point (pts 0))
-            (out (. a x))))
+            (out! (. a x))))
     """)
     assert "a" not in names.get("scratch", [])
 
@@ -173,6 +173,6 @@ def test_ordinary_struct_constructor_local_is_still_dropped_alongside_an_array()
           (do
             (let pts:Array[Point] [(Point x:1 y:2)])
             (let p (Point x:9 y:9))
-            (out (. p x))))
+            (out! (. p x))))
     """)
     assert names.get("scratch") == ["p"]

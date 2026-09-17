@@ -1,0 +1,22 @@
+;; Regression test: a program may declare a type whose name the
+;; IOChannel prelude also declares (`IOError`, `WriteResult`, ...).
+;; Name resolution is last-one-wins, so the program's own declaration
+;; was already the one that resolved -- but codegen walks every
+;; declaration in the list and emitted the prelude's too, so clang
+;; rejected the module outright with "redefinition of type %IOError".
+;; main.no declares its own `IOError`, as any program is free to.
+;;
+;; Expected:
+;;   not found
+;;   denied
+
+(type IOError (NotFound) (PermissionDenied))
+
+(fn describe (e:IOError) -> string
+  (match e
+    ((NotFound) "not found")
+    ((PermissionDenied) "denied")))
+
+(fn main () -> unit
+  (out! (describe (NotFound))) (out! "\n")
+  (out! (describe (PermissionDenied))) (out! "\n"))

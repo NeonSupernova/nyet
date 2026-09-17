@@ -21,7 +21,7 @@
     (fmt "circle r={}" (. self r))))
 
 (fn log_value (val:&dyn Display) -> unit
-  (out (display val)) (out "\n"))
+  (out! (display val)) (out! "\n"))
 
 (fn main () -> unit
   (let origin (Point2 x:3 y:4))

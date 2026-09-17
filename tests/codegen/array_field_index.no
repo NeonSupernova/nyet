@@ -16,7 +16,7 @@
   (do
     (var b (Box data:(array_new 3)))
     (= ((. b data) 0) 42)
-    (out (fmt "direct field write+read: {}\n" ((. b data) 0)))
+    (out! (fmt "direct field write+read: {}\n" ((. b data) 0)))
     (grow_test)))
 
 (struct Vector len:i32 cap:i32 data:Array[i32])
@@ -48,11 +48,11 @@
     (vec_push &!v 20)
     (vec_push &!v 30)
     (vec_push &!v 40)
-    (out "full grow-and-push cycle: ")
+    (out! "full grow-and-push cycle: ")
     (var i:i32 0)
     (loop
       (if (>= i (. v len)) (break pass) pass)
-      (out ((. v data) i))
-      (out " ")
+      (out! ((. v data) i))
+      (out! " ")
       (= i (+ i 1)))
-    (out (fmt "(len={} cap={})\n" (. v len) (. v cap)))))
+    (out! (fmt "(len={} cap={})\n" (. v len) (. v cap)))))

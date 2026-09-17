@@ -1,0 +1,129 @@
+;;;; pipe_dreams_lib -- Pipe Dreams' game logic, extracted out of
+;;;; pipe_dreams/main.no into a repo-root module so the arcade
+;;;; launcher can `(use pipe_dreams_lib)` and call `run_pipe_dreams`
+;;;; directly, alongside the other games it also links in.
+;;;; pipe_dreams/main.no keeps working standalone as a two-line
+;;;; wrapper around `run_pipe_dreams`.
+;;;;
+;;;; A number-transformation puzzle game, built to show off Nyet's
+;;;; `|>` pipe operator: `(|> val f g h)` desugars purely at parse
+;;;; time to `(h (g (f val)))` (see parser.py's `_parse_pipe`) --
+;;;; ordinary S-expression syntax, no runtime support needed. Every
+;;;; menu option below IS a literal two-stage `|>` pipeline over a
+;;;; small toolbox of one-argument functions (inc/dec/dbl/half/sq/neg):
+;;;; `apply_pipeline`'s body is the actual game rules, not a
+;;;; description of them.
+;;;;
+;;;; Turn the starting number into the target using as few pipelines
+;;;; as you can.
+;;;;
+;;;; No random-number primitive exists in Nyet yet, so puzzle
+;;;; start/target values come from a hand-rolled linear congruential
+;;;; generator (the classic glibc constants) -- itself a small, honest
+;;;; demonstration that Nyet's `i32` arithmetic has the ordinary
+;;;; twos-complement wraparound a PRNG like this depends on (an LCG's
+;;;; multiply is *meant* to overflow).
+
+(module pipe_dreams_lib)
+
+(use prelude_option)
+(use prelude_rng)
+(use std/ansi)
+(use std/io)
+
+(fn inc  (x:i32) -> i32 (+ x 1))
+(fn dec  (x:i32) -> i32 (- x 1))
+(fn dbl  (x:i32) -> i32 (* x 2))
+(fn half (x:i32) -> i32 (/ x 2))
+(fn sq   (x:i32) -> i32 (* x x))
+(fn neg  (x:i32) -> i32 (- 0 x))
+
+;; This IS the game's rule table -- each menu entry is a real
+;; two-stage `|>` pipeline, not a simulation of one.
+(fn apply_pipeline (cmd:string n:i32) -> Option[i32]
+  (match cmd
+    ("1" (Some (|> n inc dbl)))
+    ("2" (Some (|> n dbl dec)))
+    ("3" (Some (|> n sq half)))
+    ("4" (Some (|> n neg inc)))
+    ("5" (Some (|> n dbl dbl)))
+    ("6" (Some (|> n dec sq)))
+    (other (None))))
+
+;; The `|>` in each line is printed in its own color -- the whole
+;; point of this game is showing off the pipe operator, so it should
+;; visibly stand out rather than blend into the rest of the line.
+(fn pipe_dreams_print_menu () -> unit
+  (out! (fmt "  {}{}1{}) n {}|>{} inc {}|>{} dbl    (add one, then double)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out! (fmt "  {}{}2{}) n {}|>{} dbl {}|>{} dec    (double, then subtract one)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out! (fmt "  {}{}3{}) n {}|>{} sq  {}|>{} half   (square, then halve)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out! (fmt "  {}{}4{}) n {}|>{} neg {}|>{} inc    (negate, then add one)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out! (fmt "  {}{}5{}) n {}|>{} dbl {}|>{} dbl    (double, twice)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out! (fmt "  {}{}6{}) n {}|>{} dec {}|>{} sq     (subtract one, then square)\n" BOLD YELLOW RESET BRIGHT_CYAN RESET BRIGHT_CYAN RESET))
+  (out! DIM) (out! "  new = reroll this puzzle    q = quit\n") (out! RESET))
+
+(pub fn run_pipe_dreams () -> unit
+  (var seed:i32 (as (* (now) 1000000.0) i32))
+  (= seed (next_seed seed))
+  (var n:i32 (in_range seed 1 20))
+  (= seed (next_seed seed))
+  (var target:i32 (in_range seed (- 0 20) 40))
+
+  (var moves:i32 0)
+  (var solved:i32 0)
+  (var running:bool true)
+
+  (loop
+    (if (! running) (break) pass)
+
+    (out! CLEAR_SCREEN)
+    (out! (fmt "{}{}=== Pipe Dreams ==={}\n" BOLD BRIGHT_MAGENTA RESET))
+    (out! (fmt "Turn the starting number into the target using {}|>{} pipelines.\n\n" BRIGHT_CYAN RESET))
+    (out! (fmt "{}puzzle #{}   moves so far: {}{}\n" DIM (+ solved 1) moves RESET))
+    (out! (fmt "current: {}{}{}    target: {}{}{}\n\n" BOLD n RESET BOLD target RESET))
+    (pipe_dreams_print_menu)
+    (out! "> ")
+    (let cmd:string (in))
+
+    (match cmd
+      ("q"    (do (= running false) pass))
+      ("quit" (do (= running false) pass))
+
+      ("new"
+        (do
+          (= seed (next_seed seed))
+          (= n (in_range seed 1 20))
+          (= seed (next_seed seed))
+          (= target (in_range seed (- 0 20) 40))
+          (= moves 0)
+          (out! "-- new puzzle --\n")
+          (busy_wait 0.5)
+          pass))
+
+      (other
+        (do
+          (let result:Option[i32] (apply_pipeline other n))
+          (match result
+            ((None)
+              (do (out! (fmt "{}unknown command: '{}'{}\n" RED other RESET)) (busy_wait 0.8) pass))
+            ((Some next)
+              (do
+                (= n next)
+                (= moves (+ moves 1))
+                (if (== n target)
+                  (do
+                    (out! (fmt "{}{}*** solved in {} move(s)! ***{}\n" BOLD BRIGHT_GREEN moves RESET))
+                    (= solved (+ solved 1))
+                    (= seed (next_seed seed))
+                    (= n (in_range seed 1 20))
+                    (= seed (next_seed seed))
+                    (= target (in_range seed (- 0 20) 40))
+                    (= moves 0)
+                    (busy_wait 1.2)
+                    pass)
+                  (do (out! (fmt "{}->{} {}\n" BRIGHT_CYAN RESET n)) (busy_wait 0.6) pass))
+                pass)))
+          pass))))
+
+  (out! (fmt "{}puzzles solved: {}{}\n" DIM solved RESET))
+  (out! (fmt "{}thanks for playing!{}\n" BRIGHT_MAGENTA RESET)))

@@ -42,11 +42,11 @@
 (fn main () -> unit
   (do
     (let id (UserId 7))
-    (out (fmt "{} {}\n" (move_to (Meters (wait 3.5))) (id 0)))
+    (out! (fmt "{} {}\n" (move_to (Meters (wait 3.5))) (id 0)))
     (let positive:Check (fn (x:i32) -> bool (> x 0)))
-    (if (positive 5) (out "true\n") (out "false\n"))
+    (if (positive 5) (out! "true\n") (out! "false\n"))
     (let palette (Palette colors:["red" "green"]))
-    (out (palette 1)) (out "\n")
+    (out! (palette 1)) (out! "\n")
     (let e:f32 3.14)
     (let u:unit ())
-    (out (fmt "{} done\n" e))))
+    (out! (fmt "{} done\n" e))))

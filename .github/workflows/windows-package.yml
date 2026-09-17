@@ -19,6 +19,11 @@ jobs:
 
       - name: Build the Windows bundle
         shell: pwsh
+        env:
+          # Raises fetch_clang.ps1's GitHub API calls from 60/hr
+          # (unauthenticated, shared per-IP -- easy to exhaust on a
+          # busy shared runner IP) to 5000/hr.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: packaging\build_windows.ps1
 
       - name: Smoke test -- bundled nyet.exe against its bundled clang
@@ -26,30 +31,177 @@ jobs:
         run: |
           $bundle = "packaging\dist\bundle"
           $exe = "$bundle\nyet.exe"
+          $failures = New-Object System.Collections.Generic.List[string]
+
+          # Deliberately NOT wrapped in a reusable function/scriptblock:
+          # an earlier version of this script called `& $exe ...` from
+          # inside a `[scriptblock]$Body` parameter invoked via `& $Body`
+          # in a helper function, and EVERY SUCH CALL silently lost its
+          # `-o` value (nyet received the input file's own path as the
+          # output name instead) while calls written as plain inline
+          # code right here in the step always passed their arguments
+          # through correctly. Never fully root-caused (no Windows
+          # machine to debug interactively) but the fix is simple: keep
+          # every `& $exe ...` invocation as plain top-level code, one
+          # try/catch per check, no indirection.
 
           Write-Host "--- run demo/01_hello.no ---"
-          $out = & $exe run demo\01_hello.no 2>&1 | Out-String
-          Write-Host $out
-          if ($LASTEXITCODE -ne 0) { throw "01_hello.no failed to build/run" }
-          if ($out -notmatch "hello from Nyet!") { throw "unexpected output from 01_hello.no" }
+          try {
+              $out = & $exe run demo\01_hello.no 2>&1 | Out-String
+              Write-Host $out
+              if ($LASTEXITCODE -ne 0) { throw "failed to build/run" }
+              if ($out -notmatch "hello from Nyet!") { throw "unexpected output" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("01_hello.no") }
 
           Write-Host "--- check demo/03_ownership.no (should pass) ---"
-          & $exe check demo\03_ownership.no
-          if ($LASTEXITCODE -ne 0) { throw "03_ownership.no should have passed check" }
+          try {
+              & $exe check demo\03_ownership.no
+              if ($LASTEXITCODE -ne 0) { throw "should have passed check" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("03_ownership.no") }
 
           Write-Host "--- check demo/03_ownership_bad.no (should fail) ---"
-          & $exe check demo\03_ownership_bad.no
-          if ($LASTEXITCODE -eq 0) { throw "03_ownership_bad.no should have failed check" }
+          try {
+              & $exe check demo\03_ownership_bad.no
+              if ($LASTEXITCODE -eq 0) { throw "should have failed check" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("03_ownership_bad.no") }
 
           Write-Host "--- bare shorthand: nyet -o smoketest.exe demo/05_closures.no ---"
-          & $exe -o smoketest.exe demo\05_closures.no
-          if ($LASTEXITCODE -ne 0) { throw "bare -o shorthand build failed" }
-          if (-not (Test-Path smoketest.exe)) { throw "smoketest.exe wasn't produced" }
-          $out2 = & .\smoketest.exe 2>&1 | Out-String
-          Write-Host $out2
-          if ($LASTEXITCODE -ne 0) { throw "smoketest.exe failed to run" }
-          if ($out2 -notmatch "product = 120") { throw "unexpected output from smoketest.exe" }
+          try {
+              & $exe -o smoketest.exe demo\05_closures.no
+              if ($LASTEXITCODE -ne 0) { throw "bare -o shorthand build failed" }
+              if (-not (Test-Path smoketest.exe)) { throw "smoketest.exe wasn't produced" }
+              $out2 = & .\smoketest.exe 2>&1 | Out-String
+              Write-Host $out2
+              if ($LASTEXITCODE -ne 0) { throw "smoketest.exe failed to run" }
+              if ($out2 -notmatch "product = 120") { throw "unexpected output" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("05_closures.no") }
 
+          # Explicit, distinct -o per file: `run` defaults to a bare
+          # "output"/"output.exe" with no -o given, and the very first
+          # step above (`run demo\01_hello.no`) already produced one of
+          # those in this same working directory. Written out longhand
+          # (not a foreach over a name list) for the same reason as the
+          # note above -- keep every invocation as plain, direct,
+          # top-level code.
+          #
+          # Source path: demo\features\ only exists *inside the bundle*
+          # ($bundle\demo\features\, populated by build_windows.ps1 from
+          # tests\codegen\*.no) -- it's never a real repo-root directory
+          # (demo/*.no is gitignore-excepted, but not demo/features/*.no).
+          # An earlier version of this step pointed at the bare
+          # `demo\features\...` path, which doesn't exist here, and
+          # `nyet build` on a missing entry file used to silently compile
+          # an *empty* program (no diagnostics, no `main`) instead of
+          # erroring -- so it "succeeded" all the way to a baffling
+          # `undefined reference to WinMain` link error (no `main` symbol
+          # for the linker's console-subsystem CRT object, so it fell
+          # back looking for a GUI-subsystem entry point instead). Fixed
+          # at the source in pynyet/driver.py (missing entry file is now
+          # a hard, immediate error) as well as here.
+
+          Write-Host "--- demo/features/ansi_lib.no ---"
+          try {
+              & $exe -o ansi_lib.exe $bundle\demo\features\ansi_lib.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\ansi_lib.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("ansi_lib.no") }
+
+          Write-Host "--- demo/features/char_printing.no ---"
+          try {
+              & $exe -o char_printing.exe $bundle\demo\features\char_printing.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\char_printing.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("char_printing.no") }
+
+          Write-Host "--- demo/features/file_read_lines.no ---"
+          try {
+              & $exe -o file_read_lines.exe $bundle\demo\features\file_read_lines.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\file_read_lines.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("file_read_lines.no") }
+
+          Write-Host "--- demo/features/string_len.no ---"
+          try {
+              & $exe -o string_len.exe $bundle\demo\features\string_len.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $fout = & .\string_len.exe 2>&1 | Out-String
+              Write-Host $fout
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("string_len.no") }
+
+          Write-Host "--- minibase, standalone (exercises (use minibase_repl) -> (use minibase_core)) ---"
+          try {
+              & $exe -o minibase.exe minibase\main.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & .\minibase.exe 2>&1 | Out-String
+              Write-Host $mbOut
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+              if ($mbOut -notmatch "inserted #1: Alice") { throw "unexpected output" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("minibase") }
+
+          Write-Host "--- the arcade launcher (use)s all five games into one binary ---"
+          try {
+              & $exe -o arcade.exe arcade\main.no
+              if ($LASTEXITCODE -ne 0) { throw "failed to build" }
+              # Drive it through minibase, game of life (reseed), pipe
+              # dreams (a move), and hangman (a repeated guess), then
+              # quit each game and the arcade itself -- proves the
+              # bundled repo-root _lib/_repl/prelude_*.no data files
+              # actually resolve at runtime from a frozen exe, not just
+              # that this all compiles. Also, deliberately, exercises
+              # every `busy_wait` call site in the suite (reseeding,
+              # submitting a pipe-dreams move, a repeated hangman
+              # guess) under a wall-clock budget -- `busy_wait` spins on
+              # `(now)`, which is backed by libc `clock()`; `(now)`
+              # divides raw clock() ticks by a hardcoded
+              # 1000000.0-per-second assumption that's only true on
+              # POSIX (glibc/macOS libc) and WRONG on the Windows CRT
+              # (1000 ticks/sec there), so a build with that bug fixed
+              # incorrectly would make every `busy_wait N` call spin for
+              # roughly `N * 1000` real seconds instead of `N` -- e.g. a
+              # combined ~2s of intended pauses here would instead take
+              # over half an hour. Confirmed via this exact codepath in
+              # CI history: the smoke test step took ~10 SECONDS before
+              # busy_wait was used anywhere in the suite, and ~10
+              # MINUTES once game_of_life/pipe_dreams/hangman started
+              # using it (one call actually spinning the intended 0.6s
+              # for ~600s) -- a real, previously silent regression this
+              # budget exists to catch immediately instead.
+              $arcSw = [System.Diagnostics.Stopwatch]::StartNew()
+              $arcOut = "1`nseed`nlist`nquit`n`n3`nr`nq`n`n4`n1`nq`n`n5`nz`nz`nquit`n`nq`n" | & .\arcade.exe 2>&1 | Out-String
+              $arcSw.Stop()
+              Write-Host $arcOut
+              Write-Host "arcade playthrough wall-clock time: $($arcSw.Elapsed)"
+              if ($LASTEXITCODE -ne 0) { throw "failed to run" }
+              if ($arcOut -notmatch "N Y E T   A R C A D E") { throw "arcade banner missing" }
+              if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) wrong" }
+              if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) wrong" }
+              if ($arcOut -notmatch "already guessed that one") { throw "hangman (via arcade) wrong" }
+              # ~2s of real busy_wait is intended; 60s leaves generous
+              # headroom for a slow runner while staying two full orders
+              # of magnitude below what the CLOCKS_PER_SEC bug produces.
+              if ($arcSw.Elapsed.TotalSeconds -gt 60) { throw "took $($arcSw.Elapsed.TotalSeconds)s -- busy_wait/(now) is almost certainly spinning ~1000x too long again" }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("arcade") }
+
+          Write-Host "--- bundle\lib\ has the arcade suite's browsable source ---"
+          try {
+              foreach ($name in @("minibase_core", "minibase_repl", "adventure_lib", "game_of_life_lib", "pipe_dreams_lib", "hangman_lib", "prelude_option", "prelude_rng")) {
+                  $libFile = "$bundle\lib\$name.no"
+                  if (-not (Test-Path $libFile)) { throw "$libFile missing from bundle" }
+              }
+          } catch { Write-Host "[FAIL] $_"; $failures.Add("bundle-lib") }
+
+          Write-Host ""
+          if ($failures.Count -gt 0) {
+              Write-Host "FAILED: $($failures -join ', ')"
+              throw "$($failures.Count) smoke test(s) failed"
+          }
           Write-Host "All smoke tests passed."
 
       - uses: actions/upload-artifact@v4

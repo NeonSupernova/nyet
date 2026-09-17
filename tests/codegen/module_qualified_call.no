@@ -23,7 +23,7 @@
   (do
     (let xs:Array[i32] [1 2 5 1])
     (let rest:Array[i32] (std/collections/drop_while (fn (x:i32) -> bool (< x 3)) xs))
-    (out (fmt "{} {}\n" (len rest) (rest 0)))
-    (out (fmt "{}\n" (std/math/sqrt 16.0)))
-    (out (fmt "{}\n" (sqrt 2)))
-    (out (fmt "{}\n" (hypot 3.0 4.0)))))
+    (out! (fmt "{} {}\n" (len rest) (rest 0)))
+    (out! (fmt "{}\n" (std/math/sqrt 16.0)))
+    (out! (fmt "{}\n" (sqrt 2)))
+    (out! (fmt "{}\n" (hypot 3.0 4.0)))))

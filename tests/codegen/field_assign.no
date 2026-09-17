@@ -7,6 +7,6 @@
 
 (fn main () -> unit
   (var p (Point x:1 y:2))
-  (out "before: ") (out (. p x)) (out "\n")
+  (out! "before: ") (out! (. p x)) (out! "\n")
   (= (. p x) 9)
-  (out "after: ") (out (. p x)) (out "\n"))
+  (out! "after: ") (out! (. p x)) (out! "\n"))

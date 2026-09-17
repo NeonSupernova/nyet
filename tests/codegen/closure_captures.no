@@ -44,34 +44,34 @@
     (inc_count)
     (inc_count)
     (let read_count (fn () -> i32 counter))
-    (out (fmt "read {}\n" (read_count)))
+    (out! (fmt "read {}\n" (read_count)))
 
     (let take (move fn () -> i32 counter))
     (= counter 100)
-    (out (fmt "moved {} now {} borrowed {}\n" (take) counter (read_count)))
+    (out! (fmt "moved {} now {} borrowed {}\n" (take) counter (read_count)))
 
     (let add5 (make_adder 5))
     (let add10 (make_adder 10))
-    (out (fmt "adders {} {}\n" (add5 3) (add10 3)))
+    (out! (fmt "adders {} {}\n" (add5 3) (add10 3)))
 
-    (out (fmt "apply named {} lambda {} closure {}\n"
+    (out! (fmt "apply named {} lambda {} closure {}\n"
               (apply inc 1) (apply (fn (x:i32) -> i32 (* x 3)) 2) (apply add5 1)))
 
     (var runs:i32 0)
     (run_twice (fn! () -> unit (= runs (+ runs 1))))
-    (out (fmt "runs {} once {}\n" runs (run_once (fn () -> i32 7))))
+    (out! (fmt "runs {} once {}\n" runs (run_once (fn () -> i32 7))))
 
-    (out (fmt "above {}\n" (count_above [1 5 9 12] 4)))
+    (out! (fmt "above {}\n" (count_above [1 5 9 12] 4)))
 
     (let base 1000)
     (let outer (fn (x:i32) -> i32
       (do
         (let inner (fn (y:i32) -> i32 (+ y base)))
         (inner x))))
-    (out (fmt "nested {}\n" (outer 7)))
+    (out! (fmt "nested {}\n" (outer 7)))
 
     (let nums:Array[i32] [1 2 3 4 5])
-    (out (fmt "pipeline {}\n"
+    (out! (fmt "pipeline {}\n"
               (|> nums
                 (filter (fn (x) (> x 2)))
                 (map    (fn (x) (* x x)))

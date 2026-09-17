@@ -34,20 +34,20 @@
 (fn main () -> unit
   (do
     (let a (make_tail 3))
-    (out (fmt "tail-return: {}\n" (len a)))
+    (out! (fmt "tail-return: {}\n" (len a)))
 
     (let b (make_explicit 4))
-    (out (fmt "explicit return: {}\n" (len b)))
+    (out! (fmt "explicit return: {}\n" (len b)))
 
     (let c (make_do 4))
-    (out (fmt "do-tail: {}\n" (len c)))
+    (out! (fmt "do-tail: {}\n" (len c)))
 
     (var v:Array[i32] (array_new 2))
-    (out (fmt "var reassignment: {} " (len v)))
+    (out! (fmt "var reassignment: {} " (len v)))
     (= v (array_new 10))
-    (out (fmt "then {}\n" (len v)))
+    (out! (fmt "then {}\n" (len v)))
 
     (let vec (Vector data:(array_new 5)))
-    (out (fmt "struct field init: {}\n" (len (. vec data))))
+    (out! (fmt "struct field init: {}\n" (len (. vec data))))
 
-    (out (fmt "function argument: {}\n" (use_arr (array_new 6))))))
+    (out! (fmt "function argument: {}\n" (use_arr (array_new 6))))))

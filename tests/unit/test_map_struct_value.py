@@ -51,7 +51,7 @@ def test_struct_read_from_map_lookup_gets_a_field_load():
           (do
             (var m:Map[string Point] {"origin" (Point x:0 y:0)})
             (let a (m "origin"))
-            (out (. a x))))
+            (out! (. a x))))
     """)
     assert "getelementptr inbounds %Point" in ir
     assert "load i32," in ir
@@ -72,7 +72,7 @@ def test_map_param_is_registered_as_a_map_at_all():
         (fn main () -> unit
           (do
             (var m:Map[string i32] {"k" 9})
-            (out (first &m))))
+            (out! (first &m))))
     """)
     first_fn = ir[ir.index("define i32 @first") : ir.index("\n}\n", ir.index("define i32 @first"))]
     assert "call i64 @nyet_map_get(" in first_fn
@@ -92,7 +92,7 @@ def test_map_val_type_annotation_also_tracks_nyet_name():
         (fn main () -> unit
           (do
             (var m:Map[string Point] {"k" (Point x:9 y:9)})
-            (out (first &m))))
+            (out! (first &m))))
     """)
     first_fn = ir[ir.index("define i32 @first") : ir.index("\n}\n", ir.index("define i32 @first"))]
     assert "call i64 @nyet_map_get(" in first_fn
@@ -106,6 +106,6 @@ def test_non_struct_map_value_is_unaffected():
           (do
             (var m:Map[string i32] {"a" 1})
             (let a (m "a"))
-            (out a)))
+            (out! a)))
     """)
     assert "getelementptr inbounds %" not in ir

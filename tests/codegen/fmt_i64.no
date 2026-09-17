@@ -11,6 +11,6 @@
 
 (fn main () -> unit
   (let big:i64 199999990000000)
-  (out (fmt "{}\n" big))
+  (out! (fmt "{}\n" big))
   (let small:i32 42)
-  (out (fmt "small={}\n" small)))
+  (out! (fmt "small={}\n" small)))

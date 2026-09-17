@@ -10,10 +10,10 @@
     (var i:i32 0)
     (loop
       (if (>= i (len arr)) (break pass) pass)
-      (out (arr i))
-      (out " ")
+      (out! (arr i))
+      (out! " ")
       (= i (+ i 1)))
-    (out "\n")))
+    (out! "\n")))
 
 (fn main () -> unit
   (do

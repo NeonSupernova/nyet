@@ -11,6 +11,8 @@ var, if, do, arithmetic, comparisons).
 from __future__ import annotations
 
 import struct as _struct
+import sys as _sys
+from collections.abc import Callable
 
 from pynyet.ast import nodes as N
 from pynyet.sema.borrow import compute_drop_names
@@ -53,6 +55,7 @@ class Emitter:
         self._fmt_f64: str | None = None
         self._fmt_u32: str | None = None
         self._fmt_u64: str | None = None
+        self._fmt_char: str | None = None
         self._tmp = 0
         self._label = 0
         self._env: dict[str, tuple[str, str]] = {}  # name → (llvm_ptr, llvm_type)
@@ -550,6 +553,8 @@ class Emitter:
             else:
                 top_level.append(node)
 
+        self._register_builtin_channel_structs()
+
         # Pre-register every concrete function's signature so call sites
         # in bodies can reference fns regardless of declaration order
         # (matters for v0.6 lifted lambdas appended after `main`).
@@ -626,6 +631,53 @@ class Emitter:
         self._struct_field_array_elem[node.name] = field_array_elem
         llvm_fields = ", ".join(ty for _, ty in fields)
         self._struct_type_lines.append(f"%{node.name} = type {{ {llvm_fields} }}")
+
+    def _register_builtin_channel_structs(self) -> None:
+        """`FileIO` is a builtin struct implementing `IOChannel` (see the
+        design plan) with no real `N.StructDecl` in Nyet source, so it's
+        registered here directly rather than via `_register_struct`.
+        `write`/`read`/`close` are hand-rolled emitters (below) that
+        `_emit_call` dispatches to directly by name+receiver-type, ahead
+        of the generic `_method_impls` inherent-method-dispatch path —
+        registering them in `_method_impls` too keeps `(write &!f ...)`
+        callable through the ordinary generic path as well (used when
+        `f`'s static type can only be recovered that way, e.g. via
+        `_env_struct_name`), pointing at the same sentinel names
+        `_emit_call` special-cases; `_emit_user_call` is never actually
+        reached for them.
+
+        `StdIO` (the `out`/`in`/`err` builtin channel values) has no
+        registration here at all — per the design plan, those three are
+        resolved by static AST identity in `_emit_io`, never materialized
+        as a real runtime value, so no LLVM struct type is needed for
+        them in this pass.
+        """
+        self._structs["FileIO"] = [("handle", "ptr"), ("mode", "ptr"), ("closed", "i1")]
+        self._struct_string_fields["FileIO"] = set()
+        self._struct_field_nyet["FileIO"] = {"mode": "FileMode"}
+        self._struct_type_lines.append("%FileIO = type { ptr, ptr, i1 }")
+        self._method_impls[("FileIO", "write")] = "__builtin_fileio_write"
+        self._method_impls[("FileIO", "read")] = "__builtin_fileio_read"
+        self._method_impls[("FileIO", "close")] = "__builtin_fileio_close"
+
+        # `_infer_nyet_type_name`'s generic method-call case AND
+        # `_sum_name_of` (used by `match`/`?` to find a call's concrete
+        # sum type) both need the callee registered in
+        # `_fn_ret_nyet_names` — the former via the mangled sentinel
+        # name, the latter via the *bare* call name only (no
+        # receiver-type dispatch at all there), so both are registered.
+        # Same flat-single-slot caveat as typeck's `self.env`
+        # registration: a user channel whose own `read` returns a
+        # *different* result type would collide here (whichever
+        # registers last wins) — harmless in practice since every real
+        # IOChannel implementer shares the trait's exact signature shape.
+        for sentinel, bare, sum_name in (
+            ("__builtin_fileio_write", "write", "WriteResult"),
+            ("__builtin_fileio_read", "read", "ReadResult"),
+            ("__builtin_fileio_close", "close", "CloseResult"),
+        ):
+            self._fn_ret_nyet_names[sentinel] = sum_name
+            self._fn_ret_nyet_names[bare] = sum_name
 
     def _register_sum_type(self, node: N.TypeDecl) -> None:
         """Register a sum type.  LLVM layout: { i32 tag, payload... }.
@@ -1154,6 +1206,11 @@ class Emitter:
         if self._fmt_u32 is None:
             self._fmt_u32 = self._get_format_string("%u", "u32")
         return self._fmt_u32
+
+    def _get_fmt_char(self) -> str:
+        if self._fmt_char is None:
+            self._fmt_char = self._get_format_string("%c", "char")
+        return self._fmt_char
 
     def _get_fmt_u64(self) -> str:
         if self._fmt_u64 is None:
@@ -2176,8 +2233,16 @@ class Emitter:
             if op in ("file_open", "file_read_all"):
                 return "ptr"
             if op == "in":
-                if node.args and isinstance(node.args[0], N.Ident):
+                if (
+                    node.args
+                    and isinstance(node.args[0], N.Ident)
+                    and node.args[0].name in self._IN_TYPE_NAMES
+                ):
                     return self._llvm_type_from_name(node.args[0].name)
+                # `(in)` bare or `(in channel)` explicit-channel read —
+                # both yield a `string` (heap ptr), never a primitive.
+                return "ptr"
+            if op == "io" and len(node.args) == 1:
                 return "ptr"
             if op in self._structs or op in self._variant_ctors:
                 return "ptr"
@@ -2494,15 +2559,20 @@ class Emitter:
             # _emit_cmp, which also handle the variadic forms.)
             if node.args and name.isidentifier() and name not in self._fn_sigs:
                 receiver_method = self._receiver_method(node.args[0], name)
-                if receiver_method is not None:
+                # `__builtin_*` targets are the sentinels
+                # `_register_builtin_channel_structs` registers so the builtin
+                # channels answer to inherent-method dispatch too. They have no
+                # real emitted function behind them, so they must fall through
+                # to the `write`/`read`/`close` builtin cases below, which emit
+                # the operation inline.
+                if receiver_method is not None and not receiver_method.startswith("__builtin_"):
                     return self._emit_user_call(receiver_method, node.args)
             # Builtins
-            if name == "out":
-                return self._emit_out(node.args)
-            if name == "err":
-                # `(err "msg")` -- main.no's builtin stderr channel. It used to
-                # have no codegen and compiled to a call to an undefined `@err`.
-                return self._emit_out(node.args, fd=2)
+            # `out` is deliberately absent here: the `out!`/`err!` prelude
+            # macros expand to `(io out ...)`/`(io err ...)` before codegen
+            # ever runs, so bare `out` is never a call head at this point.
+            if name == "io":
+                return self._emit_io(node.args)
             if name == "in":
                 return self._emit_in(node.args)
             if name == "fmt":
@@ -2517,10 +2587,31 @@ class Emitter:
                 return self._emit_parse(node.args[0])
             if name == "len" and len(node.args) == 1:
                 return self._emit_array_len(node.args[0])
+            if name == "FileIO":
+                return self._emit_fileio_open(node.args)
+            # write/read/close on a FileIO receiver are hand-rolled
+            # builtins (see `_register_builtin_channel_structs`), checked
+            # by receiver type ahead of the generic inherent-method-
+            # dispatch path below (which handles the same names for any
+            # user-defined IOChannel implementer via real `_method_impls`
+            # entries backed by an actual mangled function).
+            if name in ("write", "read", "close") and node.args:
+                probe = self._unwrap_borrow(node.args[0])
+                sn = self._infer_nyet_type_name(probe)
+                if sn is None and isinstance(probe, N.Ident):
+                    sn = self._env_struct_name.get(probe.name)
+                if sn == "FileIO":
+                    if name == "write":
+                        return self._emit_fileio_write(node.args)
+                    if name == "read":
+                        return self._emit_fileio_read(node.args)
+                    return self._emit_fileio_close(node.args)
             if name == "file_open":
                 return self._emit_file_open(node.args)
             if name == "file_read_all":
                 return self._emit_file_read_all(node.args)
+            if name == "file_read_lines":
+                return self._emit_file_read_lines(node.args)
             if name == "file_write":
                 return self._emit_file_write(node.args)
             if name == "file_close":
@@ -3020,22 +3111,59 @@ class Emitter:
             return
 
     # ------------------------------------------------------------------
-    # out
+    # out / err — the StdIO write path, shared by `io`'s stdout/stderr
+    # fast path (see `_emit_io`) and `_emit_panic`.
     # ------------------------------------------------------------------
 
-    def _emit_out(self, args: list[N.Expr], fd: int | None = None) -> str | None:
-        """Print each argument to stdout -- or to file descriptor `fd`, which
-        `err` uses for stderr."""
+    def _emit_printf_call(self, file_ptr: str | None, fmt: str, arg_ty: str, val: str) -> None:
+        """Emit one `printf`/`fprintf` call. `file_ptr` is None for stdout
+        (plain `printf`) or a `FILE*` value for `fprintf` (stderr)."""
+        tmp = self._fresh_tmp()
+        if file_ptr is None:
+            self._declare_printf()
+            self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, {arg_ty} {val})")
+        else:
+            self._declare_extern("declare i32 @fprintf(ptr, ptr, ...)")
+            self._emit_line(
+                f"{tmp} = call i32 (ptr, ptr, ...) @fprintf("
+                f"ptr {file_ptr}, ptr {fmt}, {arg_ty} {val})"
+            )
+
+    def _emit_stderr_handle(self) -> str:
+        """Cached `FILE*` for fd 2 (stderr), opened once via `fdopen` —
+        mirrors `_emit_in`'s cached stdin handle rather than referencing
+        the libc `stderr`/`__stderrp` global directly, whose exact symbol
+        differs across glibc and macOS libc."""
+        self._declare_extern("declare ptr @fdopen(i32, ptr)")
+        self._declare_extern("@__nyet_stderr = internal global ptr null")
+        cached = self._fresh_tmp()
+        self._emit_line(f"{cached} = load ptr, ptr @__nyet_stderr")
+        need_open = self._fresh_tmp()
+        self._emit_line(f"{need_open} = icmp eq ptr {cached}, null")
+        open_label = self._fresh_label("err_open")
+        have_label = self._fresh_label("err_have")
+        self._emit_line(f"br i1 {need_open}, label %{open_label}, label %{have_label}")
+
+        self._emit_label(open_label)
+        mode_name = self._get_format_string("w", "w_mode")
+        opened = self._fresh_tmp()
+        self._emit_line(f"{opened} = call ptr @fdopen(i32 2, ptr {mode_name})")
+        self._emit_line(f"store ptr {opened}, ptr @__nyet_stderr")
+        self._emit_line(f"br label %{have_label}")
+
+        self._emit_label(have_label)
+        handle = self._fresh_tmp()
+        self._emit_line(f"{handle} = load ptr, ptr @__nyet_stderr")
+        return handle
+
+    def _emit_out(self, args: list[N.Expr], file_ptr: str | None = None) -> str | None:
         for arg in args:
             sn = self._infer_nyet_type_name(self._unwrap_borrow(arg))
             if sn is not None and sn in self._structs and (sn, "display") in self._method_impls:
                 mangled = self._method_impls[(sn, "display")]
                 val = self._emit_user_call(mangled, [arg])
                 if val is not None:
-                    self._declare_printf()
-                    fmt = self._get_fmt_str()
-                    tmp = self._fresh_tmp()
-                    self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},ptr {val})")
+                    self._emit_printf_call(file_ptr, self._get_fmt_str(), "ptr", val)
                 continue
             val = self._emit_expr(arg)
             if val is None:
@@ -3046,50 +3174,40 @@ class Emitter:
                     f"codegen: an `out` argument ({arg.span}) produced no value"
                 )
             ty = self._infer_llvm_type(arg)
-            self._declare_printf()
             if ty == "ptr":
-                fmt = self._get_fmt_str()
-                tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},ptr {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_str(), "ptr", val)
             elif self._is_float(ty):
                 fmt = self._get_fmt_f64()
-                tmp = self._fresh_tmp()
                 if ty == "float":
                     ext = self._fresh_tmp()
                     self._emit_line(f"{ext} = fpext float {val} to double")
                     val = ext
-                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},double {val})")
+                self._emit_printf_call(file_ptr, fmt, "double", val)
             elif ty == "i64" and self._node_is_unsigned(arg):
-                fmt = self._get_fmt_u64()
-                tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i64 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_u64(), "i64", val)
             elif ty == "i64":
-                fmt = self._get_fmt_i64()
-                tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i64 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_i64(), "i64", val)
+            elif self._node_is_char(arg):
+                # `char` is stored as `i32` (a Unicode scalar value --
+                # see CLAUDE.md), same LLVM shape as any other int, so
+                # without this case it fell into the generic i32/`%d`
+                # branch below and printed the numeric codepoint
+                # instead of the character (confirmed: `(let ch:char
+                # 65) (out! ch)` printed "65", not "A"). `%c` reads an
+                # `int` varargs slot and takes its low byte, matching
+                # `i32`'s width exactly -- no coercion needed.
+                self._emit_printf_call(file_ptr, self._get_fmt_char(), "i32", val)
             elif self._node_is_unsigned(arg):
-                fmt = self._get_fmt_u32()
-                tmp = self._fresh_tmp()
                 val = self._coerce_int_to(val, ty, "i32", unsigned=True)
-                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i32 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_u32(), "i32", val)
             else:
-                fmt = self._get_fmt_i32()
-                tmp = self._fresh_tmp()
                 val = self._coerce_int_to(val, ty, "i32")
-                self._emit_line(f"{tmp} = {self._print_call_prefix(fd)}ptr {fmt},i32 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_i32(), "i32", val)
         return None
 
     # ------------------------------------------------------------------
     # panic — print all args and exit(1). Terminates control flow.
     # ------------------------------------------------------------------
-
-    def _print_call_prefix(self, fd: int | None) -> str:
-        """`call ... @printf(` for stdout, or `call ... @dprintf(i32 fd, ` for
-        another file descriptor (stderr, for `err`)."""
-        if fd is None:
-            return "call i32 (ptr, ...) @printf("
-        self._declare_extern("declare i32 @dprintf(i32, ptr, ...)")
-        return f"call i32 (i32, ptr, ...) @dprintf(i32 {fd}, "
 
     def _emit_panic(self, args: list[N.Expr]) -> str | None:
         # Reuse the same per-type printf logic as `out` for the message.
@@ -3116,25 +3234,108 @@ class Emitter:
         rather than a wall-clock call (`gettimeofday`/`clock_gettime`):
         `clock()` is a single `clock_t` return value with no struct
         layout or platform-specific clock-ID constant to get wrong,
-        making it the portable choice between macOS and Linux for a
-        first primitive. `CLOCKS_PER_SEC` is 1000000 on both glibc and
-        macOS libc. Intended for benchmarking CPU-bound Nyet code
-        (loops, arithmetic, struct/array operations) — not for measuring
-        real elapsed time around blocking I/O, which `clock()` doesn't
-        count.
+        making it the portable choice between macOS, Linux, and Windows
+        for a first primitive. Intended for benchmarking CPU-bound Nyet
+        code (loops, arithmetic, struct/array operations) — not for
+        measuring real elapsed time around blocking I/O, which `clock()`
+        doesn't count.
+
+        `CLOCKS_PER_SEC` is 1000000 on glibc and macOS libc, but only
+        1000 on the Windows CRT (millisecond, not microsecond,
+        resolution) -- a well-known `clock()` portability gotcha.
+        Nyet never cross-compiles (a frozen Windows build's bundled
+        clang still runs ON Windows, targeting Windows), so `sys.platform`
+        at codegen time already tells us which libc the emitted `.ll`
+        will actually be linked against. Getting this wrong silently
+        made every `busy_wait` call take ~1000x longer than intended on
+        Windows (a 0.6s pause becomes a 10-minute one) -- easy to miss
+        entirely in dev on macOS/Linux, since the divisor is only wrong
+        for the platform this can't be tested on directly.
         """
         self._declare_extern("declare i64 @clock()")
         ticks = self._fresh_tmp()
         self._emit_line(f"{ticks} = call i64 @clock()")
         as_double = self._fresh_tmp()
         self._emit_line(f"{as_double} = sitofp i64 {ticks} to double")
+        clocks_per_sec = 1000.0 if _sys.platform == "win32" else 1000000.0
         seconds = self._fresh_tmp()
-        self._emit_line(f"{seconds} = fdiv double {as_double}, 1000000.0")
+        self._emit_line(f"{seconds} = fdiv double {as_double}, {clocks_per_sec}")
         return seconds
 
     # ------------------------------------------------------------------
     # in
     # ------------------------------------------------------------------
+
+    # Recognized `(in TYPE)` primitive-type names — anything else in that
+    # argument position is an explicit channel (`(in myfile)`), not a
+    # parse-target type.
+    _IN_TYPE_NAMES = {"i32", "int", "i64", "f64", "f32", "bool", "string"}
+
+    def _channel_type_name(self, ch: N.Expr) -> str | None:
+        probe = self._unwrap_borrow(ch)
+        sn = self._infer_nyet_type_name(probe)
+        if sn is None and isinstance(probe, N.Ident):
+            sn = self._env_struct_name.get(probe.name)
+        return sn
+
+    def _emit_channel_write(self, ch: N.Expr, data: N.Expr) -> None:
+        """Dispatch `write` on `ch` (FileIO builtin or any user-defined
+        IOChannel implementer) and unwrap the Result, panicking on `Err`
+        — the shared tail end of `io`'s write form (`(io ch data)`)."""
+        sn = self._channel_type_name(ch)
+        if sn == "FileIO":
+            raw = self._emit_fileio_write([ch, data])
+        elif sn is not None and (sn, "write") in self._method_impls:
+            raw = self._emit_user_call(self._method_impls[(sn, "write")], [ch, data])
+        else:
+            raw = None
+        if raw is not None:
+            self._emit_io_unwrap_or_panic(raw, "write")
+
+    def _emit_channel_read(self, ch: N.Expr) -> str | None:
+        """Dispatch `read` on `ch` and unwrap the Result, panicking on
+        `Err` — shared by `io`'s read form (`(io ch)`) and `(in ch)`."""
+        sn = self._channel_type_name(ch)
+        if sn == "FileIO":
+            raw = self._emit_fileio_read([ch])
+        elif sn is not None and (sn, "read") in self._method_impls:
+            raw = self._emit_user_call(self._method_impls[(sn, "read")], [ch])
+        else:
+            return None
+        if raw is None:
+            return None
+        return self._emit_io_unwrap_or_panic(raw, "read")
+
+    def _emit_io(self, args: list[N.Expr]) -> str | None:
+        """`io` — the unified channel verb. `(io ch)` reads, `(io ch data)`
+        writes; arity distinguishes direction (the same asymmetry
+        `(in)`/`(out x)` already had, just one name). Bare `out`/`err`
+        are compile-time-recognized `StdIO` markers (see the design
+        plan's scope note — they're never materialized as a runtime
+        value in this pass), reusing the exact printf/fprintf logic the
+        old `out` builtin had; any other channel goes through the
+        generic write/read dispatch shared with `(in ch)` and direct
+        `write`/`read`/`close` calls.
+        """
+        if not args:
+            return None
+        channel = self._unwrap_borrow(args[0])
+        if isinstance(channel, N.Ident) and channel.name in ("out", "err", "in"):
+            if len(args) == 1:
+                if channel.name != "in":
+                    self._emit_line("; io: read from a write-only StdIO channel is a no-op")
+                    return self._get_string("")[0]
+                return self._emit_in([])
+            if channel.name == "in":
+                self._emit_line("; io: write to a read-only StdIO channel is a no-op")
+                return None
+            file_ptr = self._emit_stderr_handle() if channel.name == "err" else None
+            self._emit_out(args[1:], file_ptr)
+            return None
+        if len(args) == 1:
+            return self._emit_channel_read(channel)
+        self._emit_channel_write(channel, args[1])
+        return None
 
     def _emit_in(self, args: list[N.Expr]) -> str | None:
         """`(in)` -- read one line from stdin.
@@ -3167,6 +3368,12 @@ class Emitter:
         for prompting on a line of input, would silently read
         clobbered stack memory back out of it.
         """
+        if len(args) == 1 and not (
+            isinstance(args[0], N.Ident) and args[0].name in self._IN_TYPE_NAMES
+        ):
+            # Explicit-channel read: `(in myfile)`, distinct from
+            # `(in i32)` above (a primitive-type name).
+            return self._emit_channel_read(args[0])
         self._declare_extern("declare ptr @fgets(ptr, i32, ptr)")
         self._declare_extern("declare ptr @fdopen(i32, ptr)")
         self._declare_extern("declare ptr @malloc(i64)")
@@ -3326,6 +3533,170 @@ class Emitter:
         self._emit_line(f"store i8 0, ptr {end}")
         return buf
 
+    def _emit_split_line_copy(
+        self, start_slot: str, stop_i64: str, out_base: str, n_slot: str
+    ) -> None:
+        """Copy bytes `[*start_slot, stop_i64)` into a fresh malloc'd
+        null-terminated buffer and append it to the `Array[string]`
+        being built at `out_base`, via `n_slot` (the running output
+        count, also the next write index) -- a helper for
+        `_emit_file_read_lines`, which calls this once per line found
+        (mid-buffer, at each `\\n`) and once more for a final line with
+        no trailing newline, if there is one."""
+        self._declare_extern("declare ptr @memcpy(ptr, ptr, i64)")
+        ls = self._fresh_tmp()
+        self._emit_line(f"{ls} = load ptr, ptr {start_slot}")
+        ls_int = self._fresh_tmp()
+        self._emit_line(f"{ls_int} = ptrtoint ptr {ls} to i64")
+        line_len = self._fresh_tmp()
+        self._emit_line(f"{line_len} = sub i64 {stop_i64}, {ls_int}")
+        line_len_p1 = self._fresh_tmp()
+        self._emit_line(f"{line_len_p1} = add i64 {line_len}, 1")
+        line_buf = self._fresh_tmp()
+        self._emit_line(f"{line_buf} = call ptr @malloc(i64 {line_len_p1})")
+        self._emit_line(f"call ptr @memcpy(ptr {line_buf}, ptr {ls}, i64 {line_len})")
+        line_end = self._fresh_tmp()
+        self._emit_line(f"{line_end} = getelementptr i8, ptr {line_buf}, i64 {line_len}")
+        self._emit_line(f"store i8 0, ptr {line_end}")
+        n_val = self._fresh_tmp()
+        self._emit_line(f"{n_val} = load i64, ptr {n_slot}")
+        slot_ptr = self._fresh_tmp()
+        self._emit_line(f"{slot_ptr} = getelementptr ptr, ptr {out_base}, i64 {n_val}")
+        self._emit_line(f"store ptr {line_buf}, ptr {slot_ptr}")
+        n_next = self._fresh_tmp()
+        self._emit_line(f"{n_next} = add i64 {n_val}, 1")
+        self._emit_line(f"store i64 {n_next}, ptr {n_slot}")
+
+    def _emit_file_read_lines(self, args: list[N.Expr]) -> str | None:
+        """`(file_read_lines handle) -> Array[string]` -- reads the
+        whole file (like `file_read_all`) and splits it on `\\n` into
+        one malloc'd copy per line. Mirrors Python's `str.splitlines`:
+        a final trailing newline does not produce a trailing empty
+        element, and an empty file yields a zero-length array.
+
+        The output array is over-allocated at `(file size + 1)`
+        elements -- the true worst case, if every byte were a newline
+        -- then the header is corrected to the real line count once
+        the single pass is done. Wastes at most 8 bytes per byte of
+        file content, which is fine for the small line-oriented files
+        (config, save-data) this exists for; not meant for bulk data.
+
+        There's no general `split`/substring primitive in Nyet yet
+        (see CONTINUATION_PLAN.md) -- this is a narrower, purpose-built
+        builtin for exactly the "read a file back as one row per line"
+        shape, added because minibase's save/load needed it and
+        nothing already in the language could express it: a `char` has
+        no route back to a one-character `string` (no cast, and `+`
+        only concatenates two strings), so a general split() written
+        in Nyet source itself isn't reachable without this.
+        """
+        if len(args) != 1:
+            return None
+        self._declare_extern("declare i32 @fseek(ptr, i64, i32)")
+        self._declare_extern("declare i64 @ftell(ptr)")
+        self._declare_extern("declare void @rewind(ptr)")
+        self._declare_extern("declare i64 @fread(ptr, i64, i64, ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        h = self._emit_expr(args[0])
+        if h is None:
+            return None
+
+        # Read the whole file into a null-terminated buffer -- same as
+        # file_read_all.
+        self._emit_line(f"call i32 @fseek(ptr {h}, i64 0, i32 2)")
+        size = self._fresh_tmp()
+        self._emit_line(f"{size} = call i64 @ftell(ptr {h})")
+        self._emit_line(f"call void @rewind(ptr {h})")
+        size_p1 = self._fresh_tmp()
+        self._emit_line(f"{size_p1} = add i64 {size}, 1")
+        buf = self._fresh_tmp()
+        self._emit_line(f"{buf} = call ptr @malloc(i64 {size_p1})")
+        self._emit_line(f"call i64 @fread(ptr {buf}, i64 1, i64 {size}, ptr {h})")
+        end_ptr = self._fresh_tmp()
+        self._emit_line(f"{end_ptr} = getelementptr i8, ptr {buf}, i64 {size}")
+        self._emit_line(f"store i8 0, ptr {end_ptr}")
+        end_int = self._fresh_tmp()
+        self._emit_line(f"{end_int} = ptrtoint ptr {end_ptr} to i64")
+
+        # Over-allocated Array[string] output: [i64 len][ptr elements...].
+        cap_bytes = self._fresh_tmp()
+        self._emit_line(f"{cap_bytes} = mul i64 {size_p1}, 8")
+        out_total = self._fresh_tmp()
+        self._emit_line(f"{out_total} = add i64 {cap_bytes}, 8")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {out_total})")
+        out_base = self._array_data_base(out)
+
+        # Loop state: byte cursor `i`, current-line-start pointer, and
+        # the running output count (also next write index).
+        i_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {i_slot}")
+        start_slot = self._emit_alloca("ptr")
+        self._emit_line(f"store ptr {buf}, ptr {start_slot}")
+        n_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {n_slot}")
+
+        cond = self._fresh_label("lines_cond")
+        body = self._fresh_label("lines_body")
+        found_nl = self._fresh_label("lines_nl")
+        advance = self._fresh_label("lines_advance")
+        after_loop = self._fresh_label("lines_after_loop")
+        tail_then = self._fresh_label("lines_tail")
+        tail_merge = self._fresh_label("lines_tail_merge")
+
+        self._emit_line(f"br label %{cond}")
+        self._emit_label(cond)
+        i_val = self._fresh_tmp()
+        self._emit_line(f"{i_val} = load i64, ptr {i_slot}")
+        in_bounds = self._fresh_tmp()
+        self._emit_line(f"{in_bounds} = icmp slt i64 {i_val}, {size}")
+        self._emit_line(f"br i1 {in_bounds}, label %{body}, label %{after_loop}")
+
+        self._emit_label(body)
+        ch_ptr = self._fresh_tmp()
+        self._emit_line(f"{ch_ptr} = getelementptr i8, ptr {buf}, i64 {i_val}")
+        ch = self._fresh_tmp()
+        self._emit_line(f"{ch} = load i8, ptr {ch_ptr}")
+        is_nl = self._fresh_tmp()
+        self._emit_line(f"{is_nl} = icmp eq i8 {ch}, 10")
+        self._emit_line(f"br i1 {is_nl}, label %{found_nl}, label %{advance}")
+
+        self._emit_label(found_nl)
+        ch_int = self._fresh_tmp()
+        self._emit_line(f"{ch_int} = ptrtoint ptr {ch_ptr} to i64")
+        self._emit_split_line_copy(start_slot, ch_int, out_base, n_slot)
+        i_val_p1 = self._fresh_tmp()
+        self._emit_line(f"{i_val_p1} = add i64 {i_val}, 1")
+        new_start = self._fresh_tmp()
+        self._emit_line(f"{new_start} = getelementptr i8, ptr {buf}, i64 {i_val_p1}")
+        self._emit_line(f"store ptr {new_start}, ptr {start_slot}")
+        self._emit_line(f"br label %{advance}")
+
+        self._emit_label(advance)
+        i_inc = self._fresh_tmp()
+        self._emit_line(f"{i_inc} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_inc}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond}")
+
+        # A final line with no trailing newline still needs flushing.
+        self._emit_label(after_loop)
+        ls_final = self._fresh_tmp()
+        self._emit_line(f"{ls_final} = load ptr, ptr {start_slot}")
+        ls_final_int = self._fresh_tmp()
+        self._emit_line(f"{ls_final_int} = ptrtoint ptr {ls_final} to i64")
+        has_tail = self._fresh_tmp()
+        self._emit_line(f"{has_tail} = icmp slt i64 {ls_final_int}, {end_int}")
+        self._emit_line(f"br i1 {has_tail}, label %{tail_then}, label %{tail_merge}")
+        self._emit_label(tail_then)
+        self._emit_split_line_copy(start_slot, end_int, out_base, n_slot)
+        self._emit_line(f"br label %{tail_merge}")
+        self._emit_label(tail_merge)
+
+        n_final = self._fresh_tmp()
+        self._emit_line(f"{n_final} = load i64, ptr {n_slot}")
+        self._emit_line(f"store i64 {n_final}, ptr {out}")
+        return out
+
     def _emit_file_write(self, args: list[N.Expr]) -> str | None:
         if len(args) != 2:
             return None
@@ -3351,6 +3722,297 @@ class Emitter:
         rc = self._fresh_tmp()
         self._emit_line(f"{rc} = call i32 @fclose(ptr {h})")
         return None
+
+    # ------------------------------------------------------------------
+    # IOChannel — WriteResult/ReadResult/CloseResult construction and
+    # unwrapping for builtin channel implementers (StdIO, FileIO). Each
+    # operation gets its own concrete (non-generic) result type — see
+    # the prelude source comment in expand.py for why this isn't one
+    # generic `Result[T E]` instantiated three ways. A user-defined
+    # channel's own `write`/`read`/`close` instead go through ordinary
+    # Nyet-source `(WriteOk ...)`/`(WriteErr ...)`-etc. call syntax in
+    # its `impl` body, so it never needs these helpers.
+    # ------------------------------------------------------------------
+
+    # op -> (result sum type, Ok variant name, Err variant name). Ok is
+    # always tag 0 / Err tag 1 by construction (declaration order in the
+    # prelude source), so these are read from `_sum_types` directly
+    # rather than round-tripped through `_variant_ctors`.
+    _IO_RESULT_TYPES = {
+        "write": ("WriteResult", "WriteOk", "WriteErr"),
+        "read": ("ReadResult", "ReadOk", "ReadErr"),
+        "close": ("CloseResult", "CloseOk", "CloseErr"),
+    }
+
+    def _emit_io_ok(self, op: str, val: str | None) -> str | None:
+        """Construct `<op>Ok(val)` (e.g. `WriteOk(val)`)."""
+        sum_name, _, _ = self._IO_RESULT_TYPES[op]
+        variants = self._sum_types.get(sum_name)
+        if variants is None:
+            return None
+        _, payload_types = variants[0]
+        values = [(payload_types[0], val)] if payload_types and val is not None else []
+        return self._emit_variant_construct_raw(sum_name, 0, payload_types, values)
+
+    def _emit_io_err(self, op: str, msg_ptr: str) -> str | None:
+        """Construct `<op>Err(Other(msg_ptr))` (e.g. `WriteErr(...)`)."""
+        sum_name, _, _ = self._IO_RESULT_TYPES[op]
+        variants = self._sum_types.get(sum_name)
+        if variants is None or "Other" not in self._variant_ctors:
+            return None
+        io_error_sum, other_tag = self._variant_ctors["Other"]
+        io_variants = self._sum_types[io_error_sum]
+        _, other_payload_types = io_variants[other_tag]
+        other_values = [(other_payload_types[0], msg_ptr)] if other_payload_types else []
+        err_val = self._emit_variant_construct_raw(
+            io_error_sum, other_tag, other_payload_types, other_values
+        )
+
+        _, err_payload_types = variants[1]
+        values = [(err_payload_types[0], err_val)] if err_payload_types else []
+        return self._emit_variant_construct_raw(sum_name, 1, err_payload_types, values)
+
+    def _emit_io_unwrap_or_panic(self, result_ptr: str, op: str) -> str | None:
+        """Given a `<op>Result` value, return its unwrapped Ok payload, or
+        panic. This is `io`'s sugar contract (see main.no's "IO Channels"
+        section and the IOChannel design plan) — a caller who wants the
+        actual `IOError` instead calls `write`/`read`/`close` directly
+        and `match`es the result themselves, so the panic message here
+        is intentionally generic rather than threading the real error
+        text through."""
+        sum_name, _, _ = self._IO_RESULT_TYPES[op]
+        variants = self._sum_types.get(sum_name)
+        if variants is None:
+            return result_ptr
+
+        tag_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{tag_ptr} = getelementptr inbounds %{sum_name}, ptr {result_ptr}, i32 0, i32 0"
+        )
+        tag = self._fresh_tmp()
+        self._emit_line(f"{tag} = load i32, ptr {tag_ptr}")
+        is_ok = self._fresh_tmp()
+        self._emit_line(f"{is_ok} = icmp eq i32 {tag}, 0")
+        ok_label = self._fresh_label("io_ok")
+        err_label = self._fresh_label("io_err")
+        self._emit_line(f"br i1 {is_ok}, label %{ok_label}, label %{err_label}")
+
+        self._emit_label(err_label)
+        self._declare_printf()
+        msg = self._get_format_string("io: operation failed\n", "io_panic_msg")
+        panic_tmp = self._fresh_tmp()
+        self._emit_line(f"{panic_tmp} = call i32 (ptr, ...) @printf(ptr {msg})")
+        self._declare_extern("declare void @exit(i32)")
+        self._emit_line("call void @exit(i32 1)")
+        self._emit_line("unreachable")
+
+        self._emit_label(ok_label)
+        _, ok_payload_types = variants[0]
+        if not ok_payload_types:
+            return None
+        payload_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {result_ptr}, i32 0, i32 1"
+        )
+        ok_val = self._fresh_tmp()
+        self._emit_line(f"{ok_val} = load {ok_payload_types[0]}, ptr {payload_ptr}")
+        return ok_val
+
+    # ------------------------------------------------------------------
+    # FileIO — a builtin struct implementing IOChannel (see design plan).
+    # Constructor + write/read/close are hand-rolled here (like
+    # file_open et al. above) rather than expressed as a real `impl` in
+    # Nyet source, since dispatch for them is intercepted by name+receiver
+    # type directly in `_emit_call` before the generic method-dispatch
+    # path ever runs (see `_emit_call`).
+    # ------------------------------------------------------------------
+
+    _FILE_MODE_TO_C = {
+        "Read": "r",
+        "Write": "w",
+        "Append": "a",
+        "ReadWrite": "r+",
+    }
+
+    def _emit_fileio_open(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 2:
+            return None
+        self._declare_extern("declare ptr @fopen(ptr, ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        path = self._emit_expr(args[0])
+        if path is None:
+            return None
+        mode_name = self._nullary_variant_name(args[1]) or "Read"
+        c_mode = self._get_string(self._FILE_MODE_TO_C.get(mode_name, "r"))[0]
+        handle = self._fresh_tmp()
+        self._emit_line(f"{handle} = call ptr @fopen(ptr {path}, ptr {c_mode})")
+        closed_flag = self._fresh_tmp()
+        self._emit_line(f"{closed_flag} = icmp eq ptr {handle}, null")
+
+        struct_name = "FileIO"
+        ptr = self._heap_alloc_struct(struct_name, self._struct_size_bytes(struct_name))
+        handle_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{handle_ptr} = getelementptr inbounds %{struct_name}, ptr {ptr}, i32 0, i32 0"
+        )
+        self._emit_line(f"store ptr {handle}, ptr {handle_ptr}")
+        mode_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{mode_ptr} = getelementptr inbounds %{struct_name}, ptr {ptr}, i32 0, i32 1"
+        )
+        mode_val = self._emit_construct_nullary_mode("FileMode", mode_name)
+        self._emit_line(f"store ptr {mode_val}, ptr {mode_ptr}")
+        closed_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{closed_ptr} = getelementptr inbounds %{struct_name}, ptr {ptr}, i32 0, i32 2"
+        )
+        self._emit_line(f"store i1 {closed_flag}, ptr {closed_ptr}")
+        return ptr
+
+    def _nullary_variant_name(self, node: N.Expr) -> str | None:
+        """`(Read)`/`(Write)`/etc. — a zero-arg sum-type variant call.
+        Returns the variant's bare name (`"Read"`), or None."""
+        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
+            return node.head.name
+        return None
+
+    def _emit_construct_nullary_mode(self, sum_type_hint: str, vname: str) -> str:
+        """Construct a zero-payload sum type variant value (e.g. `(Append)`
+        of `FileMode`) directly from its name, for builtins that receive
+        the variant name as a Python string rather than an AST call node."""
+        key = f"{sum_type_hint}::{vname}"
+        if key in self._variant_ctors:
+            sum_name, tag_idx = self._variant_ctors[key]
+        else:
+            sum_name, tag_idx = self._variant_ctors[vname]
+        return self._emit_variant_construct_raw(sum_name, tag_idx, (), [])
+
+    def _emit_fileio_field(self, ch: N.Expr, field_idx: int) -> str:
+        """GEP to a FileIO field (0=handle, 1=mode, 2=closed) without a load."""
+        base = self._emit_expr(ch)
+        fptr = self._fresh_tmp()
+        self._emit_line(
+            f"{fptr} = getelementptr inbounds %FileIO, ptr {base}, i32 0, i32 {field_idx}"
+        )
+        return fptr
+
+    def _emit_fileio_closed(self, ch: N.Expr) -> tuple[str, str]:
+        """Returns (is_closed_i1_value, handle_field_ptr) for a FileIO."""
+        handle_ptr = self._emit_fileio_field(ch, 0)
+        closed_ptr = self._emit_fileio_field(ch, 2)
+        closed = self._fresh_tmp()
+        self._emit_line(f"{closed} = load i1, ptr {closed_ptr}")
+        return closed, handle_ptr
+
+    def _emit_fileio_closed_guard(
+        self,
+        ch: N.Expr,
+        prefix: str,
+        op: str,
+        err_msg: str,
+        emit_ok: Callable[[str], str],
+    ) -> str:
+        """Shared shape for write/read/close: if the channel's `closed`
+        flag is set, return `Err`; otherwise run `emit_ok(handle_ptr)`
+        (the real libc operation, returning its own `Ok`/`Err` Result) and
+        merge the two paths with a `phi`. `emit_ok` is assumed to leave
+        control in the same block it started in (true for the simple
+        libc-call + `_emit_io_ok`/`_emit_io_err` bodies below) — the same
+        "no explicit current-block tracking" assumption the rest of this
+        emitter already relies on for straight-line expression codegen.
+        """
+        handle_ptr = self._emit_fileio_field(ch, 0)
+        closed_ptr = self._emit_fileio_field(ch, 2)
+        closed = self._fresh_tmp()
+        self._emit_line(f"{closed} = load i1, ptr {closed_ptr}")
+        closed_label = self._fresh_label(f"{prefix}_closed")
+        ok_label = self._fresh_label(f"{prefix}_ok")
+        done_label = self._fresh_label(f"{prefix}_done")
+        self._emit_line(f"br i1 {closed}, label %{closed_label}, label %{ok_label}")
+
+        self._emit_label(closed_label)
+        msg_ptr = self._get_string(err_msg)[0]
+        err_result = self._emit_io_err(op, msg_ptr)
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(ok_label)
+        ok_result = emit_ok(handle_ptr)
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(done_label)
+        merged = self._fresh_tmp()
+        self._emit_line(
+            f"{merged} = phi ptr [ {err_result}, %{closed_label} ], [ {ok_result}, %{ok_label} ]"
+        )
+        return merged
+
+    def _emit_fileio_write(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 2:
+            return None
+        ch, data = args
+
+        def emit_ok(handle_ptr: str) -> str:
+            self._declare_extern("declare i64 @strlen(ptr)")
+            self._declare_extern("declare i64 @fwrite(ptr, i64, i64, ptr)")
+            handle = self._fresh_tmp()
+            self._emit_line(f"{handle} = load ptr, ptr {handle_ptr}")
+            text = self._emit_expr(data)
+            n = self._fresh_tmp()
+            self._emit_line(f"{n} = call i64 @strlen(ptr {text})")
+            wrote = self._fresh_tmp()
+            self._emit_line(f"{wrote} = call i64 @fwrite(ptr {text}, i64 1, i64 {n}, ptr {handle})")
+            return self._emit_io_ok("write", wrote) or wrote
+
+        return self._emit_fileio_closed_guard(
+            ch, "fw", "write", "write: channel is closed", emit_ok
+        )
+
+    def _emit_fileio_read(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 1:
+            return None
+        (ch,) = args
+
+        def emit_ok(handle_ptr: str) -> str:
+            self._declare_extern("declare i32 @fseek(ptr, i64, i32)")
+            self._declare_extern("declare i64 @ftell(ptr)")
+            self._declare_extern("declare void @rewind(ptr)")
+            self._declare_extern("declare i64 @fread(ptr, i64, i64, ptr)")
+            self._declare_extern("declare ptr @malloc(i64)")
+            handle = self._fresh_tmp()
+            self._emit_line(f"{handle} = load ptr, ptr {handle_ptr}")
+            self._emit_line(f"call i32 @fseek(ptr {handle}, i64 0, i32 2)")
+            size = self._fresh_tmp()
+            self._emit_line(f"{size} = call i64 @ftell(ptr {handle})")
+            self._emit_line(f"call void @rewind(ptr {handle})")
+            size_p1 = self._fresh_tmp()
+            self._emit_line(f"{size_p1} = add i64 {size}, 1")
+            buf = self._fresh_tmp()
+            self._emit_line(f"{buf} = call ptr @malloc(i64 {size_p1})")
+            self._emit_line(f"call i64 @fread(ptr {buf}, i64 1, i64 {size}, ptr {handle})")
+            end = self._fresh_tmp()
+            self._emit_line(f"{end} = getelementptr i8, ptr {buf}, i64 {size}")
+            self._emit_line(f"store i8 0, ptr {end}")
+            return self._emit_io_ok("read", buf) or buf
+
+        return self._emit_fileio_closed_guard(ch, "fr", "read", "read: channel is closed", emit_ok)
+
+    def _emit_fileio_close(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 1:
+            return None
+        (ch,) = args
+
+        def emit_ok(handle_ptr: str) -> str:
+            self._declare_extern("declare i32 @fclose(ptr)")
+            handle = self._fresh_tmp()
+            self._emit_line(f"{handle} = load ptr, ptr {handle_ptr}")
+            self._emit_line(f"call i32 @fclose(ptr {handle})")
+            closed_ptr = self._emit_fileio_field(ch, 2)
+            self._emit_line(f"store i1 1, ptr {closed_ptr}")
+            return self._emit_io_ok("close", None) or "null"
+
+        return self._emit_fileio_closed_guard(
+            ch, "fc", "close", "close: channel is already closed", emit_ok
+        )
 
     # ------------------------------------------------------------------
     # fmt
@@ -3405,6 +4067,11 @@ class Emitter:
                     if llvm_ty == "i64" and unsigned
                     else "%lld"
                     if llvm_ty == "i64"
+                    # Same fix as _emit_out's char case: char is i32-shaped,
+                    # so without this it silently printed the numeric
+                    # codepoint via %d instead of the character via %c.
+                    else "%c"
+                    if self._node_is_char(arg_node)
                     else "%u"
                     if unsigned
                     else "%d"
@@ -4152,6 +4819,28 @@ class Emitter:
         variants = self._sum_types[sum_name]
         _, payload_types = variants[tag_idx]
 
+        values: list[tuple[str, str]] = []
+        for i, arg in enumerate(args):
+            if i >= len(payload_types):
+                break
+            val = self._emit_expr(arg)
+            if val is not None:
+                values.append((payload_types[i], val))
+
+        return self._emit_variant_construct_raw(sum_name, tag_idx, payload_types, values)
+
+    def _emit_variant_construct_raw(
+        self,
+        sum_name: str,
+        tag_idx: int,
+        payload_types: tuple[str, ...],
+        values: list[tuple[str, str]],
+    ) -> str:
+        """Core of `_emit_variant_construct`, taking already-computed
+        (llvm_type, value) pairs instead of AST argument nodes — used
+        directly by builtins (`FileIO`/`StdIO`'s `write`/`read`/`close`)
+        that construct `Ok`/`Err` values without going through ordinary
+        Nyet-source `(Ok ...)`/`(Err ...)` call syntax."""
         ptr = self._heap_alloc_struct(sum_name, self._sum_type_size_bytes(sum_name))
 
         # Store tag
@@ -4166,21 +4855,14 @@ class Emitter:
                 f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 1"
             )
             offsets = self._field_offsets(payload_types)
-            for i, arg in enumerate(args):
-                if i >= len(payload_types):
-                    break
-                val = self._emit_expr(arg)
-                if val is not None:
-                    ftype = payload_types[i]
-                    off = offsets[i]
-                    if off == 0:
-                        field_ptr = payload_ptr
-                    else:
-                        field_ptr = self._fresh_tmp()
-                        self._emit_line(
-                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}"
-                        )
-                    self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
+            for i, (ftype, val) in enumerate(values):
+                off = offsets[i]
+                if off == 0:
+                    field_ptr = payload_ptr
+                else:
+                    field_ptr = self._fresh_tmp()
+                    self._emit_line(f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}")
+                self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
 
         return ptr
 
@@ -5363,8 +6045,33 @@ class Emitter:
     def _emit_array_len(self, arg: N.Expr) -> str:
         """Read the i64 length stored at offset 0 of an array's heap block,
         then truncate to i32 so it can be used in `i32` arithmetic and
-        comparisons without explicit casts."""
+        comparisons without explicit casts.
+
+        `string` is `ptr`-shaped exactly like `Array[T]`, but has no
+        such length header -- it's a plain null-terminated C string
+        (see `_emit_string_concat`'s doc comment) -- so `(len s)` on a
+        string previously read whatever bytes happened to sit at the
+        start of its character data as if they were an i64 length,
+        returning garbage (confirmed: `(len "Alexandria")` returned
+        2019912769, not 10). `require_nonempty` in minibase_core.no
+        (`(!= (len s) 0)`) has been silently broken this whole time as
+        a result -- any blank-string validation built on `len` never
+        actually validated anything. Fixed by routing a string operand
+        through `strlen` instead, via the same `_is_string_operand`
+        classifier `_emit_cmp` already uses to give `string` its own
+        `==`/`!=`/`<`/`>` behavior.
+        """
         target = self._unwrap_borrow(arg)
+        if self._is_string_operand(target):
+            val = self._emit_expr(target)
+            if val is None:
+                return "0"
+            self._declare_extern("declare i64 @strlen(ptr)")
+            slen64 = self._fresh_tmp()
+            self._emit_line(f"{slen64} = call i64 @strlen(ptr {val})")
+            slen32 = self._fresh_tmp()
+            self._emit_line(f"{slen32} = trunc i64 {slen64} to i32")
+            return slen32
         # Find the slot holding the array pointer.
         arr_ptr: str | None = None
         if isinstance(target, N.Ident) and target.name in self._env:

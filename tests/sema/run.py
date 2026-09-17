@@ -27,7 +27,7 @@ def dump_sema_output(path: Path) -> str:
     from pynyet.diagnostic import NyetError
     from pynyet.lexer.scanner import lex
     from pynyet.parser.parser import parse
-    from pynyet.sema.borrow import check_borrows
+    from pynyet.sema.borrow import check_aliasing, check_borrows
     from pynyet.sema.expand import expand_macros
     from pynyet.sema.resolve import resolve_names
     from pynyet.sema.typeck import check_types
@@ -42,7 +42,13 @@ def dump_sema_output(path: Path) -> str:
         return "".join(d.format() + "\n" for d in e.diagnostics)
 
     program, expand_errors = expand_macros(program)
-    errors = expand_errors + resolve_names(program) + check_types(program) + check_borrows(program)
+    errors = (
+        expand_errors
+        + resolve_names(program)
+        + check_types(program)
+        + check_borrows(program)
+        + check_aliasing(program)
+    )
     if not errors:
         return "ok\n"
     return "".join(d.format() + "\n" for d in errors)

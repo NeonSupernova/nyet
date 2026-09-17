@@ -1,0 +1,9 @@
+tests/sema/aliasing_rejected.no:17:13: error: cannot borrow 'p' as &! -- already &!-bound to 'm1'
+        (let m2 (&!p))
+                ^^^^^
+tests/sema/aliasing_rejected.no:24:12: error: cannot borrow 'p' as & -- already &!-bound to 'm'
+        (let s (&p))
+               ^^^^
+tests/sema/aliasing_rejected.no:30:15: error: cannot borrow 'p' as & -- already &!-borrowed earlier in this scope
+        (both &!p &p)))
+                  ^^

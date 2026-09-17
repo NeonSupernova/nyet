@@ -9,6 +9,6 @@
 
 (fn main () -> unit
   (do
-    (var handlers [(fn () -> unit (out "first\n")) (fn () -> unit (out "second\n"))])
+    (var handlers [(fn () -> unit (out! "first\n")) (fn () -> unit (out! "second\n"))])
     (let h (handlers 1))
     (h)))

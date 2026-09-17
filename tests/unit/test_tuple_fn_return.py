@@ -39,7 +39,7 @@ def test_tuple_returning_fn_bound_without_annotation_gets_indexed_correctly():
         (fn main () -> unit
           (do
             (let p (make_pair))
-            (out (p 0))))
+            (out! (p 0))))
     """)
     assert "call ptr @make_pair()" in ir
     # A real tuple-field GEP+load, not a bogus `call i32 @p(...)`.
@@ -56,7 +56,7 @@ def test_tuple_returning_fn_call_used_inline_is_unaffected():
         (fn main () -> unit
           (do
             (let p:#(i32 string) (make_pair))
-            (out (p 0))))
+            (out! (p 0))))
     """)
     assert "getelementptr inbounds %tuple" in ir
     assert "@p(" not in ir

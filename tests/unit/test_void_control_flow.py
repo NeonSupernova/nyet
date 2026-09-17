@@ -61,7 +61,7 @@ def test_return_of_a_real_value_is_unaffected():
 
 def test_if_with_bare_unit_call_branches_does_not_alloca_void():
     ir = _ir_for("""
-        (fn say () -> unit (out "hi\\n"))
+        (fn say () -> unit (out! "hi\\n"))
         (fn main () -> unit (if true (say) (say)))
     """)
     assert "alloca void" not in ir
@@ -72,7 +72,7 @@ def test_if_with_a_real_valued_branch_is_unaffected():
     ir = _ir_for("""
         (fn main () -> unit
           (let x:i32 (if true 1 2))
-          (out x))
+          (out! x))
     """)
     assert "alloca i32" in ir
     assert "alloca void" not in ir
@@ -80,7 +80,7 @@ def test_if_with_a_real_valued_branch_is_unaffected():
 
 def test_simple_match_with_bare_unit_call_arm_does_not_alloca_void():
     ir = _ir_for("""
-        (fn say () -> unit (out "hi\\n"))
+        (fn say () -> unit (out! "hi\\n"))
         (fn main () -> unit (match true (true (say)) (false (say))))
     """)
     assert "alloca void" not in ir
@@ -89,7 +89,7 @@ def test_simple_match_with_bare_unit_call_arm_does_not_alloca_void():
 
 def test_sum_type_match_with_bare_unit_call_arm_does_not_alloca_void():
     ir = _ir_for("""
-        (fn say () -> unit (out "hi\\n"))
+        (fn say () -> unit (out! "hi\\n"))
         (type Choice (Yes) (No))
         (fn main () -> unit (match (Yes) ((Yes) (say)) ((No) (say))))
     """)

@@ -4,12 +4,12 @@
     (% x 2))
 
 
-(out "Enter a number: ")
+(out! "Enter a number: ")
 
 (let x:i32 (in i32))
 (let n:string "Your number is {}\n")
 
-(out (fmt n (if (== (isEven x) 0) "even" "odd")))
+(out! (fmt n (if (== (isEven x) 0) "even" "odd")))
 
 
 

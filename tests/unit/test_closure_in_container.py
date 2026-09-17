@@ -45,7 +45,7 @@ def test_closure_literal_in_map_value_is_lifted_not_left_inline():
     ir = _ir_for("""
         (fn main () -> unit
           (do
-            (var handlers {"go" (fn () -> unit (out "hi\\n"))})
+            (var handlers {"go" (fn () -> unit (out! "hi\\n"))})
             pass))
     """)
     assert "define void @__closure_0(ptr %__env)" in ir
@@ -55,7 +55,7 @@ def test_closure_retrieved_from_map_is_called_indirectly():
     ir = _ir_for("""
         (fn main () -> unit
           (do
-            (var handlers {"go" (fn () -> unit (out "hi\\n"))})
+            (var handlers {"go" (fn () -> unit (out! "hi\\n"))})
             (let h (handlers "go"))
             (h)))
     """)
@@ -69,7 +69,7 @@ def test_map_of_scalars_is_unaffected():
           (do
             (var m {"a" 1})
             (let x (m "a"))
-            (out x)))
+            (out! x)))
     """)
     assert "define void @__closure_0" not in ir
 
@@ -82,7 +82,7 @@ def test_closure_retrieved_from_array_is_called_indirectly():
     ir = _ir_for("""
         (fn main () -> unit
           (do
-            (var handlers [(fn () -> unit (out "a\\n")) (fn () -> unit (out "b\\n"))])
+            (var handlers [(fn () -> unit (out! "a\\n")) (fn () -> unit (out! "b\\n"))])
             (let h (handlers 1))
             (h)))
     """)
@@ -96,6 +96,6 @@ def test_array_of_scalars_is_unaffected():
           (do
             (let xs [1 2 3])
             (let x (xs 0))
-            (out x)))
+            (out! x)))
     """)
     assert "define void @__closure_0" not in ir

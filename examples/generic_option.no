@@ -9,8 +9,8 @@
 
 (fn describe (o:Option[i32]) -> unit
   (match o
-    ((Some n) (do (out "found: ") (out n) (out "\n")))
-    ((None) (out "nothing\n"))))
+    ((Some n) (do (out! "found: ") (out! n) (out! "\n")))
+    ((None) (out! "nothing\n"))))
 
 (fn main () -> unit
   (let a:Option[i32] (Some 42))

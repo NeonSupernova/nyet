@@ -14,5 +14,5 @@
 
 (fn main () -> unit
   (do
-    (out (apply double 5))
-    (out "\n")))
+    (out! (apply double 5))
+    (out! "\n")))

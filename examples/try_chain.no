@@ -22,12 +22,12 @@
 
 (fn describe (o:Option[i32]) -> unit
   (match o
-    ((Some n) (do (out n) (out "\n")))
-    ((None) (out "none\n"))))
+    ((Some n) (do (out! n) (out! "\n")))
+    ((None) (out! "none\n"))))
 
 (fn main () -> unit
-  (out "20 / 2 / 5 = ")
+  (out! "20 / 2 / 5 = ")
   (describe (chain 20 2 5))
-  (out "10 / 0 / 5 = ")
+  (out! "10 / 0 / 5 = ")
   (describe (chain 10 0 5))
-  (out "done\n"))
+  (out! "done\n"))

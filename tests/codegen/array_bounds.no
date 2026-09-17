@@ -7,5 +7,5 @@
 
 (fn main () -> unit
   (var a:Array[i32] [10 20 30])
-  (out "in bounds: ") (out (a 1)) (out "\n")
-  (out (a 5)) (out "\n"))
+  (out! "in bounds: ") (out! (a 1)) (out! "\n")
+  (out! (a 5)) (out! "\n"))

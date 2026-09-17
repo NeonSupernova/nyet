@@ -22,16 +22,16 @@
 (fn main () -> unit
   (do
     (let grid:Array[Array[i32]] [[1 2] [3 4] [5 6]])
-    (out (fmt "grid len: {}\n" (len grid)))
+    (out! (fmt "grid len: {}\n" (len grid)))
 
     (let row (grid 1))
-    (out (fmt "row (bound) len: {}\n" (len row)))
-    (out (fmt "row[0] row[1]: {} {}\n" (row 0) (row 1)))
+    (out! (fmt "row (bound) len: {}\n" (len row)))
+    (out! (fmt "row[0] row[1]: {} {}\n" (row 0) (row 1)))
 
-    (out (fmt "direct chained read: {} {}\n" ((grid 2) 0) ((grid 2) 1)))
+    (out! (fmt "direct chained read: {} {}\n" ((grid 2) 0) ((grid 2) 1)))
 
     (= (row 0) 99)
-    (out (fmt "mutate via bound row, read via chained: {}\n" ((grid 1) 0)))
+    (out! (fmt "mutate via bound row, read via chained: {}\n" ((grid 1) 0)))
 
     (= ((grid 2) 0) 77)
-    (out (fmt "mutate via chained, read via chained: {}\n" ((grid 2) 0)))))
+    (out! (fmt "mutate via chained, read via chained: {}\n" ((grid 2) 0)))))

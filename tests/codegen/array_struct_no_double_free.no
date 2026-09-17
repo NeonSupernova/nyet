@@ -19,11 +19,11 @@
     (let pts:Array[Point] [(Point x:1 y:2) (Point x:3 y:4)])
     (let a:Point (pts 0))
     (let b:Point (pts 0))
-    (out (. a x)) (out "\n")
-    (out (. b x)) (out "\n")))
+    (out! (. a x)) (out! "\n")
+    (out! (. b x)) (out! "\n")))
 
 (fn main () -> unit
   (do
     (touch)
     (touch)
-    (out "done\n")))
+    (out! "done\n")))

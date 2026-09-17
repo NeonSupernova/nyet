@@ -21,20 +21,20 @@
 (fn main () -> unit
   (do
     (let #(n s) #(1 "hello"))
-    (out (fmt "{} {}\n" n s))
+    (out! (fmt "{} {}\n" n s))
 
     (let pair:#(f64 f64) #(1.5 2.5))
     (let #(x y) pair)
-    (out (fmt "{} {}\n" x y))
+    (out! (fmt "{} {}\n" x y))
 
     (let #(p #(q r)) #(1 #(4 9)))
-    (out (fmt "{} {} {}\n" p q r))
+    (out! (fmt "{} {} {}\n" p q r))
 
     (var #(lo hi) (min_max 7 3))
     (let #(_ hi2) (min_max 9 3))
     (= hi hi2)
-    (out (fmt "{} {}\n" lo hi))
+    (out! (fmt "{} {}\n" lo hi))
 
     (let neg -3)
-    (out (fmt "{} {} {} {}\n" neg (~ 10) -2.5 -0x10))
-    (if (== (~ 10) -11) (out "true\n") (out "false\n"))))
+    (out! (fmt "{} {} {} {}\n" neg (~ 10) -2.5 -0x10))
+    (if (== (~ 10) -11) (out! "true\n") (out! "false\n"))))

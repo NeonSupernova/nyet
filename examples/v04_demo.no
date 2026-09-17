@@ -37,14 +37,14 @@
   (let a (Vec2 x:1.0 y:2.0))
   (let b (Vec2 x:3.0 y:4.0))
 
-  (out "a = ") (out a) (out "\n")
-  (out "b = ") (out b) (out "\n")
+  (out! "a = ") (out! a) (out! "\n")
+  (out! "b = ") (out! b) (out! "\n")
 
   (let c (+ a b))
-  (out "a + b = ") (out c) (out "\n")
+  (out! "a + b = ") (out! c) (out! "\n")
 
-  (out "lensq(a) = ") (out (lensq &a)) (out "\n")
+  (out! "lensq(a) = ") (out! (lensq &a)) (out! "\n")
 
-  (if (== &a &a) (out "a == a? yes\n") (out "a == a? no\n"))
-  (if (== &a &b) (out "a == b? yes\n") (out "a == b? no\n"))
-  (if (!= &a &b) (out "a != b? yes\n") (out "a != b? no\n")))
+  (if (== &a &a) (out! "a == a? yes\n") (out! "a == a? no\n"))
+  (if (== &a &b) (out! "a == b? yes\n") (out! "a == b? no\n"))
+  (if (!= &a &b) (out! "a != b? yes\n") (out! "a != b? no\n")))

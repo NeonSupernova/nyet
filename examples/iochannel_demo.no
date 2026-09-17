@@ -1,0 +1,96 @@
+;; IOChannel demo — the unified `io` verb over trait-based channels,
+;; plus the new bang-required macro-call syntax that ships alongside it.
+;;
+;; Channels shown here, a few of each kind:
+;;   - StdIO:  the builtin `out`/`err`/`in` channel values (stdout,
+;;             stderr, stdin), used both through `out!`/`err!` sugar
+;;             and through `io` directly.
+;;   - FileIO: a builtin channel over a real file, in three FileMode
+;;             variants (Write, Append, Read).
+;;   - a user-defined channel (Shout) implementing IOChannel itself,
+;;     to show the mechanism is a real, open interface — not something
+;;     special-cased to the two builtins.
+;;
+;; Error handling shown two ways: the ergonomic `io`/`out!`/`err!` sugar
+;; (panics on Err — fine for "this had better work" code), and the raw
+;; write/read/close primitives + `match` for real Result-based handling.
+;;
+;; Expected:
+;;   [stdio] hello via out!
+;;   [stdio] hello via io directly
+;;   [stdio] this went to stderr
+;;   [fileio] wrote: log line 1
+;;   [fileio] appended: log line 2
+;;   [fileio] read back: log line 1
+;; log line 2
+;;
+;;   [shout] hello, channels!!!!
+;;   [error handling] write after close correctly failed
+;;   [error handling] read of missing file correctly failed
+;;   [macro] doubled: 21 -> 42
+
+;; ============================================================
+;; A user-defined IOChannel — just an `impl` block, no compiler
+;; support needed beyond the ordinary method-dispatch machinery
+;; `write`/`read`/`close` already use for FileIO/StdIO.
+;; ============================================================
+
+(struct Shout label:string)
+
+(impl IOChannel Shout
+  (fn write (self:&!Shout data:string) -> WriteResult
+    (out! (. self label)) (out! data) (out! "!!!\n")
+    (WriteOk (as (len data) usize))))
+
+;; ============================================================
+;; A small user macro, called with the new required `!` syntax —
+;; macro *declarations* stay bare-named; the bang belongs to the call.
+;; ============================================================
+
+(macro double (x) (+ x x))
+
+(fn main () -> unit
+  ;; --- StdIO: out!/err! sugar, and io used directly on the same
+  ;; builtin channel values ---
+  (out! "[stdio] hello via out!\n")
+  (io out "[stdio] hello via io directly\n")
+  (err! "[stdio] this went to stderr\n")
+
+  ;; --- FileIO: three FileMode variants ---
+  (let path:string "/tmp/nyet_iochannel_demo.log")
+
+  (var w (FileIO path (Write)))
+  (io w "log line 1\n")
+  (close &!w)
+  (out! "[fileio] wrote: log line 1\n")
+
+  (var a (FileIO path (Append)))
+  (io a "log line 2\n")
+  (close &!a)
+  (out! "[fileio] appended: log line 2\n")
+
+  (var r (FileIO path (Read)))
+  (let contents:string (io r))
+  (out! "[fileio] read back: ") (out! contents)
+  (close &!r)
+
+  ;; --- A user-defined channel, used exactly like a builtin one ---
+  (var sh:Shout (Shout label:"[shout] "))
+  (io &!sh "hello, channels!")
+
+  ;; --- Real error handling: write/read/close return WriteResult/
+  ;; ReadResult/CloseResult directly, no panic, matched like any
+  ;; other sum type ---
+  (var closed (FileIO path (Read)))
+  (close &!closed)
+  (match (write &!closed "too late")
+    ((WriteOk _) (out! "[error handling] write after close unexpectedly succeeded\n"))
+    ((WriteErr _) (out! "[error handling] write after close correctly failed\n")))
+
+  (var missing (FileIO "/tmp/nyet_iochannel_demo_missing.log" (Read)))
+  (match (read &!missing)
+    ((ReadOk _) (out! "[error handling] read of missing file unexpectedly succeeded\n"))
+    ((ReadErr _) (out! "[error handling] read of missing file correctly failed\n")))
+
+  ;; --- The bang-required macro call ---
+  (out! (fmt "[macro] doubled: 21 -> {}\n" (double! 21))))

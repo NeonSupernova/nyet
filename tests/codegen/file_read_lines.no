@@ -1,0 +1,46 @@
+;; Regression test for `file_read_lines`: splits a file's contents on
+;; '\n' into an Array[string], one malloc'd copy per line. Mirrors
+;; Python's str.splitlines() -- a trailing newline doesn't produce a
+;; trailing empty element, but an embedded blank line does, and an
+;; empty file yields a zero-length array.
+;;
+;; Expected:
+;;   normal (3 lines): alpha|beta|gamma
+;;   no trailing newline (1 lines): solo
+;;   empty file (0 lines):
+;;   embedded blank line (3 lines): one||three
+;;   file is just newline (1 lines):
+
+(fn write_file (path:string content:string) -> unit
+  (let h (file_open path "w"))
+  (file_write h content)
+  (file_close h))
+
+(fn dump (path:string) -> unit
+  (let h (file_open path "r"))
+  (let lines:Array[string] (file_read_lines h))
+  (file_close h)
+  (out! "(") (out! (len lines)) (out! " lines): ")
+  (var i:i32 0)
+  (loop
+    (if (>= i (len lines)) (break) pass)
+    (if (> i 0) (out! "|") pass)
+    (out! (lines i))
+    (= i (+ i 1)))
+  (out! "\n"))
+
+(fn main () -> unit
+  (write_file "nyet_file_read_lines_a.txt" "alpha\nbeta\ngamma\n")
+  (out! "normal ") (dump "nyet_file_read_lines_a.txt")
+
+  (write_file "nyet_file_read_lines_b.txt" "solo")
+  (out! "no trailing newline ") (dump "nyet_file_read_lines_b.txt")
+
+  (write_file "nyet_file_read_lines_c.txt" "")
+  (out! "empty file ") (dump "nyet_file_read_lines_c.txt")
+
+  (write_file "nyet_file_read_lines_d.txt" "one\n\nthree\n")
+  (out! "embedded blank line ") (dump "nyet_file_read_lines_d.txt")
+
+  (write_file "nyet_file_read_lines_e.txt" "\n")
+  (out! "file is just newline ") (dump "nyet_file_read_lines_e.txt"))

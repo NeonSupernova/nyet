@@ -13,9 +13,9 @@
 (struct Person name:string age:i32)
 
 (fn consume (p:Person) -> unit
-  (out (. p name)) (out "\n"))
+  (out! (. p name)) (out! "\n"))
 
 (fn main () -> unit
   (let alice (Person name:"alice" age:30))
   (consume alice)
-  (out (. alice name)) (out "\n"))
+  (out! (. alice name)) (out! "\n"))

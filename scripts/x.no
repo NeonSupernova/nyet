@@ -1,6 +1,6 @@
 ;;;; x.no
 
-(if (< 1 2) (out "1 is greater than 2") (out "1 is less than 2"))
+(if (< 1 2) (out! "1 is greater than 2") (out! "1 is less than 2"))
 
 #|
 (class MyClass

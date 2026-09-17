@@ -52,73 +52,73 @@
 
 (fn main () -> unit
   ;; v0.1 features
-  (out "hello, world\n")
+  (out! "hello, world\n")
 
   (let x:i32 42)
-  (out x)
-  (out "\n")
+  (out! x)
+  (out! "\n")
 
   (let sum:i32 (+ 3 4))
-  (out sum)
-  (out "\n")
+  (out! sum)
+  (out! "\n")
 
   (let n:i32 5)
   (let label:string
     (if (> n 0) "positive" "negative"))
-  (out label)
-  (out "\n")
+  (out! label)
+  (out! "\n")
 
   (var count:i32 0)
   (= count 10)
-  (out count)
-  (out "\n")
+  (out! count)
+  (out! "\n")
 
-  (out "done\n")
+  (out! "done\n")
 
   ;; v0.2 features
-  (out "--- v0.2 ---\n")
+  (out! "--- v0.2 ---\n")
 
   ;; Struct construction + field access
   (let p:Point (Point 3 4))
-  (out (. p x))
-  (out "\n")
-  (out (. p y))
-  (out "\n")
+  (out! (. p x))
+  (out! "\n")
+  (out! (. p y))
+  (out! "\n")
 
   ;; Float arithmetic
   (let a:f64 3.0)
   (let b:f64 4.5)
-  (out (+ a b))
-  (out "\n")
+  (out! (+ a b))
+  (out! "\n")
 
   ;; Struct functions
   (let c:Circle (Circle 5.0))
-  (out "circle area: ")
-  (out (circle_area c))
-  (out "\n")
+  (out! "circle area: ")
+  (out! (circle_area c))
+  (out! "\n")
 
   (let r:Rect (Rect 4.0 6.0))
-  (out "rect area: ")
-  (out (rect_area r))
-  (out "\n")
+  (out! "rect area: ")
+  (out! (rect_area r))
+  (out! "\n")
 
   (let t:Triangle (Triangle 4.0 3.0))
-  (out "triangle area: ")
-  (out (tri_area t))
-  (out "\n")
+  (out! "triangle area: ")
+  (out! (tri_area t))
+  (out! "\n")
 
   ;; Sum type + match
   (let s1:Shape (CircleS 5.0))
-  (out "Circle has area ")
-  (out (shape_area s1))
-  (out "\n")
+  (out! "Circle has area ")
+  (out! (shape_area s1))
+  (out! "\n")
 
   (let s2:Shape (RectS 4.0 6.0))
-  (out "Rect has area ")
-  (out (shape_area s2))
-  (out "\n")
+  (out! "Rect has area ")
+  (out! (shape_area s2))
+  (out! "\n")
 
   (let s3:Shape (TriS 4.0 3.0))
-  (out "Tri has area ")
-  (out (shape_area s3))
-  (out "\n"))
+  (out! "Tri has area ")
+  (out! (shape_area s3))
+  (out! "\n"))

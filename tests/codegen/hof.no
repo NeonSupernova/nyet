@@ -10,20 +10,20 @@
 (fn main () -> unit
   (var nums:Array[i32] [1 2 3 4 5])
   (let doubled:Array[i32] (map (fn (x:i32) -> i32 (* x 2)) nums))
-  (out (doubled 0)) (out " ") (out (doubled 4)) (out "\n")
+  (out! (doubled 0)) (out! " ") (out! (doubled 4)) (out! "\n")
 
   (let evens:Array[i32] (filter (fn (x:i32) -> bool (== (% x 2) 0)) nums))
-  (out (evens 0)) (out " ") (out (evens 1)) (out "\n")
+  (out! (evens 0)) (out! " ") (out! (evens 1)) (out! "\n")
 
   (let total:i32 (fold (fn (a:i32 x:i32) -> i32 (+ a x)) 0 nums))
-  (out total) (out "\n")
+  (out! total) (out! "\n")
 
   (if (any (fn (x:i32) -> bool (== x 3)) nums)
-      (out "has 3\n") (out "no 3\n"))
+      (out! "has 3\n") (out! "no 3\n"))
   (if (all (fn (x:i32) -> bool (> x 0)) nums)
-      (out "all positive\n") (out "not all positive\n"))
+      (out! "all positive\n") (out! "not all positive\n"))
 
   (var words:Array[string] ["one" "two" "three" "four" "five"])
   (let pairs:Array[#(i32 string)] (zip nums words))
   (let p:#(i32 string) (pairs 0))
-  (out (p 0)) (out " ") (out (p 1)) (out "\n"))
+  (out! (p 0)) (out! " ") (out! (p 1)) (out! "\n"))

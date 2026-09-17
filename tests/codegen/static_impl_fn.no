@@ -18,7 +18,7 @@
 (fn main () -> unit
   (do
     (let p (Point/origin))
-    (out (. p x)) (out "\n")
+    (out! (. p x)) (out! "\n")
     (let q (Point/make 5 6))
-    (out (+ (. q x) (. q y))) (out "\n")
-    (out (Point/unit_scale)) (out "\n")))
+    (out! (+ (. q x) (. q y))) (out! "\n")
+    (out! (Point/unit_scale)) (out! "\n")))

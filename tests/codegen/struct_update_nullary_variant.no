@@ -33,16 +33,16 @@
   (do
     (let me (Person name:"Ada" age:36 address:(Address city:"London")))
     (let older (Person ..me age:37))
-    (out (fmt "{} {} {}\n" (. older name) (. older age) (. older address city)))
+    (out! (fmt "{} {} {}\n" (. older name) (. older age) (. older address city)))
 
     (match (divide 1.0 0.0)
-      ((Good v) (out (fmt "{}\n" v)))
-      ((Bad Overflow) (out "overflow\n"))
-      ((Bad DivisionByZero) (out "div by zero\n")))
+      ((Good v) (out! (fmt "{}\n" v)))
+      ((Bad Overflow) (out! "overflow\n"))
+      ((Bad DivisionByZero) (out! "div by zero\n")))
 
     (let s (Stack items:[1 2 3] size:5))
-    (out (fmt "len {}\n" (len &s)))
+    (out! (fmt "len {}\n" (len &s)))
 
     (match (divide 5.0 2.0)
-      ((Good v) (out (fmt "{}\n" v)))
-      ((Bad _) (out "bad\n")))))
+      ((Good v) (out! (fmt "{}\n" v)))
+      ((Bad _) (out! "bad\n")))))

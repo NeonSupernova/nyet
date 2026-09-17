@@ -36,6 +36,16 @@ receive a usable AST.
 A small prelude of built-in macros (currently just ``assert``) is
 pre-registered before user macros, and can be shadowed by a user
 ``macro assert`` declaration without producing a redefinition error.
+
+The same prelude source also carries non-macro top-level declarations
+(the ``IOChannel`` trait and its supporting ``Result``/``IOError``/
+``IOMode``/``FileMode`` types) that are prepended to every program's
+declaration list, ahead of the user's own -- so a user file that
+declares its own same-named type (several examples already define
+their own ``Result``) processes second and simply overwrites the
+prelude symbol (`resolve.py`'s `Scope.define` has no duplicate-name
+guard), the same "last one wins" shadowing the macro prelude already
+relies on for ``assert``.
 """
 
 from __future__ import annotations
@@ -60,26 +70,63 @@ MAX_MACRO_DEPTH = 64
 # language's own surface syntax and avoids tracking AST shapes by hand.
 
 PRELUDE_SOURCE = """\
-;; Standard prelude — built-in macros loaded before every program.
+;; Standard prelude — built-in macros and declarations loaded before
+;; every program.
 
-;; (assert cond) — abort with "assertion failed" if cond is false.
+;; (assert! cond) — abort with "assertion failed" if cond is false.
 (macro assert (cond)
   (if (! cond) (panic "assertion failed") pass))
 
-;; (do_all forms ...) — evaluate each form in sequence.
+;; (do_all! forms ...) — evaluate each form in sequence.
 ;; Useful for macros that need to expand to multiple statements.
 (macro do_all (forms ...)
   (do forms ...))
+
+;; IOChannel — see main.no's "IO Channels" section. `out!`/`err!` are
+;; thin macro sugar over the `io` builtin for the common (implicit
+;; stdout/stderr) case; `io` itself, `in`, `FileIO`, and the builtin
+;; `out`/`in`/`err` channel-value constants are compiler builtins
+;; registered directly in resolve.py/typeck.py/emit.py, not expressed
+;; here in Nyet source.
+
+(macro out (msg) (io out msg))
+(macro err (msg) (io err msg))
+
+(type IOError (Other string))
+
+;; write/read/close each get their own concrete Result-shaped type
+;; rather than sharing one generic `Result[T E]` instantiated three
+;; ways. When this was written, generic variant construction resolved
+;; `(Variant val)` calls by variant name only (`_variant_ctors`,
+;; pynyet/codegen/emit.py), so simultaneous instantiations of the same
+;; generic sum type collided and silently miscompiled. Commit 3cb712f
+;; since added a fallback that recovers the type args from the
+;; enclosing fn's return type or a `let` annotation; the concrete
+;; types were kept as-is rather than reworked onto a generic Result,
+;; and still sidestep the problem entirely.
+
+(type WriteResult (WriteOk usize) (WriteErr IOError))
+(type ReadResult  (ReadOk string) (ReadErr IOError))
+(type CloseResult (CloseOk) (CloseErr IOError))
+
+(type IOMode (In) (Out) (Err))
+(type FileMode (Read) (Write) (Append) (ReadWrite))
+
+(trait IOChannel
+  (fn write (self:&!Self data:string) -> WriteResult)
+  (fn read  (self:&!Self)             -> ReadResult)
+  (fn close (self:&!Self)             -> CloseResult))
 """
 
+_prelude_program_cache: list[N.Node] | None = None
 _prelude_macros_cache: dict[str, N.MacroDecl] | None = None
 
 
-def _load_prelude_macros() -> dict[str, N.MacroDecl]:
-    """Parse the prelude source once and return its macro decls."""
-    global _prelude_macros_cache
-    if _prelude_macros_cache is not None:
-        return _prelude_macros_cache
+def _load_prelude_program() -> list[N.Node]:
+    """Parse the prelude source once and return its top-level nodes."""
+    global _prelude_program_cache
+    if _prelude_program_cache is not None:
+        return _prelude_program_cache
     # Local imports avoid a hard dependency at module import time and
     # sidestep the cycle pynyet.sema.expand → parser → ast nodes.
     from pynyet.lexer.scanner import lex
@@ -87,13 +134,27 @@ def _load_prelude_macros() -> dict[str, N.MacroDecl]:
     from pynyet.source import SourceFile
 
     sf = SourceFile("<prelude>", PRELUDE_SOURCE)
-    program = parse(lex(sf))
+    _prelude_program_cache = parse(lex(sf))
+    return _prelude_program_cache
+
+
+def _load_prelude_macros() -> dict[str, N.MacroDecl]:
+    """Return the prelude's macro decls, keyed by their bare (un-banged) name."""
+    global _prelude_macros_cache
+    if _prelude_macros_cache is not None:
+        return _prelude_macros_cache
     macros: dict[str, N.MacroDecl] = {}
-    for node in program:
+    for node in _load_prelude_program():
         if isinstance(node, N.MacroDecl):
             macros[node.name] = node
     _prelude_macros_cache = macros
     return macros
+
+
+def _load_prelude_decls() -> list[N.Node]:
+    """Non-macro top-level prelude declarations (trait/type), prepended
+    to every program ahead of the user's own -- see module docstring."""
+    return [node for node in _load_prelude_program() if not isinstance(node, N.MacroDecl)]
 
 
 # Sentinel used inside substitution to flatten a splice into the
@@ -145,7 +206,31 @@ class MacroExpander:
             new_node = self._expand_node(node, depth=0)
             if new_node is not None:
                 expanded.append(new_node)
-        return expanded
+
+        # Prepend the prelude's non-macro declarations (IOChannel and
+        # friends) ahead of the user's own so a same-named user
+        # declaration processed afterwards shadows it (see module
+        # docstring). Deep-copied since the cached prelude AST is reused
+        # across every compilation in this process and later passes
+        # annotate nodes in place (e.g. `resolved_def_id`).
+        #
+        # A prelude declaration the program redeclares itself is dropped
+        # rather than shadowed: name resolution is last-one-wins, but
+        # codegen walks every declaration in the list and would emit both,
+        # producing an LLVM `redefinition of type` error that clang
+        # rejects outright (main.no declares its own `IOError`, as any
+        # program is free to).
+        user_decl_names = {
+            node.name
+            for node in expanded
+            if isinstance(node, N.TypeDecl | N.StructDecl | N.TraitDecl)
+        }
+        prelude_decls = [
+            copy.deepcopy(n)
+            for n in _load_prelude_decls()
+            if getattr(n, "name", None) not in user_decl_names
+        ]
+        return prelude_decls + expanded
 
     def _validate_params(self, macro: N.MacroDecl) -> None:
         """A variadic param must be the last one in the list."""
@@ -188,7 +273,23 @@ class MacroExpander:
             )
             return self._expand_node(node.value, depth)
 
-        if isinstance(node, N.Call) and self._macro_name(node.head) in self.macros:
+        # Macro calls require a trailing `!` at the call site (e.g.
+        # `(assert! cond)`, not `(assert cond)`) so a macro invocation is
+        # never visually confused with an ordinary call. Macros are always
+        # *declared* under their bare name -- the bang belongs to the call,
+        # not the definition -- so we strip it before the registry lookup.
+        # A bang-suffixed call whose stripped name isn't a registered macro
+        # (e.g. a real function literally named `insert!`) falls through
+        # unchanged and resolves normally against that function; a bare
+        # call to a macro's plain name (no bang) is no longer expanded at
+        # all, which surfaces downstream as resolve.py's ordinary
+        # "undefined name" error if the bang is forgotten.
+        if (
+            isinstance(node, N.Call)
+            and (called := self._macro_name(node.head)) is not None
+            and called.endswith("!")
+            and called[:-1] in self.macros
+        ):
             return self._expand_macro_call(node, depth)
 
         self._walk_children(node, depth)
@@ -219,7 +320,8 @@ class MacroExpander:
 
         name = self._macro_name(call.head)
         assert name is not None
-        macro = self.macros[name]
+        macro_name = name[:-1] if name.endswith("!") else name
+        macro = self.macros[macro_name]
 
         params = macro.params
         variadic = params[-1] if params and params[-1].variadic else None

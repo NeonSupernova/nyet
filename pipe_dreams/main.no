@@ -1,0 +1,12 @@
+;;;; Pipe Dreams -- a number-transformation puzzle game, built to show
+;;;; off Nyet's `|>` pipe operator.
+;;;;
+;;;; The game logic lives in `pipe_dreams_lib.no` (repo root) as
+;;;; `run_pipe_dreams`, so the arcade launcher can
+;;;; `(use pipe_dreams_lib)` and call into it directly alongside the
+;;;; other games. This file is just the standalone entry point.
+
+(use pipe_dreams_lib)
+
+(fn main () -> unit
+  (run_pipe_dreams))

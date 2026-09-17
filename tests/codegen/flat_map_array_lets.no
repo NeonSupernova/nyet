@@ -17,11 +17,11 @@
   (do
     (let nums:Array[i32] [1 2 3])
     (let squares (flat_map (fn (x:i32) -> Array[i32] [x (* x x)]) nums))
-    (out (fmt "{} {} {} {} {} {} {}\n"
+    (out! (fmt "{} {} {} {} {} {} {}\n"
               (len squares) (squares 0) (squares 1) (squares 2) (squares 3) (squares 4) (squares 5)))
 
     (let doubled (map (fn (x:i32) -> i32 (* x 2)) [1 2 3 4 5]))
-    (out (fmt "{} {}\n" (doubled 0) (doubled 4)))
+    (out! (fmt "{} {}\n" (doubled 0) (doubled 4)))
 
     (let tens (evens_up_to 3))
-    (out (fmt "{} {}\n" (len tens) (tens 2)))))
+    (out! (fmt "{} {}\n" (len tens) (tens 2)))))

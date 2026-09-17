@@ -13,7 +13,7 @@
 (fn main () -> unit
   (do
     (var pts:Array[Point] [(Point x:1 y:2) (Point x:3 y:4)])
-    (out (. (pts 0) x)) (out "\n")
+    (out! (. (pts 0) x)) (out! "\n")
     (= (. (pts 0) x) 99)
-    (out (. (pts 0) x)) (out "\n")
-    (out (. (pts 1) x)) (out "\n")))
+    (out! (. (pts 0) x)) (out! "\n")
+    (out! (. (pts 1) x)) (out! "\n")))

@@ -18,19 +18,19 @@
     ;; bool == bool
     (let a:bool true)
     (let b:bool true)
-    (if (== a b) (out "bool eq\n") (out "bool ne\n"))
+    (if (== a b) (out! "bool eq\n") (out! "bool ne\n"))
 
     ;; i64 == i64, and i64 == bare int literal (literal yields to i64)
     (let x:i64 5000000000i64)
     (let y:i64 5000000000i64)
-    (if (== x y) (out "i64 eq\n") (out "i64 ne\n"))
-    (if (== x 5000000000i64) (out "i64 lit eq\n") (out "i64 lit ne\n"))
+    (if (== x y) (out! "i64 eq\n") (out! "i64 ne\n"))
+    (if (== x 5000000000i64) (out! "i64 lit eq\n") (out! "i64 lit ne\n"))
 
     ;; char == char (chars are i32-backed; compare their codepoints)
     (let c1:char 65)
     (let c2:char 65)
-    (if (== c1 c2) (out "char eq\n") (out "char ne\n"))
+    (if (== c1 c2) (out! "char eq\n") (out! "char ne\n"))
 
     ;; A bool-valued match compared for equality against a bool.
     (let got:bool (as_bool (Yes)))
-    (if (== got true) (out "match eq\n") (out "match ne\n"))))
+    (if (== got true) (out! "match eq\n") (out! "match ne\n"))))

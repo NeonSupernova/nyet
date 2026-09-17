@@ -39,6 +39,42 @@ Copy-Item "$PSScriptRoot\windows\add-to-path.ps1" "$bundle\add-to-path.ps1" -For
 Copy-Item "$PSScriptRoot\windows\add-to-path.bat" "$bundle\add-to-path.bat" -Force
 Copy-Item "$PSScriptRoot\WINDOWS_DEMO.md" "$bundle\README.md" -Force
 
+# The arcade demo suite -- each game's own directory (a two-line
+# `main.no` wrapper around its repo-root `_lib`/`_repl` module, which
+# nyet.spec already bundled as data so `(use ...)` resolves standalone)
+# plus the combined launcher.
+foreach ($dir in @("minibase", "adventure", "game_of_life", "pipe_dreams", "hangman", "arcade")) {
+    Copy-Item "$RepoRoot\$dir" "$bundle\$dir" -Recurse -Force
+}
+
+# The arcade suite's actual logic: each game's `main.no` wrapper is
+# just two lines, so the interesting, language-feature-showing code
+# lives in these repo-root `_lib`/`_repl`/prelude modules instead.
+# nyet.spec bundles them too (ARCADE_LIB_MODULES, kept in sync with
+# this list) so `(use ...)` resolves at runtime from the frozen exe --
+# but that copy lands wherever PyInstaller's internals put it, not
+# somewhere a person browsing the demo folder would ever find. Half
+# the point of the demo is showing off the language, so give them a
+# second, plainly-visible copy here.
+New-Item -ItemType Directory -Path "$bundle\lib" -Force | Out-Null
+foreach ($name in @("minibase_core", "minibase_repl", "adventure_lib", "game_of_life_lib", "pipe_dreams_lib", "hangman_lib", "prelude_option", "prelude_rng")) {
+    Copy-Item "$RepoRoot\$name.no" "$bundle\lib\$name.no" -Force
+}
+
+# A handful of feature-focused programs (also this repo's own
+# regression tests, written to double as short, documented demos of
+# one language feature each) alongside the curated demo/ set.
+New-Item -ItemType Directory -Path "$bundle\demo\features" -Force | Out-Null
+foreach ($name in @("ansi_lib", "char_printing", "file_read_lines", "string_len")) {
+    Copy-Item "$RepoRoot\tests\codegen\$name.no" "$bundle\demo\features\$name.no" -Force
+}
+
+# main.no -- the language spec, kept as reference/browsing material,
+# not something guaranteed to build (see the repo's own CLAUDE.md: it
+# documents features beyond what's implemented and is aspirational in
+# places).
+Copy-Item "$RepoRoot\main.no" "$bundle\main.no" -Force
+
 $zipPath = "$OutDir\nyet-windows-demo.zip"
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path "$bundle\*" -DestinationPath $zipPath

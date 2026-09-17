@@ -3,4 +3,4 @@
 
 (fn main () -> unit
   (let triple (fn (n:i32) -> i32 (* n 3)))
-  (out (triple 4)) (out "\n"))
+  (out! (triple 4)) (out! "\n"))

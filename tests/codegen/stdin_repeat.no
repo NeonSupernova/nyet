@@ -15,6 +15,6 @@
 
 (fn main () -> unit
   (let a:string (in))
-  (out "eof[") (out a) (out "]\n")
+  (out! "eof[") (out! a) (out! "]\n")
   (let b:string (in))
-  (out "eof[") (out b) (out "]\n"))
+  (out! "eof[") (out! b) (out! "]\n"))

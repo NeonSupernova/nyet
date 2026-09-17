@@ -1,6 +1,6 @@
 === build stderr ===
 tests/codegen/match_nonexhaustive.no:13:3: warning: non-exhaustive match on Sign; missing variants: Neg
       (match s
-      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 === stdout ===
 pos 5

@@ -50,15 +50,15 @@
 (fn main () -> unit
   (do
     (let swapped (swap #(1 "one")))
-    (out (fmt "{} {}\n" (swapped 0) (swapped 1)))
+    (out! (fmt "{} {}\n" (swapped 0) (swapped 1)))
 
     (let nums:Array[i32] [4 9 2])
-    (out (fmt "{} {}\n" (sum [4 9 2]) (largest &nums)))
-    (out (show_sum [1 2 3])) (out "\n")
+    (out! (fmt "{} {}\n" (sum [4 9 2]) (largest &nums)))
+    (out! (show_sum [1 2 3])) (out! "\n")
 
     (match (map_err (check 5) (fn (e:Small) -> Wrapped (Wrap inner:e)))
-      ((Ok v)  (out (fmt "mapped {}\n" v)))
-      ((Err _) (out "unexpected\n")))
+      ((Ok v)  (out! (fmt "mapped {}\n" v)))
+      ((Err _) (out! "unexpected\n")))
     (match (map_err (check 2) (fn (e:Small) -> Wrapped (Wrap inner:e)))
-      ((Ok _) (out "unexpected\n"))
-      ((Err (Wrap (TooSmall n))) (out (fmt "err {}\n" n))))))
+      ((Ok _) (out! "unexpected\n"))
+      ((Err (Wrap (TooSmall n))) (out! (fmt "err {}\n" n))))))

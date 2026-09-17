@@ -26,6 +26,6 @@
 
 (fn main () -> unit
   (do
-    (out (fmt "scalar bare return: {}\n" (scalar_ret 5)))
-    (out (fmt "array bare return len: {}\n" (len (array_ret 3))))
-    (out (fmt "do-tail return: {}\n" (do_tail_ret 6)))))
+    (out! (fmt "scalar bare return: {}\n" (scalar_ret 5)))
+    (out! (fmt "array bare return len: {}\n" (len (array_ret 3))))
+    (out! (fmt "do-tail return: {}\n" (do_tail_ret 6)))))

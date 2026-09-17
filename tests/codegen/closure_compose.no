@@ -10,8 +10,8 @@
   (f (f x)))
 
 (fn main () -> unit
-  (out "inc(5) = ") (out (inc 5)) (out "\n")
-  (out "apply_twice(inc, 5) = ") (out (apply_twice inc 5)) (out "\n")
-  (out "apply_twice(square, 3) = ")
-  (out (apply_twice (fn (n:i32) -> i32 (* n n)) 3))
-  (out "\n"))
+  (out! "inc(5) = ") (out! (inc 5)) (out! "\n")
+  (out! "apply_twice(inc, 5) = ") (out! (apply_twice inc 5)) (out! "\n")
+  (out! "apply_twice(square, 3) = ")
+  (out! (apply_twice (fn (n:i32) -> i32 (* n n)) 3))
+  (out! "\n"))

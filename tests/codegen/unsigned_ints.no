@@ -15,30 +15,30 @@
 (fn test_widen () -> unit
   (do
     (let a:u8 255)
-    (out (fmt "u8 255 widened to i32: {}\n" (as a i32)))
+    (out! (fmt "u8 255 widened to i32: {}\n" (as a i32)))
     (let b:u16 65535)
-    (out (fmt "u16 65535 widened to i32: {}\n" (as b i32)))))
+    (out! (fmt "u16 65535 widened to i32: {}\n" (as b i32)))))
 
 (fn test_print_and_cmp () -> unit
   (do
     (let big:u32 4000000000)
-    (out (fmt "u32 value printed directly: {}\n" big))
+    (out! (fmt "u32 value printed directly: {}\n" big))
     (let small:u32 3000000000)
-    (out (fmt "u32 4000000000 > 3000000000: {}\n" (> big small)))))
+    (out! (fmt "u32 4000000000 > 3000000000: {}\n" (> big small)))))
 
 (fn test_div_rem () -> unit
   (do
     (let x:u32 4000000000)
     (let y:u32 3)
-    (out (fmt "u32 4000000000 / 3: {}\n" (/ x y)))
-    (out (fmt "u32 4000000000 rem 3: {}\n" (% x y)))))
+    (out! (fmt "u32 4000000000 / 3: {}\n" (/ x y)))
+    (out! (fmt "u32 4000000000 rem 3: {}\n" (% x y)))))
 
 (fn test_fmt_and_u64 () -> unit
   (do
     (let z:u32 4000000000)
-    (out (fmt "fmt u32: {}\n" z))
+    (out! (fmt "fmt u32: {}\n" z))
     (let w:u64 10000000000000000000)
-    (out (fmt "u64 value printed directly: {}\n" w))))
+    (out! (fmt "u64 value printed directly: {}\n" w))))
 
 (fn main () -> unit
   (do

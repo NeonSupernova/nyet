@@ -7,8 +7,8 @@
 ;; `alloca`, which rejects `void` as a local type.
 ;; Expected: yes / no / sum-yes / sum-no
 
-(fn say_yes () -> unit (out "yes\n"))
-(fn say_no () -> unit (out "no\n"))
+(fn say_yes () -> unit (out! "yes\n"))
+(fn say_no () -> unit (out! "no\n"))
 
 (type Choice (Yes) (No))
 
@@ -20,8 +20,8 @@
     (true (say_yes))
     (false (say_no)))
   (match (Yes)
-    ((Yes) (do (out "sum-") (say_yes)))
-    ((No)  (do (out "sum-") (say_no))))
+    ((Yes) (do (out! "sum-") (say_yes)))
+    ((No)  (do (out! "sum-") (say_no))))
   (match (No)
-    ((Yes) (do (out "sum-") (say_yes)))
-    ((No)  (do (out "sum-") (say_no)))))
+    ((Yes) (do (out! "sum-") (say_yes)))
+    ((No)  (do (out! "sum-") (say_no)))))

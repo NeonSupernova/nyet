@@ -6,4 +6,4 @@
 
 (fn main () -> unit
   (let r (apply (fn (n:i32) -> i32 (* n 2)) 5))
-  (out r) (out "\n"))
+  (out! r) (out! "\n"))

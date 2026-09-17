@@ -39,7 +39,7 @@ def test_generic_fn_struct_return_bound_without_annotation():
         (fn main () -> unit
           (do
             (let p (make_pair 5 "hello"))
-            (out (. p first))))
+            (out! (. p first))))
     """)
     # Constructing the 2-field Pair inside `make_pair__i32_string` emits
     # 2 GEPs regardless of this fix; the field *read* on `p` in `main`
@@ -53,6 +53,6 @@ def test_generic_fn_struct_return_bound_without_annotation():
 def test_generic_fn_scalar_return_is_unaffected():
     ir = _ir_for("""
         (fn pick_a[A B] (a:A b:B) -> A a)
-        (fn main () -> unit (out (pick_a 5 "hello")))
+        (fn main () -> unit (out! (pick_a 5 "hello")))
     """)
     assert "call i32 @pick_a__i32_string(" in ir

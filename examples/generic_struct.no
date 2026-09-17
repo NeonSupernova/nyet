@@ -7,7 +7,7 @@
 
 (fn main () -> unit
   (let p:Pair[i32 string] (Pair 3 "hello"))
-  (out (. p a))
-  (out "\n")
-  (out (. p b))
-  (out "\n"))
+  (out! (. p a))
+  (out! "\n")
+  (out! (. p b))
+  (out! "\n"))

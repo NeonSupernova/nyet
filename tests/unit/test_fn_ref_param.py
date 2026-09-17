@@ -33,7 +33,7 @@ def test_by_reference_fn_param_is_called_indirectly_not_as_undefined_fn():
     ir = _ir_for("""
         (fn apply (f:&(fn i32 -> i32) x:i32) -> i32 (f x))
         (fn double (n:i32) -> i32 (* n 2))
-        (fn main () -> unit (out (apply double 5)))
+        (fn main () -> unit (out! (apply double 5)))
     """)
     apply_fn = ir[ir.index("define i32 @apply") : ir.index("\n}\n", ir.index("define i32 @apply"))]
     assert "@f(" not in apply_fn
@@ -45,7 +45,7 @@ def test_plain_value_fn_param_is_unaffected():
     ir = _ir_for("""
         (fn apply (f:(fn i32 -> i32) x:i32) -> i32 (f x))
         (fn double (n:i32) -> i32 (* n 2))
-        (fn main () -> unit (out (apply double 5)))
+        (fn main () -> unit (out! (apply double 5)))
     """)
     apply_fn = ir[ir.index("define i32 @apply") : ir.index("\n}\n", ir.index("define i32 @apply"))]
     assert "@f(" not in apply_fn
