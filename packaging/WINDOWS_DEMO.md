@@ -144,11 +144,16 @@ nyet -o myprogram.exe path\to\myfile.no
 A few other things `nyet` can do, if you want to show them off:
 `nyet check file.no` checks a program for errors without producing an
 `.exe`, and `nyet run file.no` builds and immediately runs it in one
-step.
+step. `nyet --version` prints which build this is -- worth including
+if you report a problem.
 
 ## Questions or something not working?
 
 If anything about this bundle itself seems broken (as opposed to a
-mistake in a program you wrote), just flag it to whoever put this
-demo together -- it's easy to rebuild with a newer version of the
-compiler.
+mistake in a program you wrote), open an issue:
+
+  https://github.com/NeonSupernova/nyet-releases/issues
+
+Include what `nyet --version` prints, the `.no` program, and the exact
+output you got. That's also where newer builds are published, so it's
+worth a look before reporting anything -- it may already be fixed.
