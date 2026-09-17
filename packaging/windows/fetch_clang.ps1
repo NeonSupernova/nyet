@@ -13,12 +13,27 @@
   runtime/async.c uses <pthread.h>.
 #>
 param(
-    [Parameter(Mandatory)] [string]$Dest
+    [Parameter(Mandatory)] [string]$Dest,
+    # Where to record which WinLibs release was used. The public
+    # release repo's THIRD-PARTY-NOTICES.md promises that each Nyet
+    # release names the exact WinLibs build it redistributes (the GPL
+    # components in it entitle users to matching source, which WinLibs
+    # publishes per-release), so the release workflow needs this in a
+    # machine-readable form rather than only in the build log.
+    [string]$ManifestPath
 )
 $ErrorActionPreference = "Stop"
 
 if (Test-Path "$Dest\bin\clang.exe") {
     Write-Host "clang already present at $Dest, skipping download."
+    if ($ManifestPath -and -not (Test-Path $ManifestPath)) {
+        # Which release those existing binaries came from is not
+        # recoverable from the extracted tree, and guessing it would
+        # put a wrong source-code pointer in the release notes. Say so
+        # loudly instead; a release build starts from a clean runner
+        # and never takes this path.
+        Write-Warning "Reusing an existing toolchain at $Dest, so no provenance manifest can be written to $ManifestPath. Delete $Dest and re-run before cutting a release."
+    }
     return
 }
 
@@ -70,6 +85,8 @@ for ($page = 1; $page -le 10 -and $candidates.Count -eq 0; $page++) {
                 Asset       = $m
                 PublishedAt = [DateTime]$release.published_at
                 IsUcrt      = $m.name -match "(?i)ucrt"
+                ReleaseTag  = $release.tag_name
+                ReleaseUrl  = $release.html_url
             }
         }
     }
@@ -83,6 +100,20 @@ if ($candidates.Count -eq 0) {
 $best = $candidates | Sort-Object -Property @{Expression = "IsUcrt"; Descending = $true }, @{Expression = "PublishedAt"; Descending = $true } | Select-Object -First 1
 $asset = $best.Asset
 Write-Host "Selected $($asset.name) (published $($best.PublishedAt))"
+
+if ($ManifestPath) {
+    $manifestDir = Split-Path $ManifestPath
+    if ($manifestDir) { New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null }
+    [PSCustomObject]@{
+        asset       = $asset.name
+        releaseTag  = $best.ReleaseTag
+        releaseUrl  = $best.ReleaseUrl
+        publishedAt = $best.PublishedAt.ToString("yyyy-MM-dd")
+        sizeMB      = [math]::Round($asset.size / 1MB)
+        downloadUrl = $asset.browser_download_url
+    } | ConvertTo-Json | Set-Content -Path $ManifestPath -Encoding utf8
+    Write-Host "Wrote toolchain provenance manifest to $ManifestPath"
+}
 
 Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB))MB)..."
 $tempDir = [System.IO.Path]::GetTempPath()

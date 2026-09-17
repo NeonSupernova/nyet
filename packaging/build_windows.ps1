@@ -24,7 +24,10 @@ if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
 New-Item -ItemType Directory -Path $bundle -Force | Out-Null
 
 Write-Host "== 1/4: fetching portable clang/mingw toolchain =="
-& "$PSScriptRoot\windows\fetch_clang.ps1" -Dest "$bundle\clang"
+# -ManifestPath: records which WinLibs release the bundle ships, for
+# the release notes' GPL source-code pointer. Lands outside $bundle so
+# it isn't zipped into the download.
+& "$PSScriptRoot\windows\fetch_clang.ps1" -Dest "$bundle\clang" -ManifestPath "$OutDir\toolchain.json"
 
 Write-Host "== 2/4: installing PyInstaller =="
 python -m pip install --quiet --upgrade pyinstaller
