@@ -5074,8 +5074,33 @@ class Emitter:
     def _emit_array_len(self, arg: N.Expr) -> str:
         """Read the i64 length stored at offset 0 of an array's heap block,
         then truncate to i32 so it can be used in `i32` arithmetic and
-        comparisons without explicit casts."""
+        comparisons without explicit casts.
+
+        `string` is `ptr`-shaped exactly like `Array[T]`, but has no
+        such length header -- it's a plain null-terminated C string
+        (see `_emit_string_concat`'s doc comment) -- so `(len s)` on a
+        string previously read whatever bytes happened to sit at the
+        start of its character data as if they were an i64 length,
+        returning garbage (confirmed: `(len "Alexandria")` returned
+        2019912769, not 10). `require_nonempty` in minibase_core.no
+        (`(!= (len s) 0)`) has been silently broken this whole time as
+        a result -- any blank-string validation built on `len` never
+        actually validated anything. Fixed by routing a string operand
+        through `strlen` instead, via the same `_is_string_operand`
+        classifier `_emit_cmp` already uses to give `string` its own
+        `==`/`!=`/`<`/`>` behavior.
+        """
         target = self._unwrap_borrow(arg)
+        if self._is_string_operand(target):
+            val = self._emit_expr(target)
+            if val is None:
+                return "0"
+            self._declare_extern("declare i64 @strlen(ptr)")
+            slen64 = self._fresh_tmp()
+            self._emit_line(f"{slen64} = call i64 @strlen(ptr {val})")
+            slen32 = self._fresh_tmp()
+            self._emit_line(f"{slen32} = trunc i64 {slen64} to i32")
+            return slen32
         # Find the slot holding the array pointer.
         arr_ptr: str | None = None
         if isinstance(target, N.Ident) and target.name in self._env:
