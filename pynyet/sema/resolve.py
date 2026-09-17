@@ -84,6 +84,10 @@ BUILTINS = {
     "zip",
     "array_new",
     "now",
+    "min",
+    "max",
+    "sqrt",
+    "flat_map",
 }
 
 # Primitive type names valid in expression position (e.g. `(in i32)`)

@@ -1,0 +1,63 @@
+;; Regression test: sema fixes surfaced by making main.no compile.
+;;
+;;   - A `loop`'s type is the type its `(break value)` carries. It used to
+;;     always be unit, so `(let n:i32 (loop ... (break 42)))` was a type
+;;     error.
+;;   - An unsuffixed float literal satisfies an `f32` annotation:
+;;     `(let e:f32 1.5)`.
+;;   - A trait method with a default body is available on every impl that
+;;     doesn't override it.
+;;   - An inherent method named like a builtin (`len` on `Vec2`) no longer
+;;     retypes every `(len arr)` in the program as the method's f64.
+;;
+;; Expected:
+;;   30
+;;   1.5
+;;   hi, I'm Ada!
+;;   custom
+;;   5
+;;   3
+
+(trait Greeter
+  (fn greeting (self:&Self) -> string)
+  (fn introduce (self:&Self) -> string
+    (+ (greeting self) "!")))
+
+(struct Person name:string)
+(struct Robot id:i32)
+
+(impl Greeter Person
+  (fn greeting (self:&Person) -> string (fmt "hi, I'm {}" (. self name))))
+
+(impl Greeter Robot
+  (fn greeting (self:&Robot) -> string "beep")
+  (fn introduce (self:&Robot) -> string "custom"))
+
+(struct Vec2 x:f64 y:f64)
+
+(impl Vec2
+  (fn len (self:&Vec2) -> f64
+    (sqrt (+ (* (. self x) (. self x)) (* (. self y) (. self y))))))
+
+(fn main () -> unit
+  (do
+    (var i:i32 0)
+    (let n:i32
+      (loop
+        (= i (+ i 1))
+        (if (== i 3) (break (* i 10)) pass)))
+    (out! (fmt "{}\n" n))
+
+    (let e:f32 1.5)
+    (out! (fmt "{}\n" e))
+
+    (let ada (Person name:"Ada"))
+    (out! (introduce &ada)) (out! "\n")
+    (let bot (Robot id:1))
+    (out! (introduce &bot)) (out! "\n")
+
+    (let v (Vec2 x:3.0 y:4.0))
+    (out! (fmt "{}\n" (len &v)))
+    (let xs:Array[i32] [1 2 3])
+    (let count:i32 (len xs))
+    (out! (fmt "{}\n" count))))

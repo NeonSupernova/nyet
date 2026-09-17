@@ -1,0 +1,62 @@
+;; Regression test: variadic arithmetic operators, the string path
+;; operator, `|>` pipelines, and higher-order builtins over array
+;; expressions -- all written the way main.no documents them.
+;;
+;; Before the fix:
+;;   - `(+ "hello" ", " "world\n")` / `(* 3 r r)` silently dropped every
+;;     operand past the second, as did an operator impl applied to
+;;     several operands (`(/ api "users" "42")`).
+;;   - `(/ "usr" "local")` emitted `sdiv ptr` (invalid IR).
+;;   - `(|> xs (map f) ...)` desugared to `((map f) xs)`, calling the
+;;     result of `(map f)` instead of threading `xs` in as its last arg.
+;;   - `map`/`filter`/`fold`/`any`/`all`/`zip` only accepted a named array
+;;     binding, so an inline `[1 2 3]` or a nested HOF call fell through
+;;     to a call to an undefined `@fold`; `(fold + 0 xs)` and
+;;     `(fold min ...)` couldn't use an operator as the function.
+;;
+;; Expected:
+;;   hello, world
+;;   usr/local/bin
+;;   https://api.example.com/users/42
+;;   12 10
+;;   24
+;;   1 9
+;;   3 7 2.5
+;;   4
+;;   24
+;;   has 9
+
+(struct URL base:string)
+
+(impl URL
+  (fn / (self:URL segment:string) -> URL
+    (URL base:(+ (. self base) "/" segment))))
+
+(fn cube_ish (r:i32) -> i32 (* 3 r r))
+
+(fn min_max (arr:&Array[i32]) -> #(i32 i32)
+  #((fold min (arr 0) arr)
+    (fold max (arr 0) arr)))
+
+(fn main () -> unit
+  (out! (+ "hello" ", " "world\n"))
+  (out! (/ "usr" "local" "bin")) (out! "\n")
+  (let api (URL base:"https://api.example.com"))
+  (let u (/ api "users" "42"))
+  (out! (. u base)) (out! "\n")
+  (out! (fmt "{} {}\n" (cube_ish 2) (+ 1 2 3 4)))
+
+  (let r:i32 (|> [1 2 3 4 5]
+    (map (fn (x:i32) -> i32 (* x 2)))
+    (filter (fn (x:i32) -> bool (> x 4)))
+    (fold + 0)))
+  (out! (fmt "{}\n" r))
+
+  (let nums:Array[i32] [4 1 9 3])
+  (let mm (min_max &nums))
+  (out! (fmt "{} {}\n" (mm 0) (mm 1)))
+  (out! (fmt "{} {} {}\n" (min 3 7) (max 3 7) (max 2.5 1.0)))
+  (let fs:Array[f64] [1.5 2.5])
+  (out! (fmt "{}\n" (fold + 0 fs)))
+  (out! (fmt "{}\n" (fold * 1 [1 2 3 4])))
+  (if (any (fn (x:i32) -> bool (== x 9)) nums) (out! "has 9\n") (out! "no 9\n")))

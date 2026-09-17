@@ -1,0 +1,64 @@
+;; Regression test: the generic functions main.no's Generics and Error
+;; Handling sections rely on.
+;;
+;;   - `[T: Add Zero Display]` parsed as `T: Add Zero` plus a separate generic
+;;     param `Display`, so the function could never be instantiated.
+;;   - A type argument couldn't be inferred through a tuple parameter
+;;     (`swap[A B] (p:#(A B))`), a generic type parameter
+;;     (`map_err[T E F] (result:Result[T E] ...)`), or a closure's declared
+;;     types; and compound types (`&T`, `#(B A)`) weren't substituted.
+;;   - `(T/zero)` in a generic body wasn't substituted, and a lambda inside a
+;;     generic function was lifted once, with `T` still in its types.
+;;
+;; Expected:
+;;   one 1
+;;   15 9
+;;   sum = 6
+;;   mapped 5
+;;   err 2
+
+(type Result[T E]
+  (Ok value:T)
+  (Err error:E))
+
+(type Small (TooSmall i32))
+(type Wrapped (Wrap inner:Small))
+
+(trait Zero (fn zero () -> Self))
+
+(impl Zero i32 (fn zero () -> i32 0))
+
+(fn swap[A B] (p:#(A B)) -> #(B A) #((p 1) (p 0)))
+
+(fn sum[T: Add Zero] (arr:Array[T]) -> T
+  (fold + (T/zero) arr))
+
+(fn largest[T: Ord] (arr:&Array[T]) -> &T
+  (fold (fn (a:&T b:&T) -> &T (if (> a b) a b)) (arr 0) arr))
+
+(fn show_sum[T: Add Zero Display] (arr:Array[T]) -> string
+  (fmt "sum = {}" (sum arr)))
+
+(fn map_err[T E F] (result:Result[T E] f:(fn E -> F)) -> Result[T F]
+  (match result
+    ((Ok v)  (Ok v))
+    ((Err e) (Err (f e)))))
+
+(fn check (n:i32) -> Result[i32 Small]
+  (if (< n 3) (Err (TooSmall n)) (Ok n)))
+
+(fn main () -> unit
+  (do
+    (let swapped (swap #(1 "one")))
+    (out! (fmt "{} {}\n" (swapped 0) (swapped 1)))
+
+    (let nums:Array[i32] [4 9 2])
+    (out! (fmt "{} {}\n" (sum [4 9 2]) (largest &nums)))
+    (out! (show_sum [1 2 3])) (out! "\n")
+
+    (match (map_err (check 5) (fn (e:Small) -> Wrapped (Wrap inner:e)))
+      ((Ok v)  (out! (fmt "mapped {}\n" v)))
+      ((Err _) (out! "unexpected\n")))
+    (match (map_err (check 2) (fn (e:Small) -> Wrapped (Wrap inner:e)))
+      ((Ok _) (out! "unexpected\n"))
+      ((Err (Wrap (TooSmall n))) (out! (fmt "err {}\n" n))))))

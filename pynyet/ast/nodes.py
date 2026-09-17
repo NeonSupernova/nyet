@@ -329,6 +329,8 @@ class FnExpr(Expr):
     return_type: TypeNode | None = None
     body: Expr | None = None
     captures: list[tuple[str, CaptureMode]] = field(default_factory=list)
+    # `(fn ...)` borrows, `(fn! ...)` borrows mutably, `(move fn ...)` moves.
+    capture_mode: CaptureMode = CaptureMode.BORROW
 
 
 @dataclass
@@ -473,3 +475,11 @@ class ModuleDecl(Decl):
 class UseDecl(Decl):
     path: list[str] = field(default_factory=list)
     alias: str | None = None
+
+
+@dataclass
+class Todo(Pass):
+    """A bare `...` placeholder, e.g. `(fn connect (cfg:&Config) -> Result ...)`.
+
+    Type-checks like `pass`; if it is ever evaluated at runtime the program
+    panics with "not yet implemented"."""

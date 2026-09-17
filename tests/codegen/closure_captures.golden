@@ -1,0 +1,9 @@
+=== stdout ===
+read 2
+moved 2 now 100 borrowed 100
+adders 8 13
+apply named 2 lambda 6 closure 6
+runs 2 once 7
+above 3
+nested 1007
+pipeline 50

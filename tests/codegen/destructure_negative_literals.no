@@ -1,0 +1,40 @@
+;; Regression test: tuple destructuring in `let`/`var`, and negative
+;; numeric literals -- both as main.no documents them.
+;;
+;; Before the fix:
+;;   - `(let #(a b) expr)` parsed, but the parser threw the pattern away
+;;     and bound a dummy `_destructure` name, so `a` and `b` were undefined.
+;;   - `-3` lexed as the operator `-` followed by `3`, so `(Some -3)` was a
+;;     two-argument call and `(== x -11)` compared against the `-` function.
+;;
+;; Expected:
+;;   1 hello
+;;   1.5 2.5
+;;   1 4 9
+;;   3 9
+;;   -3 -11 -2.5 -16
+;;   true
+
+(fn min_max (a:i32 b:i32) -> #(i32 i32)
+  (if (< a b) #(a b) #(b a)))
+
+(fn main () -> unit
+  (do
+    (let #(n s) #(1 "hello"))
+    (out! (fmt "{} {}\n" n s))
+
+    (let pair:#(f64 f64) #(1.5 2.5))
+    (let #(x y) pair)
+    (out! (fmt "{} {}\n" x y))
+
+    (let #(p #(q r)) #(1 #(4 9)))
+    (out! (fmt "{} {} {}\n" p q r))
+
+    (var #(lo hi) (min_max 7 3))
+    (let #(_ hi2) (min_max 9 3))
+    (= hi hi2)
+    (out! (fmt "{} {}\n" lo hi))
+
+    (let neg -3)
+    (out! (fmt "{} {} {} {}\n" neg (~ 10) -2.5 -0x10))
+    (if (== (~ 10) -11) (out! "true\n") (out! "false\n"))))

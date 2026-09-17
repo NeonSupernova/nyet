@@ -1,0 +1,14 @@
+;;;; std/math — numeric helpers written in Nyet.
+;;;;
+;;;; Builtin numeric primitives (`sqrt`, `min`, `max`) are provided by the
+;;;; compiler; everything here is ordinary Nyet source built on them.
+
+(module std/math)
+
+;; Length of the hypotenuse of a right triangle with legs x and y.
+(pub fn hypot (x:f64 y:f64) -> f64
+  (sqrt (+ (* x x) (* y y))))
+
+;; Absolute value of an f64.
+(pub fn abs (x:f64) -> f64
+  (if (< x 0.0) (- 0.0 x) x))

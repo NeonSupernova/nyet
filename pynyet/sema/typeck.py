@@ -51,6 +51,8 @@ class TypeChecker:
         self.mutable: dict[str, bool] = {}
         # Struct/type declarations
         self.type_decls: dict[str, NyetType] = {}
+        # One frame per enclosing `loop`: the types its `(break value)`s carry.
+        self._loop_break_types: list[list[NyetType]] = []
         # name -> True if the binding is known to hold a read-only (`&T`,
         # not `&!T`) reference -- populated for params (from the
         # annotation) and for `let`/`var` bound directly to `(& expr)`.
@@ -187,8 +189,17 @@ class TypeChecker:
             # Register named methods so their signatures are visible at
             # call sites. Operator methods are skipped — the built-in
             # codegen dispatch handles those.
+            # A method sharing a builtin's name (`Vec2`'s inherent `len`) is
+            # skipped too: `env` is one flat namespace, so registering it
+            # typed every `(len arr)` in the program as the method's f64.
+            from pynyet.sema.resolve import BUILTINS
+
             for item in node.items:
-                if isinstance(item, N.FnDecl) and item.name.isidentifier():
+                if (
+                    isinstance(item, N.FnDecl)
+                    and item.name.isidentifier()
+                    and item.name not in BUILTINS
+                ):
                     self._register_decl(item)
 
     def _check_node(self, node: N.Node) -> None:
@@ -220,7 +231,8 @@ class TypeChecker:
                 declared = self._resolve_type_node(node.type) if node.type else None
                 if declared and declared is not ERROR:
                     is_bare_int_lit = isinstance(node.value, N.IntLit)
-                    if not self._compatible(declared, val_ty, is_bare_int_lit):
+                    is_bare_float_lit = isinstance(node.value, N.FloatLit)
+                    if not self._compatible(declared, val_ty, is_bare_int_lit, is_bare_float_lit):
                         self.errors.append(
                             Diagnostic(
                                 Severity.ERROR,
@@ -309,6 +321,8 @@ class TypeChecker:
                 return FnSig((), UNIT)
             if node.name == "panic":
                 return FnSig((), UNIT)
+            if node.name == "sqrt":
+                return FnSig((F64,), F64)
             # v1.0 file IO builtins. STRING return for handles is approximate
             # — handles are opaque pointers, but STRING shares the LLVM `ptr`
             # shape and isn't Copy, which keeps the borrow checker honest if
@@ -389,6 +403,8 @@ class TypeChecker:
                     if node.args:
                         return self._infer(node.args[0])
                     return I32
+                if op in ("min", "max") and len(node.args) == 2 and op not in self.env:
+                    return self._infer(node.args[0])
                 if op in ("==", "!=", "<", "<=", ">", ">=", "&&", "||", "!"):
                     return BOOL
                 if op in ("&", "&!"):
@@ -430,14 +446,29 @@ class TypeChecker:
             scrut_ty = self._infer(node.scrutinee)
             ty = UNIT
             for arm in node.arms:
+                # Names an arm's pattern binds shadow outer bindings for that
+                # arm only. They used to not be bound at all, so in
+                # `(match r ((Ok n) (break n)))` `n` got the type of whatever
+                # unrelated `(let n ...)` came earlier in the function.
+                saved_env = dict(self.env)
+                saved_mutable = dict(self.mutable)
+                self._bind_pattern(arm.pattern, scrut_ty)
                 ty = self._infer(arm.body)
+                self.env = saved_env
+                self.mutable = saved_mutable
             if isinstance(scrut_ty, SumType):
                 self._check_match_exhaustive(node, scrut_ty)
             return ty
 
         if isinstance(node, N.Loop):
+            # A loop evaluates to what its `(break value)` carries, e.g.
+            # `(let n:i32 (loop ... (break 42)))`. It used to always be
+            # unit, so annotating that binding was a type error. Nested
+            # loops push their own frame.
+            self._loop_break_types.append([])
             self._infer(node.body)
-            return UNIT  # loop returns via break
+            break_types = self._loop_break_types.pop()
+            return next((t for t in break_types if t is not UNIT), UNIT)
 
         if isinstance(node, N.Return):
             if node.value is not None:
@@ -445,9 +476,10 @@ class TypeChecker:
             return UNIT
 
         if isinstance(node, N.Break):
-            if node.value is not None:
-                return self._infer(node.value)
-            return UNIT
+            ty = self._infer(node.value) if node.value is not None else UNIT
+            if self._loop_break_types:
+                self._loop_break_types[-1].append(ty)
+            return ty
 
         if isinstance(node, N.Assign):
             self._infer(node.target)
@@ -565,6 +597,31 @@ class TypeChecker:
 
         return ERROR
 
+    def _bind_pattern(self, pat: N.Pattern | None, ty: NyetType) -> None:
+        """Bind the names a match pattern introduces into `env`, typed from
+        the scrutinee's sum/tuple type where known (ERROR otherwise)."""
+        if isinstance(pat, N.VarPat):
+            existing = self.env.get(pat.name)
+            if pat.name[:1].isupper() and isinstance(existing, FnSig):
+                return  # a bare nullary variant like `None`, not a binding
+            self.env[pat.name] = ty
+            self.mutable.pop(pat.name, None)
+        elif isinstance(pat, N.GuardedPat):
+            self._bind_pattern(pat.inner, ty)
+        elif isinstance(pat, N.VariantPat):
+            payload: tuple[NyetType, ...] = ()
+            if isinstance(ty, SumType):
+                for vname, vtypes in ty.variants:
+                    if vname == pat.name:
+                        payload = vtypes
+                        break
+            for i, sub in enumerate(pat.args):
+                self._bind_pattern(sub, payload[i] if i < len(payload) else ERROR)
+        elif isinstance(pat, N.TuplePat):
+            elems = ty.elements if isinstance(ty, TupleType) else ()
+            for i, sub in enumerate(pat.elements):
+                self._bind_pattern(sub, elems[i] if i < len(elems) else ERROR)
+
     def _check_match_exhaustive(self, node: N.Match, sum_ty: SumType) -> None:
         """Warn (not error — this is advisory, matching Rust's own
         `#[warn(non_exhaustive)]` treatment) when a match on a sum type
@@ -603,7 +660,11 @@ class TypeChecker:
             )
 
     def _compatible(
-        self, expected: NyetType, actual: NyetType, is_bare_int_lit: bool = False
+        self,
+        expected: NyetType,
+        actual: NyetType,
+        is_bare_int_lit: bool = False,
+        is_bare_float_lit: bool = False,
     ) -> bool:
         """Check if actual is compatible with expected.
 
@@ -618,6 +679,10 @@ class TypeChecker:
         if isinstance(expected, FloatType) and isinstance(actual, IntType):
             return True  # integer literals can be assigned to float bindings
         if is_bare_int_lit and isinstance(expected, (IntType, CharType)):
+            return True
+        if is_bare_float_lit and isinstance(expected, FloatType) and isinstance(actual, FloatType):
+            # Likewise an unsuffixed float literal infers as f64 but may
+            # satisfy an f32 annotation, e.g. `(let e:f32 3.14)`.
             return True
         # This pass doesn't do real per-call-site generic substitution
         # (see emit.py's _unify_param_type for where that actually

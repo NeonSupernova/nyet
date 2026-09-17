@@ -48,7 +48,7 @@ def test_closure_literal_in_map_value_is_lifted_not_left_inline():
             (var handlers {"go" (fn () -> unit (out! "hi\\n"))})
             pass))
     """)
-    assert "define void @__closure_0()" in ir
+    assert "define void @__closure_0(ptr %__env)" in ir
 
 
 def test_closure_retrieved_from_map_is_called_indirectly():

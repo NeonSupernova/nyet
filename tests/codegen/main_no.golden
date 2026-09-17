@@ -1,0 +1,15 @@
+=== stdout ===
+try again
+try again
+(0, 0)
+(1, 2)
+divided by zero
+result: 5
+hello, world
+nonzero
+step 1
+step 2
+step 3
+(+ 1 2) = 3
+DEBUG (+ 2 3) = 5
+main.no: every example ran and every assert passed

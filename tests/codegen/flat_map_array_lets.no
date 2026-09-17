@@ -1,0 +1,27 @@
+;; Regression test: `flat_map`, and binding an array produced by a HOF or
+;; by a function declared `-> Array[T]` without an annotation.
+;;
+;; Before the fix `flat_map` was an undefined name, and
+;; `(let doubled (map f nums))` with no `Array[T]` annotation bound a plain
+;; pointer that `(doubled 0)` couldn't index.
+;;
+;; Expected:
+;;   6 1 1 2 4 3 9
+;;   2 10
+;;   3 30
+
+(fn evens_up_to (n:i32) -> Array[i32]
+  (map (fn (x:i32) -> i32 (* x 10)) [1 2 3]))
+
+(fn main () -> unit
+  (do
+    (let nums:Array[i32] [1 2 3])
+    (let squares (flat_map (fn (x:i32) -> Array[i32] [x (* x x)]) nums))
+    (out! (fmt "{} {} {} {} {} {} {}\n"
+              (len squares) (squares 0) (squares 1) (squares 2) (squares 3) (squares 4) (squares 5)))
+
+    (let doubled (map (fn (x:i32) -> i32 (* x 2)) [1 2 3 4 5]))
+    (out! (fmt "{} {}\n" (doubled 0) (doubled 4)))
+
+    (let tens (evens_up_to 3))
+    (out! (fmt "{} {}\n" (len tens) (tens 2)))))
