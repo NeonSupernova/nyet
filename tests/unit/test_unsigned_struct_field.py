@@ -46,7 +46,7 @@ def test_unsigned_struct_field_prints_with_percent_u():
         (fn main () -> unit
           (do
             (let c (Counter val:4000000000))
-            (out (. c val))))
+            (out! (. c val))))
     """)
     assert "%u" in ir
 
@@ -58,7 +58,7 @@ def test_unsigned_struct_field_comparison_uses_unsigned_predicate():
           (do
             (let a (Counter val:4000000000))
             (let b (Counter val:3000000000))
-            (out (> (. a val) (. b val)))))
+            (out! (> (. a val) (. b val)))))
     """)
     body = _fn_body(ir, "main")
     assert "icmp ugt i32" in body
@@ -72,7 +72,7 @@ def test_signed_struct_field_is_unaffected():
           (do
             (let a (Counter val:4))
             (let b (Counter val:3))
-            (out (> (. a val) (. b val)))))
+            (out! (> (. a val) (. b val)))))
     """)
     body = _fn_body(ir, "main")
     assert "icmp sgt i32" in body

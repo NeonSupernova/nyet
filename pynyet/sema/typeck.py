@@ -30,6 +30,7 @@ from pynyet.sema.types import (
     FnSig,
     IntType,
     NyetType,
+    RefType,
     StringType,
     StructType,
     SumType,
@@ -55,10 +56,48 @@ class TypeChecker:
         # First pass: register all top-level declarations
         for node in program:
             self._register_decl(node)
+        self._register_builtin_channels()
         # Second pass: check bodies
         for node in program:
             self._check_node(node)
         return self.errors
+
+    def _register_builtin_channels(self) -> None:
+        """`StdIO`/`FileIO` and their `write`/`read`/`close` methods are
+        pure Python-side builtins (like `file_open` et al.) rather than
+        real `impl` blocks in Nyet source, so they need registering by
+        hand -- the same registration `_register_decl` would do for a
+        real `(impl IOChannel FileIO ...)`. Runs after the first pass so
+        the prelude's `IOMode`/`FileMode`/`WriteResult`/`ReadResult`/
+        `CloseResult` (`expand.py`'s `PRELUDE_SOURCE`) are already in
+        `self.type_decls`. Each of write/read/close gets its own
+        concrete result type rather than sharing one generic
+        `Result[T E]` instantiated three ways -- seeded here to match;
+        see the prelude source comment for why.
+
+        `self.env` is a single flat dict with no per-receiver-type
+        overload resolution -- every implementer of `write`/`read`/
+        `close` (StdIO, FileIO, any user channel) shares one slot, so
+        whichever is registered last "wins" for type inference. Harmless
+        here because every legitimate `IOChannel` implementer shares the
+        exact same signature shape per the trait contract; only the
+        return type is actually consulted anywhere (`_infer`'s `Call`
+        case never checks argument types against a callee's params).
+        """
+        io_mode = self.type_decls.get("IOMode", ERROR)
+        file_mode = self.type_decls.get("FileMode", ERROR)
+        write_result = self.type_decls.get("WriteResult", ERROR)
+        read_result = self.type_decls.get("ReadResult", ERROR)
+        close_result = self.type_decls.get("CloseResult", ERROR)
+
+        self.type_decls["StdIO"] = StructType("StdIO", (("mode", io_mode),))
+        file_io = StructType("FileIO", (("handle", STRING), ("mode", file_mode), ("closed", BOOL)))
+        self.type_decls["FileIO"] = file_io
+        self.env["FileIO"] = FnSig((STRING, file_mode), file_io)
+
+        self.env["write"] = FnSig((RefType(file_io, True), STRING), write_result)
+        self.env["read"] = FnSig((RefType(file_io, True),), read_result)
+        self.env["close"] = FnSig((RefType(file_io, True),), close_result)
 
     def _resolve_type_node(self, tn: N.TypeNode | None) -> NyetType:
         """Convert an AST TypeNode to a semantic NyetType."""
@@ -213,11 +252,15 @@ class TypeChecker:
             if ty is not None:
                 return ty
             # Builtins
-            if node.name == "out":
-                return FnSig((), UNIT)
+            if node.name in ("out", "err"):
+                # Bare `out`/`err` are never call heads anymore -- the
+                # `out!`/`err!` prelude macros expand to `(io out ...)`/
+                # `(io err ...)` before typeck ever runs -- so the only
+                # remaining meaning is the builtin `StdIO` channel value.
+                return self.type_decls.get("StdIO", ERROR)
             if node.name == "in":
                 return FnSig((), STRING)
-            if node.name == "err":
+            if node.name == "io":
                 return FnSig((), UNIT)
             if node.name == "panic":
                 return FnSig((), UNIT)
@@ -249,6 +292,26 @@ class TypeChecker:
                 and node.args[0].name in PRIM_TYPES
             ):
                 return PRIM_TYPES[node.args[0].name]
+            # `(in channel)` — explicit-channel read (e.g. `(in myfile)`),
+            # distinct from `(in TYPE)` above (a primitive-type name) and
+            # bare `(in)` (falls through to the generic FnSig path below).
+            # Matches `io`'s read contract: unwrapped string payload.
+            if (
+                isinstance(node.head, N.Ident)
+                and node.head.name == "in"
+                and len(node.args) == 1
+                and not (isinstance(node.args[0], N.Ident) and node.args[0].name in PRIM_TYPES)
+            ):
+                return STRING
+            # `(io ch)` reads (unwraps the channel's `read` Result down to
+            # its string payload), `(io ch data)` writes (matches `out`'s
+            # old unit-returning contract) — arity distinguishes direction,
+            # same asymmetry `(in)`/`(out x)` already had, just one name.
+            if isinstance(node.head, N.Ident) and node.head.name == "io":
+                if len(node.args) == 1:
+                    return STRING
+                if len(node.args) >= 2:
+                    return UNIT
             # `(arr i)` — array indexing yields the element type.
             if isinstance(head_ty, ArrayType) and len(node.args) == 1:
                 return head_ty.element

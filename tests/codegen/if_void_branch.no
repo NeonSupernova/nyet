@@ -8,8 +8,8 @@
 ;; module outright.
 ;; Expected: yes / no
 
-(fn say_yes () -> unit (out "yes\n"))
-(fn say_no () -> unit (out "no\n"))
+(fn say_yes () -> unit (out! "yes\n"))
+(fn say_no () -> unit (out! "no\n"))
 
 (fn main () -> unit
   (if true (say_yes) (say_no))

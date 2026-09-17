@@ -6,8 +6,8 @@ RPAREN           1:11
 ARROW            1:13    
 UNIT_T           1:16    
 LPAREN           1:21    
-OUT              1:22    
-STRING_LIT       1:26     value='hello, world'
-RPAREN           1:40    
+IDENT            1:22     value='out!'
+STRING_LIT       1:27     value='hello, world'
 RPAREN           1:41    
+RPAREN           1:42    
 EOF              2:1     

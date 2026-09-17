@@ -26,29 +26,29 @@
 ;; Nested destructuring: peel both Options at once.
 (fn double_inner (o:Option[Option[i32]]) -> unit
   (match o
-    ((Some (Some 0)) (out "double some 0 -> zero!\n"))
+    ((Some (Some 0)) (out! "double some 0 -> zero!\n"))
     ((Some (Some n))
-      (do (out "double some ") (out n) (out " -> ")
-          (out (* n 2)) (out "\n")))
+      (do (out! "double some ") (out! n) (out! " -> ")
+          (out! (* n 2)) (out! "\n")))
     ((Some (None))
-      (out "double some none -> outer some, inner none\n"))
+      (out! "double some none -> outer some, inner none\n"))
     ((None)
-      (out "double none -> outer none\n"))))
+      (out! "double none -> outer none\n"))))
 
 ;; Guards select among arms with the same shape.
 (fn classify (s:Sign) -> unit
   (match s
     ((Pos n) when (== n 0)
-      (do (out "classify 0 -> zero\n")))
+      (do (out! "classify 0 -> zero\n")))
     ((Pos n) when (< n 10)
-      (do (out "classify ") (out n) (out " -> small positive: ")
-          (out n) (out "\n")))
+      (do (out! "classify ") (out! n) (out! " -> small positive: ")
+          (out! n) (out! "\n")))
     ((Pos n)
-      (do (out "classify ") (out n) (out " -> big positive: ")
-          (out n) (out "\n")))
+      (do (out! "classify ") (out! n) (out! " -> big positive: ")
+          (out! n) (out! "\n")))
     ((Neg n)
-      (do (out "classify ") (out n) (out " (neg) -> negative: ")
-          (out n) (out "\n")))))
+      (do (out! "classify ") (out! n) (out! " (neg) -> negative: ")
+          (out! n) (out! "\n")))))
 
 (fn main () -> unit
   (double_inner (Some (Some 21)))

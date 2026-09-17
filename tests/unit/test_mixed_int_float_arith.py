@@ -52,7 +52,7 @@ def test_i64_plus_float_promotes_at_i64_not_hardcoded_i32():
         (fn main () -> unit
           (do
             (let x:i64 5)
-            (out (+ x 3.5))))
+            (out! (+ x 3.5))))
     """)
     body = _fn_body(ir, "main")
     assert "sitofp i64" in body
@@ -64,7 +64,7 @@ def test_i64_compared_to_float_promotes_at_i64_not_hardcoded_i32():
         (fn main () -> unit
           (do
             (let x:i64 5)
-            (out (> x 3.5))))
+            (out! (> x 3.5))))
     """)
     body = _fn_body(ir, "main")
     assert "sitofp i64" in body
@@ -76,7 +76,7 @@ def test_unsigned_int_to_float_uses_uitofp():
         (fn main () -> unit
           (do
             (let a:u32 4000000000)
-            (out (as a f64))))
+            (out! (as a f64))))
     """)
     body = _fn_body(ir, "main")
     assert "uitofp i32" in body
@@ -88,7 +88,7 @@ def test_signed_int_to_float_still_uses_sitofp():
         (fn main () -> unit
           (do
             (let a:i32 5)
-            (out (as a f64))))
+            (out! (as a f64))))
     """)
     body = _fn_body(ir, "main")
     assert "sitofp i32" in body
@@ -101,7 +101,7 @@ def test_float_to_unsigned_int_cast_uses_fptoui():
           (do
             (let g:f64 4000000000.0)
             (let b:u32 (as g u32))
-            (out b)))
+            (out! b)))
     """)
     body = _fn_body(ir, "main")
     assert "fptoui double" in body
@@ -114,7 +114,7 @@ def test_float_to_signed_int_cast_still_uses_fptosi():
           (do
             (let g:f64 3.99)
             (let b:i32 (as g i32))
-            (out b)))
+            (out! b)))
     """)
     body = _fn_body(ir, "main")
     assert "fptosi double" in body
@@ -126,7 +126,7 @@ def test_unsigned_int_promoted_to_float_in_arith_uses_uitofp():
         (fn main () -> unit
           (do
             (let a:u32 4000000000)
-            (out (+ a 1.5))))
+            (out! (+ a 1.5))))
     """)
     body = _fn_body(ir, "main")
     assert "uitofp i32" in body

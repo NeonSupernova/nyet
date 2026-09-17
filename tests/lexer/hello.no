@@ -1,1 +1,1 @@
-(fn main () -> unit (out "hello, world"))
+(fn main () -> unit (out! "hello, world"))

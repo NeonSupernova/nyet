@@ -12,7 +12,7 @@
 (fn scratch () -> unit
   (do
     (let p (Point x:1 y:2))
-    (out (. p x)) (out "\n")))
+    (out! (. p x)) (out! "\n")))
 
 (fn returns_it () -> Point
   (do
@@ -23,4 +23,4 @@
   (scratch)
   (scratch)
   (let q (returns_it))
-  (out (. q x)) (out " ") (out (. q y)) (out "\n"))
+  (out! (. q x)) (out! " ") (out! (. q y)) (out! "\n"))

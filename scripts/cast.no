@@ -9,11 +9,11 @@
         (let d:f64 (as a f64))          ; i32 → f64
         (let e:i32 (as d i32))          ; f64 → i32 (truncate)
         (let f:f32 (as d f32))          ; f64 → f32 (narrow float)
-        (out (fmt "i32→i64: {}\n" b))
-        (out (fmt "i64→i32: {}\n" c))
-        (out (fmt "i32→f64: {}\n" d))
-        (out (fmt "f64→i32: {}\n" e))
-        (out (fmt "f64→f32: {}\n" f))))
+        (out! (fmt "i32→i64: {}\n" b))
+        (out! (fmt "i64→i32: {}\n" c))
+        (out! (fmt "i32→f64: {}\n" d))
+        (out! (fmt "f64→i32: {}\n" e))
+        (out! (fmt "f64→f32: {}\n" f))))
 
 ;;; char → int
 (fn test_char_to_int () -> unit
@@ -21,8 +21,8 @@
         (let ch:char 65)                ; 'A' as Unicode scalar (i32)
         (let n:i32  (as ch i32))        ; char → i32, no bounds check needed
         (let n64:i64 (as ch i64))       ; char → i64 (widen)
-        (out (fmt "char→i32: {}\n" n))
-        (out (fmt "char→i64: {}\n" n64))))
+        (out! (fmt "char→i32: {}\n" n))
+        (out! (fmt "char→i64: {}\n" n64))))
 
 ;;; int → char (with bounds check)
 (fn test_int_to_char () -> unit
@@ -30,7 +30,7 @@
         (let code:i32 97)               ; 'a'
         (let ch:char  (as code char))   ; i32 → char, validated
         (let back:i32 (as ch i32))      ; char → i32
-        (out (fmt "int→char→int: {}\n" back))))
+        (out! (fmt "int→char→int: {}\n" back))))
 
 (fn main () -> unit
     (do

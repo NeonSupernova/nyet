@@ -1,0 +1,31 @@
+;; Regression test for the IOChannel feature: FileIO is a builtin
+;; struct implementing IOChannel (write/read/close), usable through the
+;; unified `io` verb (and the out!/err!/in sugar it desugars from) as
+;; well as directly via write/read/close + match for real error
+;; handling. Covers: write+read round trip through `io`, `close`
+;; guarding further use (returns Err rather than silently succeeding
+;; or crashing), and opening a nonexistent file for reading.
+;;
+;; Expected:
+;;   read back: hello from FileIO
+;;   write after close: got expected error
+;;   read missing file: got expected error
+
+(fn main () -> unit
+  (var w (FileIO "/tmp/nyet_io_channel_fileio_test.txt" (Write)))
+  (io w "hello from FileIO")
+  (close &!w)
+
+  (var r (FileIO "/tmp/nyet_io_channel_fileio_test.txt" (Read)))
+  (let body:string (io r))
+  (out! "read back: ") (out! body) (out! "\n")
+  (close &!r)
+
+  (match (write &!r "too late")
+    ((WriteOk _) (out! "write after close: unexpected success\n"))
+    ((WriteErr _) (out! "write after close: got expected error\n")))
+
+  (var missing (FileIO "/tmp/nyet_io_channel_does_not_exist.txt" (Read)))
+  (match (read &!missing)
+    ((ReadOk s) (out! "read missing file: unexpected success\n"))
+    ((ReadErr e) (out! "read missing file: got expected error\n"))))

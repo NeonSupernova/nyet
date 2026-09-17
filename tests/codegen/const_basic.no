@@ -8,17 +8,17 @@
 
 (fn main () -> unit
   (do
-    (out MAX)
-    (out "\n")
-    (out (+ MAX 1))
-    (out "\n")
-    (out GREETING)
-    (out "\n")
-    (out PI)
-    (out "\n")
+    (out! MAX)
+    (out! "\n")
+    (out! (+ MAX 1))
+    (out! "\n")
+    (out! GREETING)
+    (out! "\n")
+    (out! PI)
+    (out! "\n")
     (var i:i32 0)
     (loop
       (if (== i MAX) (break) pass)
-      (out i)
+      (out! i)
       (= i (+ i 1)))
-    (out "done\n")))
+    (out! "done\n")))

@@ -28,5 +28,5 @@
   (do
     (let time_it_start (now))
     (let time_it_result body)
-    (out (fmt "{}: {} ms\n" label (elapsed_ms time_it_start)))
+    (out! (fmt "{}: {} ms\n" label (elapsed_ms time_it_start)))
     time_it_result))

@@ -13,7 +13,7 @@
   (do
     (let pts:Array[Point] [(Point x:1 y:2) (Point x:3 y:4)])
     (let a (pts 0))
-    (out (. a x)) (out "\n")
+    (out! (. a x)) (out! "\n")
     (let b (pts 1))
-    (out (. b x)) (out "\n")
-    (out (+ (. a x) (. b y))) (out "\n")))
+    (out! (. b x)) (out! "\n")
+    (out! (+ (. a x) (. b y))) (out! "\n")))

@@ -19,5 +19,5 @@
 (const STOP:i32 9)
 
 (loop
-    (out (fmt "Num is {}\n" (se l)))
+    (out! (fmt "Num is {}\n" (se l)))
     (if (== l STOP) (break l) (= l (+ l 1))))

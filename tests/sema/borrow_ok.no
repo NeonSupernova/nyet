@@ -4,9 +4,9 @@
 (struct Person name:string age:i32)
 
 (fn show (p:&Person) -> unit
-  (out (. p name)))
+  (out! (. p name)))
 
 (fn main () -> unit
   (let p (Person name:"alice" age:30))
   (show &p)
-  (out (. p name)))
+  (out! (. p name)))

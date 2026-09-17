@@ -16,16 +16,16 @@
 (fn test_i64_float_arith () -> unit
   (do
     (let x:i64 5)
-    (out (fmt "i64 + float: {}\n" (+ x 3.5)))
-    (out (fmt "i64 > float: {}\n" (> x 3.5)))))
+    (out! (fmt "i64 + float: {}\n" (+ x 3.5)))
+    (out! (fmt "i64 > float: {}\n" (> x 3.5)))))
 
 (fn test_unsigned_float_conversions () -> unit
   (do
     (let a:u32 4000000000)
-    (out (fmt "u32 widened to f64: {}\n" (as a f64)))
+    (out! (fmt "u32 widened to f64: {}\n" (as a f64)))
     (let g:f64 4000000000.0)
     (let b:u32 (as g u32))
-    (out (fmt "f64 narrowed to u32: {}\n" b))))
+    (out! (fmt "f64 narrowed to u32: {}\n" b))))
 
 (fn main () -> unit
   (do

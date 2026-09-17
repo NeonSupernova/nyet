@@ -13,15 +13,15 @@
 
 (fn describe (o:Option[i32]) -> unit
   (match o
-    ((Some n) (do (out n) (out "\n")))
-    ((None) (out "none\n"))))
+    ((Some n) (do (out! n) (out! "\n")))
+    ((None) (out! "none\n"))))
 
 (fn main () -> unit
   (let a:Option[i32] (Some 10))
-  (out "double some: ")
+  (out! "double some: ")
   (describe (double_it a))
 
   (let b:Option[i32] (None))
-  (out "double none: early returned ")
+  (out! "double none: early returned ")
   (describe (double_it b))
-  (out "done\n"))
+  (out! "done\n"))

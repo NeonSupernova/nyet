@@ -45,7 +45,7 @@ def test_tuple_literal_of_structs_indexed_without_annotation():
           (do
             (let t #((Point x:1 y:2) (Point x:3 y:4)))
             (let p (t 0))
-            (out (. p x))))
+            (out! (. p x))))
     """)
     # Constructing the two 2-field Points emits 2 GEPs each (4 total);
     # the field *read* on `p` adds 1 more -- the old bug had 0 for the
@@ -63,7 +63,7 @@ def test_tuple_param_of_structs_indexed_without_annotation():
         (fn main () -> unit
           (do
             (let t #((Point x:7 y:8) (Point x:1 y:2)))
-            (out (first &t))))
+            (out! (first &t))))
     """)
     first_fn = ir[ir.index("define i32 @first") : ir.index("\n}\n", ir.index("define i32 @first"))]
     # Only the field read happens inside `first` (the tuple itself is
@@ -84,7 +84,7 @@ def test_tuple_param_by_reference_is_recognized_at_all():
         (fn main () -> unit
           (do
             (let t #(7 8))
-            (out (first &t))))
+            (out! (first &t))))
     """)
     first_fn = ir[ir.index("define i32 @first") : ir.index("\n}\n", ir.index("define i32 @first"))]
     assert "@t(" not in first_fn
@@ -96,7 +96,7 @@ def test_tuple_of_scalars_is_unaffected():
         (fn main () -> unit
           (do
             (let t #(1 2))
-            (out (t 0))))
+            (out! (t 0))))
     """)
     assert "getelementptr inbounds %tuple" in ir
     assert "%Point" not in ir

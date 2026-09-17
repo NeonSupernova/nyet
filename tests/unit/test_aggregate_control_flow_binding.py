@@ -49,7 +49,7 @@ def test_if_expression_struct_result_bound_without_annotation():
           (do
             (let cond:bool true)
             (let p (if cond (Point x:1 y:2) (Point x:3 y:4)))
-            (out (. p x))))
+            (out! (. p x))))
     """)
     # Constructing a 2-field Point emits 2 GEPs (one per field); both
     # `if` branches each construct one (4 total), plus 1 more for the
@@ -63,8 +63,8 @@ def test_do_expression_struct_result_bound_without_annotation():
         (struct Point x:i32 y:i32)
         (fn main () -> unit
           (do
-            (let p (do (out "making\\n") (Point x:5 y:6)))
-            (out (. p x))))
+            (let p (do (out! "making\\n") (Point x:5 y:6)))
+            (out! (. p x))))
     """)
     # 2 GEPs for construction + 1 for the field read (0 before the fix).
     assert ir.count("getelementptr inbounds %Point") == 3
@@ -76,7 +76,7 @@ def test_field_access_chained_directly_onto_a_fresh_constructor():
     # constructor call as a field-access target.
     ir = _ir_for("""
         (struct Point x:i32 y:i32)
-        (fn main () -> unit (out (. (Point x:9 y:0) x)))
+        (fn main () -> unit (out! (. (Point x:9 y:0) x)))
     """)
     assert ir.count("getelementptr inbounds %Point") == 3
 
@@ -84,6 +84,6 @@ def test_field_access_chained_directly_onto_a_fresh_constructor():
 def test_field_access_chained_directly_onto_a_do_wrapping_a_constructor():
     ir = _ir_for("""
         (struct Point x:i32 y:i32)
-        (fn main () -> unit (out (. (do (Point x:9 y:0)) x)))
+        (fn main () -> unit (out! (. (do (Point x:9 y:0)) x)))
     """)
     assert ir.count("getelementptr inbounds %Point") == 3

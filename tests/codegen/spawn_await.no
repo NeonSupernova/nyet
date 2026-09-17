@@ -22,5 +22,5 @@
     (let h2 (spawn (square (Squared val:7))))
     (let g:string (await h1))
     (let s:Squared (await h2))
-    (out g) (out "\n")
-    (out (. s val)) (out "\n")))
+    (out! g) (out! "\n")
+    (out! (. s val)) (out! "\n")))

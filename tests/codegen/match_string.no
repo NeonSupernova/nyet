@@ -13,6 +13,6 @@
     (other (fmt "unknown: {}" other))))
 
 (fn main () -> unit
-  (out (classify "a")) (out "\n")
-  (out (classify "b")) (out "\n")
-  (out (classify "z")) (out "\n"))
+  (out! (classify "a")) (out! "\n")
+  (out! (classify "b")) (out! "\n")
+  (out! (classify "z")) (out! "\n"))

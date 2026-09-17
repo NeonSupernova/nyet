@@ -69,11 +69,11 @@ def test_ampersand_as_call_head_parses_as_flat_ident_call():
           (do
             (let a:i32 12)
             (let b:i32 10)
-            (out (& a b))))
+            (let r (& a b))))
     """)
     main_fn = next(d for d in program if isinstance(d, N.FnDecl) and d.name == "main")
-    out_call = main_fn.body.exprs[-1]
-    and_call = out_call.args[0]
+    let_r = main_fn.body.exprs[-1]
+    and_call = let_r.value
     assert isinstance(and_call, N.Call)
     assert isinstance(and_call.head, N.Ident)
     assert and_call.head.name == "&"
@@ -86,7 +86,7 @@ def test_bitwise_and_emits_and_instruction():
           (do
             (let a:i32 12)
             (let b:i32 10)
-            (out (& a b))))
+            (out! (& a b))))
     """)
     body = _fn_body(ir, "main")
     assert "and i32" in body
@@ -98,8 +98,8 @@ def test_bitwise_or_and_xor_emit_or_xor_instructions():
           (do
             (let a:i32 12)
             (let b:i32 10)
-            (out (| a b))
-            (out (^ a b))))
+            (out! (| a b))
+            (out! (^ a b))))
     """)
     body = _fn_body(ir, "main")
     assert "or i32" in body
@@ -111,7 +111,7 @@ def test_bitwise_not_emits_xor_with_negative_one():
         (fn main () -> unit
           (do
             (let a:i32 5)
-            (out (~ a))))
+            (out! (~ a))))
     """)
     body = _fn_body(ir, "main")
     assert "xor i32 %t2, -1" in body
@@ -122,7 +122,7 @@ def test_left_shift_emits_shl():
         (fn main () -> unit
           (do
             (let a:i32 1)
-            (out (<< a 4))))
+            (out! (<< a 4))))
     """)
     body = _fn_body(ir, "main")
     assert "shl i32" in body
@@ -133,7 +133,7 @@ def test_signed_right_shift_emits_ashr():
         (fn main () -> unit
           (do
             (let a:i32 8)
-            (out (>> a 1))))
+            (out! (>> a 1))))
     """)
     body = _fn_body(ir, "main")
     assert "ashr i32" in body
@@ -145,7 +145,7 @@ def test_unsigned_right_shift_emits_lshr():
         (fn main () -> unit
           (do
             (let a:u32 8)
-            (out (>> a 1))))
+            (out! (>> a 1))))
     """)
     body = _fn_body(ir, "main")
     assert "lshr i32" in body
@@ -157,7 +157,7 @@ def test_borrow_of_ident_used_as_argument_is_unaffected():
     # (not the head of its own call) must still work exactly as before.
     ir = _ir_for("""
         (struct Point x:i32 y:i32)
-        (fn show (p:&Point) -> unit (out (. p x)))
+        (fn show (p:&Point) -> unit (out! (. p x)))
         (fn main () -> unit
           (do
             (let pt (Point x:1 y:2))

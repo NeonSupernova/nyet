@@ -1,0 +1,4 @@
+=== stdout ===
+read back: hello from FileIO
+write after close: got expected error
+read missing file: got expected error

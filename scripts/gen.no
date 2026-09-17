@@ -2,7 +2,7 @@
 ;;; Uses an Array[i32] memo table with indexed reads and writes.
 
 (macro log (level label value)  
-    (out (fmt "[{}] {} = {}\n" level label value)))
+    (out! (fmt "[{}] {} = {}\n" level label value)))
 
 
 (fn p_pentagonal (n:i32) -> i32
@@ -37,10 +37,10 @@
 
 (fn main () -> unit
     (do
-        (out "Pentagonal partition example\n")
+        (out! "Pentagonal partition example\n")
         ;; The memo table above holds 41 slots (indices 0..40), so n must
         ;; stay within that range -- p_pentagonal(100)/(1000) previously
         ;; read past the end of the array silently; the compiler's array
         ;; bounds check now correctly panics on that instead.
-        (log "INFO" "p(30)" (p_pentagonal 30))
-        (log "INFO" "p(40)" (p_pentagonal 40))))
+        (log! "INFO" "p(30)" (p_pentagonal 30))
+        (log! "INFO" "p(40)" (p_pentagonal 40))))

@@ -8,8 +8,8 @@
 
 (fn main () -> unit
   (let scores:Map[string i32] {"alice" 90 "bob" 85})
-  (out (scores "alice")) (out "\n")
-  (out (scores "bob")) (out "\n")
+  (out! (scores "alice")) (out! "\n")
+  (out! (scores "bob")) (out! "\n")
   (= (scores "carol") 77)
-  (out (scores "carol")) (out "\n")
-  (out (scores "unknown")) (out "\n"))
+  (out! (scores "carol")) (out! "\n")
+  (out! (scores "unknown")) (out! "\n"))

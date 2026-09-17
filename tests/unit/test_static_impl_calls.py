@@ -44,7 +44,7 @@ def test_static_impl_call_with_scalar_return():
     ir = _ir_for("""
         (impl i32
           (fn zero () -> i32 0))
-        (fn main () -> unit (out (i32/zero)))
+        (fn main () -> unit (out! (i32/zero)))
     """)
     assert "call i32 @i32__zero()" in ir
 
@@ -57,7 +57,7 @@ def test_static_impl_call_with_args():
         (fn main () -> unit
           (do
             (let q (Point/make 5 6))
-            (out (. q x))))
+            (out! (. q x))))
     """)
     assert "call ptr @Point__make(i32 5, i32 6)" in ir
 
@@ -74,7 +74,7 @@ def test_static_impl_call_returning_a_struct_gets_correct_slot_type():
         (fn main () -> unit
           (do
             (let p (Point/origin))
-            (out (. p x))))
+            (out! (. p x))))
     """)
     assert "alloca ptr" in ir
     assert "getelementptr inbounds %Point" in ir
@@ -90,6 +90,6 @@ def test_non_static_method_call_is_unaffected():
         (fn main () -> unit
           (do
             (let p:&Point (Point x:7 y:8))
-            (out (getx p))))
+            (out! (getx p))))
     """)
     assert "call i32 @Point__getx(" in ir

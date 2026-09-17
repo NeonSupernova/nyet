@@ -42,6 +42,7 @@ from pynyet.diagnostic import Diagnostic, Severity
 _BUILTIN_BORROW = {
     "out",
     "err",
+    "io",
     "fmt",
     "panic",
     "in",

@@ -15,7 +15,7 @@
   (do
     (let cond:bool true)
     (let p (if cond (Point x:1 y:2) (Point x:3 y:4)))
-    (out (. p x)) (out "\n")
-    (let q (do (out "making\n") (Point x:5 y:6)))
-    (out (. q x)) (out "\n")
-    (out (. (do (Point x:9 y:0)) x)) (out "\n")))
+    (out! (. p x)) (out! "\n")
+    (let q (do (out! "making\n") (Point x:5 y:6)))
+    (out! (. q x)) (out! "\n")
+    (out! (. (do (Point x:9 y:0)) x)) (out! "\n")))

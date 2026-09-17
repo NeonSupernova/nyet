@@ -10,9 +10,9 @@
 
 (fn describe (o:Option[Option[i32]]) -> unit
   (match o
-    ((Some (Some x)) (do (out "inner = ") (out x) (out "\n")))
-    ((Some (None)) (out "inner = none\n"))
-    ((None) (out "outer = none\n"))))
+    ((Some (Some x)) (do (out! "inner = ") (out! x) (out! "\n")))
+    ((Some (None)) (out! "inner = none\n"))
+    ((None) (out! "outer = none\n"))))
 
 (fn main () -> unit
   (describe (Some (Some 42)))

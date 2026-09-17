@@ -2,7 +2,7 @@
 (fn id[T] (x:T) -> T x)
 
 (fn main () -> unit
-  (out (id 42))
-  (out "\n")
-  (out (id 3.14))
-  (out "\n"))
+  (out! (id 42))
+  (out! "\n")
+  (out! (id 3.14))
+  (out! "\n"))
