@@ -10,6 +10,12 @@
 ;;   empty file (0 lines):
 ;;   embedded blank line (3 lines): one||three
 ;;   file is just newline (1 lines):
+;;
+;; The scratch files are written to the working directory rather than
+;; /tmp (which doesn't exist on Windows, where this also runs as a
+;; bundled demo) and named `output_*` so the repo-root `output*` rule
+;; in .gitignore already covers them -- nothing here can delete a file
+;; (no such builtin yet), so they outlive the run either way.
 
 (fn write_file (path:string content:string) -> unit
   (let h (file_open path "w"))
@@ -30,17 +36,17 @@
   (out! "\n"))
 
 (fn main () -> unit
-  (write_file "nyet_file_read_lines_a.txt" "alpha\nbeta\ngamma\n")
-  (out! "normal ") (dump "nyet_file_read_lines_a.txt")
+  (write_file "output_read_lines_a.txt" "alpha\nbeta\ngamma\n")
+  (out! "normal ") (dump "output_read_lines_a.txt")
 
-  (write_file "nyet_file_read_lines_b.txt" "solo")
-  (out! "no trailing newline ") (dump "nyet_file_read_lines_b.txt")
+  (write_file "output_read_lines_b.txt" "solo")
+  (out! "no trailing newline ") (dump "output_read_lines_b.txt")
 
-  (write_file "nyet_file_read_lines_c.txt" "")
-  (out! "empty file ") (dump "nyet_file_read_lines_c.txt")
+  (write_file "output_read_lines_c.txt" "")
+  (out! "empty file ") (dump "output_read_lines_c.txt")
 
-  (write_file "nyet_file_read_lines_d.txt" "one\n\nthree\n")
-  (out! "embedded blank line ") (dump "nyet_file_read_lines_d.txt")
+  (write_file "output_read_lines_d.txt" "one\n\nthree\n")
+  (out! "embedded blank line ") (dump "output_read_lines_d.txt")
 
-  (write_file "nyet_file_read_lines_e.txt" "\n")
-  (out! "file is just newline ") (dump "nyet_file_read_lines_e.txt"))
+  (write_file "output_read_lines_e.txt" "\n")
+  (out! "file is just newline ") (dump "output_read_lines_e.txt"))
