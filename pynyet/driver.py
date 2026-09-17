@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pynyet.ast.nodes as N
+from pynyet import __version__
 from pynyet.diagnostic import NyetError, Severity
 from pynyet.lexer.scanner import lex
 from pynyet.source import SourceFile
@@ -309,6 +310,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 _SUBCOMMANDS = ("lex", "parse", "check", "build", "run")
 
+# Flags that stand alone as the whole command line. Kept out of the
+# `nyet <flags> file.no` -> `nyet build <flags> file.no` rewrite below:
+# rewriting `nyet --version` into `nyet build --version` would turn a
+# valid invocation into a "the following arguments are required: file"
+# error instead.
+_BARE_FLAGS = ("-h", "--help", "-V", "--version")
+
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
@@ -316,10 +324,17 @@ def main(argv: list[str] | None = None) -> int:
     # the packaged CLI's headline invocation shape. Only kicks in when the
     # first token isn't already a known subcommand or a help flag, so
     # `pynyet.driver build -o ...` keeps working unchanged.
-    if raw and raw[0] not in _SUBCOMMANDS and raw[0] not in ("-h", "--help"):
+    if raw and raw[0] not in _SUBCOMMANDS and raw[0] not in _BARE_FLAGS:
         raw = ["build", *raw]
 
     parser = argparse.ArgumentParser(prog="nyet", description="Nyet compiler driver")
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"nyet {__version__}",
+        help="print the compiler version and exit",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_lex = sub.add_parser("lex", help="tokenize a source file")
