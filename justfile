@@ -84,5 +84,5 @@ runtime:
 
 # Remove generated files and caches
 clean:
-    rm -rf build output.ll output
+    rm -rf build output.ll output output_*.txt
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
