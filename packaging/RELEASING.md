@@ -48,12 +48,16 @@ touch this private repo even if it leaks from a workflow log.
    ```bash
    gh workflow run windows-package.yml \
      --repo NeonSupernova/nyet \
-     -f publish=true \
-     -f prerelease=true
+     -f publish=true
    ```
-   Drop `prerelease` once you're ready to call a build stable. Set
-   `publish=false` to build and smoke-test without releasing anything —
-   the bundle still lands as an Actions artifact.
+   Set `publish=false` to build and smoke-test without releasing
+   anything — the bundle still lands as an Actions artifact.
+
+   **Don't pass `prerelease=true` for a build the public README points
+   at.** GitHub's `/releases/latest/` resolves to the newest
+   *non*-prerelease release, so marking one as a pre-release 404s the
+   permanent download link. This was hit on the very first v0.3.0
+   publish; the input now defaults to false and warns if you set it.
 4. The workflow then:
    - builds `nyet.exe` and fetches the WinLibs toolchain,
    - runs the full smoke-test suite against the bundled compiler,
@@ -73,6 +77,24 @@ https://github.com/NeonSupernova/nyet-releases/releases/latest/download/nyet-win
 Re-running the workflow without bumping `__version__` fails on
 purpose rather than replacing a download people may already have
 linked.
+
+## Two things that will bite you
+
+Both were found by actually downloading a published release and
+verifying it, which is worth doing after any change to the packaging.
+
+- **`/releases/latest/` ignores pre-releases.** See above.
+- **`Set-Content` writes CRLF.** A `SHA256SUMS.txt` with CRLF line
+  endings makes `sha256sum -c` and `shasum -c` look for a file whose
+  name ends in a carriage return, so verification fails on every
+  non-Windows machine for an archive that is perfectly fine. The
+  workflow writes it with `[System.IO.File]::WriteAllText` and an
+  explicit `` `n `` for that reason — don't "simplify" it back.
+
+After re-uploading an asset, the anonymous download URL can serve a
+stale copy from GitHub's CDN for a while; `gh release download` goes
+through the API and shows you the real stored file.
+
 
 ## GPL obligations
 
