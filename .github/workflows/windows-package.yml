@@ -149,17 +149,44 @@ jobs:
           try {
               & $exe -o arcade.exe arcade\main.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
-              # Drive it through minibase (option 1) then pipe dreams
-              # (option 4), then quit each game and the arcade itself --
-              # proves the bundled repo-root _lib/_repl/prelude_*.no data
-              # files actually resolve at runtime from a frozen exe, not
-              # just that this all compiles.
-              $arcOut = "1`nseed`nlist`nquit`n4`n1`nq`nq`n" | & .\arcade.exe 2>&1 | Out-String
+              # Drive it through minibase, game of life (reseed), pipe
+              # dreams (a move), and hangman (a repeated guess), then
+              # quit each game and the arcade itself -- proves the
+              # bundled repo-root _lib/_repl/prelude_*.no data files
+              # actually resolve at runtime from a frozen exe, not just
+              # that this all compiles. Also, deliberately, exercises
+              # every `busy_wait` call site in the suite (reseeding,
+              # submitting a pipe-dreams move, a repeated hangman
+              # guess) under a wall-clock budget -- `busy_wait` spins on
+              # `(now)`, which is backed by libc `clock()`; `(now)`
+              # divides raw clock() ticks by a hardcoded
+              # 1000000.0-per-second assumption that's only true on
+              # POSIX (glibc/macOS libc) and WRONG on the Windows CRT
+              # (1000 ticks/sec there), so a build with that bug fixed
+              # incorrectly would make every `busy_wait N` call spin for
+              # roughly `N * 1000` real seconds instead of `N` -- e.g. a
+              # combined ~2s of intended pauses here would instead take
+              # over half an hour. Confirmed via this exact codepath in
+              # CI history: the smoke test step took ~10 SECONDS before
+              # busy_wait was used anywhere in the suite, and ~10
+              # MINUTES once game_of_life/pipe_dreams/hangman started
+              # using it (one call actually spinning the intended 0.6s
+              # for ~600s) -- a real, previously silent regression this
+              # budget exists to catch immediately instead.
+              $arcSw = [System.Diagnostics.Stopwatch]::StartNew()
+              $arcOut = "1`nseed`nlist`nquit`n`n3`nr`nq`n`n4`n1`nq`n`n5`nz`nz`nquit`n`nq`n" | & .\arcade.exe 2>&1 | Out-String
+              $arcSw.Stop()
               Write-Host $arcOut
+              Write-Host "arcade playthrough wall-clock time: $($arcSw.Elapsed)"
               if ($LASTEXITCODE -ne 0) { throw "failed to run" }
               if ($arcOut -notmatch "N Y E T   A R C A D E") { throw "arcade banner missing" }
               if ($arcOut -notmatch "inserted #1: Alice") { throw "minibase (via arcade) wrong" }
               if ($arcOut -notmatch "Pipe Dreams") { throw "pipe dreams (via arcade) wrong" }
+              if ($arcOut -notmatch "already guessed that one") { throw "hangman (via arcade) wrong" }
+              # ~2s of real busy_wait is intended; 60s leaves generous
+              # headroom for a slow runner while staying two full orders
+              # of magnitude below what the CLOCKS_PER_SEC bug produces.
+              if ($arcSw.Elapsed.TotalSeconds -gt 60) { throw "took $($arcSw.Elapsed.TotalSeconds)s -- busy_wait/(now) is almost certainly spinning ~1000x too long again" }
           } catch { Write-Host "[FAIL] $_"; $failures.Add("arcade") }
 
           Write-Host "--- bundle\lib\ has the arcade suite's browsable source ---"
