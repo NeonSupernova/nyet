@@ -1,0 +1,6 @@
+=== stdout ===
+normal (3 lines): alpha|beta|gamma
+no trailing newline (1 lines): solo
+empty file (0 lines): 
+embedded blank line (3 lines): one||three
+file is just newline (1 lines): 

@@ -1988,6 +1988,8 @@ class Emitter:
                 return self._emit_file_open(node.args)
             if name == "file_read_all":
                 return self._emit_file_read_all(node.args)
+            if name == "file_read_lines":
+                return self._emit_file_read_lines(node.args)
             if name == "file_write":
                 return self._emit_file_write(node.args)
             if name == "file_close":
@@ -2749,6 +2751,170 @@ class Emitter:
         self._emit_line(f"{end} = getelementptr i8, ptr {buf}, i64 {size}")
         self._emit_line(f"store i8 0, ptr {end}")
         return buf
+
+    def _emit_split_line_copy(
+        self, start_slot: str, stop_i64: str, out_base: str, n_slot: str
+    ) -> None:
+        """Copy bytes `[*start_slot, stop_i64)` into a fresh malloc'd
+        null-terminated buffer and append it to the `Array[string]`
+        being built at `out_base`, via `n_slot` (the running output
+        count, also the next write index) -- a helper for
+        `_emit_file_read_lines`, which calls this once per line found
+        (mid-buffer, at each `\\n`) and once more for a final line with
+        no trailing newline, if there is one."""
+        self._declare_extern("declare ptr @memcpy(ptr, ptr, i64)")
+        ls = self._fresh_tmp()
+        self._emit_line(f"{ls} = load ptr, ptr {start_slot}")
+        ls_int = self._fresh_tmp()
+        self._emit_line(f"{ls_int} = ptrtoint ptr {ls} to i64")
+        line_len = self._fresh_tmp()
+        self._emit_line(f"{line_len} = sub i64 {stop_i64}, {ls_int}")
+        line_len_p1 = self._fresh_tmp()
+        self._emit_line(f"{line_len_p1} = add i64 {line_len}, 1")
+        line_buf = self._fresh_tmp()
+        self._emit_line(f"{line_buf} = call ptr @malloc(i64 {line_len_p1})")
+        self._emit_line(f"call ptr @memcpy(ptr {line_buf}, ptr {ls}, i64 {line_len})")
+        line_end = self._fresh_tmp()
+        self._emit_line(f"{line_end} = getelementptr i8, ptr {line_buf}, i64 {line_len}")
+        self._emit_line(f"store i8 0, ptr {line_end}")
+        n_val = self._fresh_tmp()
+        self._emit_line(f"{n_val} = load i64, ptr {n_slot}")
+        slot_ptr = self._fresh_tmp()
+        self._emit_line(f"{slot_ptr} = getelementptr ptr, ptr {out_base}, i64 {n_val}")
+        self._emit_line(f"store ptr {line_buf}, ptr {slot_ptr}")
+        n_next = self._fresh_tmp()
+        self._emit_line(f"{n_next} = add i64 {n_val}, 1")
+        self._emit_line(f"store i64 {n_next}, ptr {n_slot}")
+
+    def _emit_file_read_lines(self, args: list[N.Expr]) -> str | None:
+        """`(file_read_lines handle) -> Array[string]` -- reads the
+        whole file (like `file_read_all`) and splits it on `\\n` into
+        one malloc'd copy per line. Mirrors Python's `str.splitlines`:
+        a final trailing newline does not produce a trailing empty
+        element, and an empty file yields a zero-length array.
+
+        The output array is over-allocated at `(file size + 1)`
+        elements -- the true worst case, if every byte were a newline
+        -- then the header is corrected to the real line count once
+        the single pass is done. Wastes at most 8 bytes per byte of
+        file content, which is fine for the small line-oriented files
+        (config, save-data) this exists for; not meant for bulk data.
+
+        There's no general `split`/substring primitive in Nyet yet
+        (see CONTINUATION_PLAN.md) -- this is a narrower, purpose-built
+        builtin for exactly the "read a file back as one row per line"
+        shape, added because minibase's save/load needed it and
+        nothing already in the language could express it: a `char` has
+        no route back to a one-character `string` (no cast, and `+`
+        only concatenates two strings), so a general split() written
+        in Nyet source itself isn't reachable without this.
+        """
+        if len(args) != 1:
+            return None
+        self._declare_extern("declare i32 @fseek(ptr, i64, i32)")
+        self._declare_extern("declare i64 @ftell(ptr)")
+        self._declare_extern("declare void @rewind(ptr)")
+        self._declare_extern("declare i64 @fread(ptr, i64, i64, ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        h = self._emit_expr(args[0])
+        if h is None:
+            return None
+
+        # Read the whole file into a null-terminated buffer -- same as
+        # file_read_all.
+        self._emit_line(f"call i32 @fseek(ptr {h}, i64 0, i32 2)")
+        size = self._fresh_tmp()
+        self._emit_line(f"{size} = call i64 @ftell(ptr {h})")
+        self._emit_line(f"call void @rewind(ptr {h})")
+        size_p1 = self._fresh_tmp()
+        self._emit_line(f"{size_p1} = add i64 {size}, 1")
+        buf = self._fresh_tmp()
+        self._emit_line(f"{buf} = call ptr @malloc(i64 {size_p1})")
+        self._emit_line(f"call i64 @fread(ptr {buf}, i64 1, i64 {size}, ptr {h})")
+        end_ptr = self._fresh_tmp()
+        self._emit_line(f"{end_ptr} = getelementptr i8, ptr {buf}, i64 {size}")
+        self._emit_line(f"store i8 0, ptr {end_ptr}")
+        end_int = self._fresh_tmp()
+        self._emit_line(f"{end_int} = ptrtoint ptr {end_ptr} to i64")
+
+        # Over-allocated Array[string] output: [i64 len][ptr elements...].
+        cap_bytes = self._fresh_tmp()
+        self._emit_line(f"{cap_bytes} = mul i64 {size_p1}, 8")
+        out_total = self._fresh_tmp()
+        self._emit_line(f"{out_total} = add i64 {cap_bytes}, 8")
+        out = self._fresh_tmp()
+        self._emit_line(f"{out} = call ptr @malloc(i64 {out_total})")
+        out_base = self._array_data_base(out)
+
+        # Loop state: byte cursor `i`, current-line-start pointer, and
+        # the running output count (also next write index).
+        i_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {i_slot}")
+        start_slot = self._emit_alloca("ptr")
+        self._emit_line(f"store ptr {buf}, ptr {start_slot}")
+        n_slot = self._emit_alloca("i64")
+        self._emit_line(f"store i64 0, ptr {n_slot}")
+
+        cond = self._fresh_label("lines_cond")
+        body = self._fresh_label("lines_body")
+        found_nl = self._fresh_label("lines_nl")
+        advance = self._fresh_label("lines_advance")
+        after_loop = self._fresh_label("lines_after_loop")
+        tail_then = self._fresh_label("lines_tail")
+        tail_merge = self._fresh_label("lines_tail_merge")
+
+        self._emit_line(f"br label %{cond}")
+        self._emit_label(cond)
+        i_val = self._fresh_tmp()
+        self._emit_line(f"{i_val} = load i64, ptr {i_slot}")
+        in_bounds = self._fresh_tmp()
+        self._emit_line(f"{in_bounds} = icmp slt i64 {i_val}, {size}")
+        self._emit_line(f"br i1 {in_bounds}, label %{body}, label %{after_loop}")
+
+        self._emit_label(body)
+        ch_ptr = self._fresh_tmp()
+        self._emit_line(f"{ch_ptr} = getelementptr i8, ptr {buf}, i64 {i_val}")
+        ch = self._fresh_tmp()
+        self._emit_line(f"{ch} = load i8, ptr {ch_ptr}")
+        is_nl = self._fresh_tmp()
+        self._emit_line(f"{is_nl} = icmp eq i8 {ch}, 10")
+        self._emit_line(f"br i1 {is_nl}, label %{found_nl}, label %{advance}")
+
+        self._emit_label(found_nl)
+        ch_int = self._fresh_tmp()
+        self._emit_line(f"{ch_int} = ptrtoint ptr {ch_ptr} to i64")
+        self._emit_split_line_copy(start_slot, ch_int, out_base, n_slot)
+        i_val_p1 = self._fresh_tmp()
+        self._emit_line(f"{i_val_p1} = add i64 {i_val}, 1")
+        new_start = self._fresh_tmp()
+        self._emit_line(f"{new_start} = getelementptr i8, ptr {buf}, i64 {i_val_p1}")
+        self._emit_line(f"store ptr {new_start}, ptr {start_slot}")
+        self._emit_line(f"br label %{advance}")
+
+        self._emit_label(advance)
+        i_inc = self._fresh_tmp()
+        self._emit_line(f"{i_inc} = add i64 {i_val}, 1")
+        self._emit_line(f"store i64 {i_inc}, ptr {i_slot}")
+        self._emit_line(f"br label %{cond}")
+
+        # A final line with no trailing newline still needs flushing.
+        self._emit_label(after_loop)
+        ls_final = self._fresh_tmp()
+        self._emit_line(f"{ls_final} = load ptr, ptr {start_slot}")
+        ls_final_int = self._fresh_tmp()
+        self._emit_line(f"{ls_final_int} = ptrtoint ptr {ls_final} to i64")
+        has_tail = self._fresh_tmp()
+        self._emit_line(f"{has_tail} = icmp slt i64 {ls_final_int}, {end_int}")
+        self._emit_line(f"br i1 {has_tail}, label %{tail_then}, label %{tail_merge}")
+        self._emit_label(tail_then)
+        self._emit_split_line_copy(start_slot, end_int, out_base, n_slot)
+        self._emit_line(f"br label %{tail_merge}")
+        self._emit_label(tail_merge)
+
+        n_final = self._fresh_tmp()
+        self._emit_line(f"{n_final} = load i64, ptr {n_slot}")
+        self._emit_line(f"store i64 {n_final}, ptr {out}")
+        return out
 
     def _emit_file_write(self, args: list[N.Expr]) -> str | None:
         if len(args) != 2:
