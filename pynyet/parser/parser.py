@@ -664,7 +664,17 @@ class Parser:
 
     def _parse_macro(self, lparen: Token) -> N.MacroDecl:
         self._advance()
-        name = self._expect(TokenKind.IDENT).value
+        # `out`/`in`/`err` are lexer keywords (not plain IDENT), but the
+        # prelude declares `out`/`err` as macros -- accept them as macro
+        # names too, same as they're already accepted as identifiers in
+        # expression position (see the IO-keywords-as-identifiers case
+        # in `_parse_atom`).
+        name_tok = self._peek()
+        if name_tok.kind in (TokenKind.OUT, TokenKind.IN, TokenKind.ERR):
+            self._advance()
+            name = name_tok.kind.name.lower()
+        else:
+            name = self._expect(TokenKind.IDENT).value
         params = self._parse_param_list()
         body = self.parse_expr()
         self._expect(TokenKind.RPAREN)

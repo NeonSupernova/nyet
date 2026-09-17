@@ -11,13 +11,13 @@
 ;;;; linearly (there's no Set[T] in Nyet -- `main.no` documents it but
 ;;;; nothing backs it) -- fine at "at most 26 distinct letters" scale.
 ;;;; Printing a char found by indexing that array needs an
-;;;; intermediate `let` binding, not `(out (guessed i))` directly --
+;;;; intermediate `let` binding, not `(out! (guessed i))` directly --
 ;;;; `_node_is_char`'s char-vs-plain-i32 classifier (same one `%c`
 ;;;; printing relies on) only recognizes a `let`/`var`-bound
 ;;;; identifier, not an arbitrary index expression (same "direct
 ;;;; bindings only" scope every other type classifier in this codegen
-;;;; has -- confirmed directly: `(out (guessed 0))` printed "97", the
-;;;; numeric codepoint, `(let g:char (guessed 0)) (out g)` printed
+;;;; has -- confirmed directly: `(out! (guessed 0))` printed "97", the
+;;;; numeric codepoint, `(let g:char (guessed 0)) (out! g)` printed
 ;;;; "a").
 
 (module hangman_lib)
@@ -84,21 +84,21 @@
     (if (>= i n) (break) pass)
     (let ch:char (word i))
     (if (was_guessed guessed count &ch)
-      (out ch)
-      (out "_"))
-    (out " ")
+      (out! ch)
+      (out! "_"))
+    (out! " ")
     (= i (+ i 1)))
-  (out "\n"))
+  (out! "\n"))
 
 (fn print_guessed_letters (guessed:&Array[char] count:i32) -> unit
-  (out "guessed: ")
+  (out! "guessed: ")
   (var i:i32 0)
   (loop
     (if (>= i count) (break) pass)
     (let g:char (guessed i))
-    (out g) (out " ")
+    (out! g) (out! " ")
     (= i (+ i 1)))
-  (out "\n"))
+  (out! "\n"))
 
 (fn gallows (wrong:i32) -> string
   (match wrong
@@ -115,9 +115,9 @@
 ;; game title and how-to-play reminder would only ever flash by once,
 ;; right before getting cleared away.
 (fn header () -> unit
-  (out CLEAR_SCREEN)
-  (out DIM) (out "=== Hangman ===") (out RESET)
-  (out "  (guess a letter at a time, 'quit' to leave)\n\n"))
+  (out! CLEAR_SCREEN)
+  (out! DIM) (out! "=== Hangman ===") (out! RESET)
+  (out! "  (guess a letter at a time, 'quit' to leave)\n\n"))
 
 (pub fn run_hangman () -> unit
   (var seed:i32 (as (* (now) 1000000.0) i32))
@@ -142,8 +142,8 @@
       (if (! playing) (break) pass)
 
       (header)
-      (out (gallows wrong))
-      (out (fmt "wrong guesses: {} / {}\n" wrong MAX_WRONG))
+      (out! (gallows wrong))
+      (out! (fmt "wrong guesses: {} / {}\n" wrong MAX_WRONG))
       (print_blanked_word &word &guessed guess_count)
       (print_guessed_letters &guessed guess_count)
 
@@ -155,14 +155,14 @@
           (do
             (let ch:char (line 0))
             (if (was_guessed &guessed guess_count &ch)
-              (do (out "already guessed that one\n") (busy_wait 0.8) pass)
+              (do (out! "already guessed that one\n") (busy_wait 0.8) pass)
               (do
                 (= (guessed guess_count) ch)
                 (= guess_count (+ guess_count 1))
                 (if (char_in_string &word &ch) pass (do (= wrong (+ wrong 1)) pass))
                 pass))
             pass)
-          (do (out "guess exactly one letter (or 'quit')\n") (busy_wait 0.8) pass)))
+          (do (out! "guess exactly one letter (or 'quit')\n") (busy_wait 0.8) pass)))
 
       (if (&& playing (word_complete &word &guessed guess_count))
         (do (= won true) (= playing false) pass)
@@ -174,21 +174,21 @@
     (if running
       (do
         (header)
-        (out (gallows wrong))
+        (out! (gallows wrong))
         (if won
           (do
-            (out GREEN) (out (fmt "*** you got it! the word was '{}' ***\n" word)) (out RESET)
+            (out! GREEN) (out! (fmt "*** you got it! the word was '{}' ***\n" word)) (out! RESET)
             (= wins (+ wins 1))
             pass)
           (do
-            (out RED) (out (fmt "*** out of guesses -- the word was '{}' ***\n" word)) (out RESET)
+            (out! RED) (out! (fmt "*** out of guesses -- the word was '{}' ***\n" word)) (out! RESET)
             (= losses (+ losses 1))
             pass))
-        (out "\n")
+        (out! "\n")
         (let cont:string (prompt_line "press Enter for another round ('quit' to leave): "))
         (if (|| (== cont "quit") (== cont "q")) (= running false) pass)
         pass)
       pass))
 
-  (out (fmt "final score -- wins: {}  losses: {}\n" wins losses))
-  (out "thanks for playing!\n"))
+  (out! (fmt "final score -- wins: {}  losses: {}\n" wins losses))
+  (out! "thanks for playing!\n"))

@@ -53,8 +53,8 @@ def test_u64_and_usize_are_stored_as_i64_not_i32():
           (do
             (let a:u64 10000000000000000000)
             (let b:usize 5)
-            (out (as a i32))
-            (out (as b i32))))
+            (out! (as a i32))
+            (out! (as b i32))))
     """)
     body = _fn_body(ir, "main")
     assert "alloca i64" in body
@@ -66,7 +66,7 @@ def test_widening_cast_from_unsigned_source_zero_extends():
         (fn main () -> unit
           (do
             (let a:u8 255)
-            (out (as a i32))))
+            (out! (as a i32))))
     """)
     body = _fn_body(ir, "main")
     assert "zext i8" in body
@@ -78,7 +78,7 @@ def test_widening_cast_from_signed_source_still_sign_extends():
         (fn main () -> unit
           (do
             (let a:i8 100)
-            (out (as a i32))))
+            (out! (as a i32))))
     """)
     body = _fn_body(ir, "main")
     assert "sext i8" in body
@@ -91,7 +91,7 @@ def test_unsigned_comparison_uses_unsigned_predicate():
           (do
             (let a:u32 4000000000)
             (let b:u32 3000000000)
-            (out (> a b))))
+            (out! (> a b))))
     """)
     body = _fn_body(ir, "main")
     assert "icmp ugt i32" in body
@@ -104,7 +104,7 @@ def test_signed_comparison_still_uses_signed_predicate():
           (do
             (let a:i32 4)
             (let b:i32 3)
-            (out (> a b))))
+            (out! (> a b))))
     """)
     body = _fn_body(ir, "main")
     assert "icmp sgt i32" in body
@@ -117,8 +117,8 @@ def test_unsigned_division_and_remainder_use_unsigned_instructions():
           (do
             (let x:u32 10)
             (let y:u32 3)
-            (out (/ x y))
-            (out (% x y))))
+            (out! (/ x y))
+            (out! (% x y))))
     """)
     body = _fn_body(ir, "main")
     assert "udiv i32" in body
@@ -133,8 +133,8 @@ def test_signed_division_and_remainder_still_use_signed_instructions():
           (do
             (let x:i32 10)
             (let y:i32 3)
-            (out (/ x y))
-            (out (% x y))))
+            (out! (/ x y))
+            (out! (% x y))))
     """)
     body = _fn_body(ir, "main")
     assert "sdiv i32" in body
@@ -148,7 +148,7 @@ def test_out_prints_unsigned_value_with_percent_u():
         (fn main () -> unit
           (do
             (let a:u32 4000000000)
-            (out a)))
+            (out! a)))
     """)
     assert '@.str.0 = ' in ir
     assert "%u" in ir
@@ -159,7 +159,7 @@ def test_out_prints_unsigned_64_bit_value_with_percent_llu():
         (fn main () -> unit
           (do
             (let a:u64 10000000000000000000)
-            (out a)))
+            (out! a)))
     """)
     assert "%llu" in ir
 
@@ -169,7 +169,7 @@ def test_fmt_template_uses_percent_u_for_unsigned_placeholder():
         (fn main () -> unit
           (do
             (let a:u32 4000000000)
-            (out (fmt "{}" a))))
+            (out! (fmt "{}" a))))
     """)
     assert "%u" in ir
     assert "%d\\00" not in ir
@@ -178,7 +178,7 @@ def test_fmt_template_uses_percent_u_for_unsigned_placeholder():
 def test_unsigned_param_is_tracked_too():
     ir = _ir_for("""
         (fn show (n:u16) -> unit
-          (out (as n i32)))
+          (out! (as n i32)))
         (fn main () -> unit
           (show 40000))
     """)

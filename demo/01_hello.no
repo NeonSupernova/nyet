@@ -7,5 +7,5 @@
 ;;   compiled straight to a native .exe -- no interpreter at runtime.
 
 (fn main () -> unit
-  (out "hello from Nyet!\n")
-  (out "compiled straight to a native .exe -- no interpreter at runtime.\n"))
+  (out! "hello from Nyet!\n")
+  (out! "compiled straight to a native .exe -- no interpreter at runtime.\n"))

@@ -111,7 +111,7 @@
 (pub fn hex_b (hex:i32) -> i32 (& hex 255))
 
 ;;; `(fg_hex hex)`/`(bg_hex hex)` -- exact truecolor from a packed
-;;; 0xRRGGBB value, e.g. `(out (fg_hex 0xff8800)) (out "orange!")`.
+;;; 0xRRGGBB value, e.g. `(out! (fg_hex 0xff8800)) (out! "orange!")`.
 (pub fn fg_hex (hex:i32) -> string (fg_rgb (hex_r hex) (hex_g hex) (hex_b hex)))
 (pub fn bg_hex (hex:i32) -> string (bg_rgb (hex_r hex) (hex_g hex) (hex_b hex)))
 

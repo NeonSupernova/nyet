@@ -284,7 +284,7 @@
   (if (> score 90) "pass" "fail"))
 
 ;; pass — the unit no-op, for branches with no meaningful value
-(if loud (out "loud!") pass)
+(if loud (out! "loud!") pass)
 
 ;; match — exhaustive pattern matching, returns the matched arm's value
 (match shape
@@ -323,7 +323,7 @@
     (let input (in))
     (match (parse input)
       ((Ok n)  (break n))
-      ((Err _) (do (out "try again") pass)))))
+      ((Err _) (do (out! "try again") pass)))))
 
 ;; do — sequences expressions, returns the last
 (do
@@ -544,18 +544,18 @@
 (trait Greet
   (fn greeting (self:&Self) -> string)   ; required — no default
   (fn greet (self:&Self) -> unit         ; default implementation
-    (out (greeting self))))
+    (out! (greeting self))))
 
 ;;; Traits as bounds in function signatures.
 
 (fn print_all[T: Display] (items:&Array[T]) -> unit
-  (map (fn (item:&T) -> unit (out (display item))) items))
+  (map (fn (item:&T) -> unit (out! (display item))) items))
 
 ;;; Trait objects — when you need a value whose concrete type is unknown at compile time.
 ;;; dyn TraitName is a fat pointer (data + vtable).
 
 (fn log_value (val:&dyn Display) -> unit
-  (out (display val)))
+  (out! (display val)))
 
 (log_value &42)
 (log_value &"hello")
@@ -591,15 +591,15 @@
 (type IOError (NotFound) (PermissionDenied) (Disconnected))
 
 (fn log (msg:string) -> Result[() IOError]
-  (out msg)
+  (out! msg)
   (Ok ()))
 
 ;;; match is the primary way to handle errors explicitly.
 
 (match (divide 10.0 0.0)
-  ((Ok  v) (out (fmt "result: {}" v)))
-  ((Err DivisionByZero) (err "divided by zero"))
-  ((Err Overflow)       (err "overflow")))
+  ((Ok  v) (out! (fmt "result: {}" v)))
+  ((Err DivisionByZero) (err! "divided by zero"))
+  ((Err Overflow)       (err! "overflow")))
 
 ;;; Error types can be composed. Define a module-level error that wraps others.
 
@@ -802,8 +802,8 @@
 ;;;   in   — stdin
 ;;;   err  — stderr
 
-(out "hello, world\n")              ; write to stdout
-(out err "something went wrong\n")  ; write to an explicit channel
+(out! "hello, world\n")              ; write to stdout
+(out! err "something went wrong\n")  ; write to an explicit channel
 (let line:string (in))              ; read a line from stdin
 (let data:string (in myfile))       ; read from an explicit channel
 
@@ -818,7 +818,7 @@
 ;;; Channels are values — pass them to functions, store them, compose them.
 
 (fn log_to (ch:IOChannel msg:string) -> Result[() IOError]
-  (out ch (fmt "{}\n" msg))
+  (out! ch (fmt "{}\n" msg))
   (Ok ()))
 
 (? (log_to mylog "server started"))
@@ -826,8 +826,8 @@
 
 ;;; Hardware IO — same syntax, different channel type.
 
-(out port13 HIGH)
-(out port13 LOW)
+(out! port13 HIGH)
+(out! port13 LOW)
 (let state:bool (in button))
 
 ;;; Channels implement IOChannel, which is a trait.
@@ -925,7 +925,7 @@
   (if (! cond) body pass))
 
 (unless (== n 0)
-  (out "nonzero\n"))
+  (out! "nonzero\n"))
 
 ;;; Macros may call other macros. The expander walks results until no
 ;;; macro calls remain (bounded recursion guards against infinite loops).
@@ -942,9 +942,9 @@
 ;;;   (macro do_all (forms ...) (do forms ...))
 
 (do_all
-  (out "step 1\n")
-  (out "step 2\n")
-  (out "step 3\n"))
+  (out! "step 1\n")
+  (out! "step 2\n")
+  (out! "step 3\n"))
 
 ;;; `quote` captures the source form of its argument as a string. After
 ;;; substitution, `(quote x)` becomes a `StringLit` of the call-site
@@ -952,10 +952,10 @@
 
 (macro show (x)
   (do
-    (out (quote x))
-    (out " = ")
-    (out x)
-    (out "\n")))
+    (out! (quote x))
+    (out! " = ")
+    (out! x)
+    (out! "\n")))
 
 (show (+ 1 2))                ; prints "(+ 1 2) = 3"
 
@@ -987,8 +987,8 @@
 
 ;;; DSL: hardware pin control.
 
-(macro pin/high   (p) (out p HIGH))
-(macro pin/low    (p) (out p LOW))
+(macro pin/high   (p) (out! p HIGH))
+(macro pin/low    (p) (out! p LOW))
 (macro pin/toggle (p)
   (if (== (in p) HIGH) (pin/low p) (pin/high p)))
 
@@ -1001,7 +1001,7 @@
 (macro log/debug (expr)
   (do
     (let result expr)
-    (out err (fmt "DEBUG {} = {}" (quote expr) result))
+    (out! err (fmt "DEBUG {} = {}" (quote expr) result))
     result))
 
 (log/debug (divide 10.0 2.0))    ; DEBUG (divide 10.0 2.0) = Ok(5.0)

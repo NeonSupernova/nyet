@@ -9,7 +9,7 @@
 (fn main () -> unit
   (let env:Map[string string]
     {"HOME" "/home/ada" "PATH" "/usr/bin"})
-  (out (env "HOME")) (out "\n")
-  (out (env "PATH")) (out "\n")
+  (out! (env "HOME")) (out! "\n")
+  (out! (env "PATH")) (out! "\n")
   (= (env "TERM") "xterm-256")
-  (out (env "TERM")) (out "\n"))
+  (out! (env "TERM")) (out! "\n"))

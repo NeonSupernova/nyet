@@ -24,9 +24,9 @@
     (var i:i32 0)
     (loop
       (if (>= i (len arr)) (break pass) pass)
-      (out (arr i)) (out " ")
+      (out! (arr i)) (out! " ")
       (= i (+ i 1)))
-    (out "\n")))
+    (out! "\n")))
 
 (fn main () -> unit
   (do
@@ -37,9 +37,9 @@
     (print_array rest)
 
     (var all_even:Array[i32] [2 4 6 8])
-    (out "len=") (out (len (drop_while is_even all_even))) (out "\n")
+    (out! "len=") (out! (len (drop_while is_even all_even))) (out! "\n")
 
     (var none_even:Array[i32] [1 3 5 7])
     (let untouched:Array[i32] (drop_while is_even none_even))
-    (out "len=") (out (len untouched)) (out " ")
+    (out! "len=") (out! (len untouched)) (out! " ")
     (print_array untouched)))

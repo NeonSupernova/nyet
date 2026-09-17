@@ -13,7 +13,7 @@
 ;;; `(prompt_line label)` -- prints `label` with no trailing newline,
 ;;; then reads and returns one line of input.
 (pub fn prompt_line (label:string) -> string
-  (do (out label) (in)))
+  (do (out! label) (in)))
 
 ;;; `(busy_wait secs)` -- spins until `secs` seconds of CPU time have
 ;;; elapsed (via the `now` primitive). A spin loop is *actively

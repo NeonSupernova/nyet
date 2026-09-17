@@ -21,4 +21,4 @@
       (if (>= i 200) (break) pass)
       (make_row i)
       (= i (+ i 1)))
-    (out "ok\n")))
+    (out! "ok\n")))

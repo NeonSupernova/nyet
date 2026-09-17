@@ -25,7 +25,7 @@
 ;; method and `()` in the couple of `-> unit` ones, so the same macro
 ;; covers both without needing two near-identical copies.
 (macro guard (ok msg on_fail)
-  (if (! ok) (do (out msg) (return on_fail)) pass))
+  (if (! ok) (do (out! msg) (return on_fail)) pass))
 
 ;; The prelude's own idiom (see examples/macro_unless.no) — reads
 ;; better than `(if (! cond) body pass)` at every call site below.
@@ -37,7 +37,7 @@
 ;; `(quote s)` — `s` is a macro parameter, so `quote` renders whatever
 ;; identifier the caller passed (e.g. `name`), not the word "s".
 (macro require_nonempty (s on_fail)
-  (guard (!= (len s) 0) (fmt "{}Error: {} cannot be blank{}\n" RED (quote s) RESET) on_fail))
+  (guard! (!= (len s) 0) (fmt "{}Error: {} cannot be blank{}\n" RED (quote s) RESET) on_fail))
 
 ;; ============================================================
 ;;; Presentation
@@ -90,9 +90,9 @@
   ;; INSERT: assigns the next auto-incrementing id. False if the
   ;; database is full, `name` is blank, or `name` is already taken.
   (fn insert (self:&!Database name:string) -> bool
-    (require_nonempty name false)
-    (guard (< (. self count) MAX_ROWS) (fmt "{}Error: database is full{}\n" RED RESET) false)
-    (guard
+    (require_nonempty! name false)
+    (guard! (< (. self count) MAX_ROWS) (fmt "{}Error: database is full{}\n" RED RESET) false)
+    (guard!
       (== (find_by_name self &name) (- 0 1))
       (fmt "{}Error: '{}' already exists{}\n" RED name RESET)
       false)
@@ -108,7 +108,7 @@
           (= (rows i) (Row id:id name:name used:true))
           (= (. self count) (+ (. self count) 1))
           (= (. self next_id) (+ id 1))
-          (out (fmt "{}inserted #{}: {}{}\n" GREEN id name RESET))
+          (out! (fmt "{}inserted #{}: {}{}\n" GREEN id name RESET))
           (return true))
         pass)
       (= i (+ i 1)))
@@ -117,27 +117,27 @@
   ;; RENAME (this file's UPDATE): false if `name` isn't found or
   ;; `new_name` is blank.
   (fn rename (self:&!Database name:string new_name:string) -> bool
-    (require_nonempty new_name false)
+    (require_nonempty! new_name false)
     (let idx:i32 (find_by_name self &name))
-    (guard (!= idx (- 0 1)) (fmt "{}Error: '{}' not found{}\n" RED name RESET) false)
-    (guard
+    (guard! (!= idx (- 0 1)) (fmt "{}Error: '{}' not found{}\n" RED name RESET) false)
+    (guard!
       (== (find_by_name self &new_name) (- 0 1))
       (fmt "{}Error: '{}' already exists{}\n" RED new_name RESET)
       false)
 
     (let rows:&!Array[Row] (. self rows))
     (= (. (rows idx) name) new_name)
-    (out (fmt "{}renamed '{}' -> '{}'{}\n" GREEN name new_name RESET))
+    (out! (fmt "{}renamed '{}' -> '{}'{}\n" GREEN name new_name RESET))
     true)
 
   ;; DELETE by name.
   (fn delete_by_name (self:&!Database name:string) -> bool
     (let idx:i32 (find_by_name self &name))
-    (guard (!= idx (- 0 1)) (fmt "{}Error: '{}' not found{}\n" RED name RESET) false)
+    (guard! (!= idx (- 0 1)) (fmt "{}Error: '{}' not found{}\n" RED name RESET) false)
     (let rows:&!Array[Row] (. self rows))
     (= (. (rows idx) used) false)
     (= (. self count) (- (. self count) 1))
-    (out (fmt "{}deleted '{}'{}\n" GREEN name RESET))
+    (out! (fmt "{}deleted '{}'{}\n" GREEN name RESET))
     true)
 
   ;; Reorders the backing array into ascending name order. Unused
@@ -164,22 +164,22 @@
 
   ;; SELECT * : print every used row via its Display impl.
   (fn print_all (self:&Database) -> unit
-    (unless (> (. self count) 0) (do (out DIM) (out "(empty)\n") (out RESET) (return ())))
+    (unless! (> (. self count) 0) (do (out! DIM) (out! "(empty)\n") (out! RESET) (return ())))
     (let rows:&Array[Row] (. self rows))
     (var i:i32 0)
     (loop
       (if (>= i MAX_ROWS) (break) pass)
       (let row:&Row (rows i))
       (if (. row used)
-        (do (out "  ") (out (display row)) (out "\n"))
+        (do (out! "  ") (out! (display row)) (out! "\n"))
         pass)
       (= i (+ i 1))))
 
   (fn stats (self:&Database) -> unit
-    (out (fmt "{} / {} rows used\n" (. self count) MAX_ROWS))
-    (unless
+    (out! (fmt "{} / {} rows used\n" (. self count) MAX_ROWS))
+    (unless!
       (< (. self count) (- MAX_ROWS 10))
-      (do (out YELLOW) (out "warning: nearing capacity\n") (out RESET))))
+      (do (out! YELLOW) (out! "warning: nearing capacity\n") (out! RESET))))
 
   (fn clear (self:&!Database) -> unit
     (let rows:&!Array[Row] (. self rows))
@@ -190,7 +190,7 @@
       (= (. row used) false)
       (= i (+ i 1)))
     (= (. self count) 0)
-    (out "database cleared\n"))
+    (out! "database cleared\n"))
 
   ;; SAVE: one name per line, active rows only, storage order. Doesn't
   ;; need `file_read_lines` -- writing is just a sequence of
@@ -207,7 +207,7 @@
         pass)
       (= i (+ i 1)))
     (file_close h)
-    (out (fmt "{}saved {} row(s) to '{}'{}\n" GREEN (. self count) path RESET)))
+    (out! (fmt "{}saved {} row(s) to '{}'{}\n" GREEN (. self count) path RESET)))
 
   ;; LOAD: merges every name in `path` into the live database via the
   ;; normal `insert` path (so validation/dedup/id-assignment are exactly
@@ -232,7 +232,7 @@
         (if (insert self name) (= loaded (+ loaded 1)) pass)
         pass)
       (= i (+ i 1)))
-    (out (fmt "{}loaded {} new row(s) from '{}' ({} line(s) read){}\n"
+    (out! (fmt "{}loaded {} new row(s) from '{}' ({} line(s) read){}\n"
       GREEN loaded path total RESET)))
 
   ;; SEARCH: every row whose name contains `needle` anywhere (not just
@@ -249,11 +249,11 @@
         (do
           (let rname:string (. row name))
           (if (contains_substr &rname &needle)
-            (do (out "  ") (out (display row)) (out "\n") (= hits (+ hits 1)))
+            (do (out! "  ") (out! (display row)) (out! "\n") (= hits (+ hits 1)))
             pass))
         pass)
       (= i (+ i 1)))
-    (unless (> hits 0) (out (fmt "{}no matches for '{}'{}\n" DIM needle RESET)))))
+    (unless! (> hits 0) (out! (fmt "{}no matches for '{}'{}\n" DIM needle RESET)))))
 
 ;; ============================================================
 ;;; String helpers
@@ -267,8 +267,8 @@
 (fn contains_substr (haystack:&string needle:&string) -> bool
   (let hn:i32 (len haystack))
   (let nn:i32 (len needle))
-  (unless (> nn 0) (return true))
-  (unless (<= nn hn) (return false))
+  (unless! (> nn 0) (return true))
+  (unless! (<= nn hn) (return false))
   (var i:i32 0)
   (loop
     (if (> i (- hn nn)) (break) pass)
@@ -276,7 +276,7 @@
     (var ok:bool true)
     (loop
       (if (>= j nn) (break) pass)
-      (unless (== (haystack (+ i j)) (needle j)) (do (= ok false) (break)))
+      (unless! (== (haystack (+ i j)) (needle j)) (do (= ok false) (break)))
       (= j (+ j 1)))
     (if ok (return true) pass)
     (= i (+ i 1)))

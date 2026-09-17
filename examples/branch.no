@@ -3,5 +3,5 @@
   (let n:i32 7)
   (let label:string
     (if (> n 0) "positive" "non-positive"))
-  (out label)
-  (out "\n"))
+  (out! label)
+  (out! "\n"))

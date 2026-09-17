@@ -24,9 +24,9 @@
     (do
         (let s:string "ABC")
         ;; Direct indexing of a local string literal -> ASCII codes.
-        (out (fmt "{}\n" (as (s 0) i32)))    ; 65
-        (out (fmt "{}\n" (as (s 1) i32)))    ; 66
+        (out! (fmt "{}\n" (as (s 0) i32)))    ; 65
+        (out! (fmt "{}\n" (as (s 1) i32)))    ; 66
         ;; Indexing through a string parameter.
-        (out (fmt "{}\n" (char_at s 2)))     ; 67
+        (out! (fmt "{}\n" (char_at s 2)))     ; 67
         ;; Loop-driven indexing with an arithmetic index.
-        (out (fmt "{}\n" (digit_sum "123"))))) ; 6
+        (out! (fmt "{}\n" (digit_sum "123"))))) ; 6

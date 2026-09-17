@@ -11,6 +11,7 @@ var, if, do, arithmetic, comparisons).
 from __future__ import annotations
 
 import struct as _struct
+from collections.abc import Callable
 
 from pynyet.ast import nodes as N
 from pynyet.sema.borrow import compute_drop_names
@@ -35,6 +36,15 @@ class Emitter:
         # unconditionally declared at the top level definitely ran".
         self._drop_names: dict[str, list[str]] = {}
         self._current_fn_name: str | None = None
+        # The current function's declared `-> Array[T]` element LLVM
+        # type, if any -- see `_emit_expr_as_array`.
+        self._current_fn_array_ret_elem_ty: str | None = None
+        # The current function's raw declared return TypeNode, if any --
+        # see `_resolve_generic_variant`'s use of it to recover type args
+        # a generic sum type variant's own arguments can't fully infer
+        # (e.g. `Err`'s payload type in `(fn f () -> Result[T E] (Ok
+        # v))`, which never appears in `Ok`'s own field types at all).
+        self._current_fn_return_type_node: N.TypeNode | None = None
         # Keyword literals (`:name`) intern to a small integer ID, assigned
         # on first use — allocation-free, compared by identity via plain
         # i32 equality.
@@ -78,6 +88,11 @@ class Emitter:
         # same bug already fixed for array/map reads and chained
         # indexing (see _env_array_elem_nyet/_env_map_val_nyet).
         self._struct_field_nyet: dict[str, dict[str, str]] = {}
+        # struct name → {field name: element LLVM type}, for every field
+        # whose type is `Array[T]`. Lets `_emit_struct_construct` route
+        # an `(array_new n)` field initializer through
+        # `_emit_expr_as_array` -- see `_register_struct`.
+        self._struct_field_array_elem: dict[str, dict[str, str]] = {}
 
         # v0.2: fn signature registry — name → (param_types, ret_type)
         self._fn_sigs: dict[str, tuple[list[str], str]] = {}
@@ -126,6 +141,18 @@ class Emitter:
         # for the Map case) -- (param_llvm_types, ret_llvm_type), so
         # `(let h (arr i)) (h ...)` recognizes `h` as callable.
         self._env_array_elem_fn_sig: dict[str, tuple[list[str], str]] = {}
+        # Same idea again, for an Array[T] whose elements are themselves
+        # arrays (e.g. `Array[Array[i32]]`, a 2D grid) -- name -> the
+        # INNER array's LLVM element type. Without this, `(let row (grid
+        # i))` (no annotation) registered `row` as an opaque scalar
+        # `ptr` binding instead of an array one, so `(row j)` was parsed
+        # as a call to an undefined function literally named `row` --
+        # the same failure shape `_env_array_elem_nyet`/
+        # `_env_array_elem_fn_sig` already fixed for struct/closure
+        # elements, but arrays have no Nyet type NAME to key off (they're
+        # structurally, not nominally, typed), hence a separate registry
+        # rather than reusing `_env_array_elem_nyet`.
+        self._env_array_elem_of_array: dict[str, str] = {}
 
         # Char bindings — names of variables whose Nyet type is `char`.
         # Used by _emit_cast to detect char→int conversions at the call site.
@@ -191,6 +218,13 @@ class Emitter:
         self._dyn_types: dict[str, str] = {}
         self._env_dyn_trait: dict[str, str] = {}
         self._fn_param_dyn_traits: dict[str, list[str | None]] = {}
+        # Parallel to `_fn_param_dyn_traits`: which of a function's
+        # parameters are `Array[T]`, and T's LLVM element type -- lets a
+        # call site route a bare `(array_new n)` ARGUMENT through
+        # `_emit_expr_as_array` instead of the plain `_emit_expr` that
+        # can't infer array_new's element type from its own bare integer
+        # argument alone.
+        self._fn_param_array_elem: dict[str, list[str | None]] = {}
 
         # v0.3: generic fn templates — name → FnDecl (not yet emitted)
         self._fn_templates: dict[str, N.FnDecl] = {}
@@ -436,6 +470,8 @@ class Emitter:
             else:
                 top_level.append(node)
 
+        self._register_builtin_channel_structs()
+
         # Pre-register every concrete function's signature so call sites
         # in bodies can reference fns regardless of declaration order
         # (matters for v0.6 lifted lambdas appended after `main`).
@@ -484,6 +520,7 @@ class Emitter:
         fields = []
         string_fields: set[str] = set()
         field_nyet: dict[str, str] = {}
+        field_array_elem: dict[str, str] = {}
         for p in node.fields:
             ty = self._llvm_type(p.type)
             fields.append((p.name, ty))
@@ -492,11 +529,65 @@ class Emitter:
                 string_fields.add(p.name)
             if nyet_name is not None:
                 field_nyet[p.name] = nyet_name
+            arr_elem = self._array_elem_llvm_type(p.type)
+            if arr_elem is not None:
+                field_array_elem[p.name] = arr_elem
         self._structs[node.name] = fields
         self._struct_string_fields[node.name] = string_fields
         self._struct_field_nyet[node.name] = field_nyet
+        # `Array[T]`-typed fields, keyed by field name -> T's LLVM type --
+        # see `_emit_struct_construct`'s use of it to route an
+        # `(array_new n)` field initializer through `_emit_expr_as_array`.
+        self._struct_field_array_elem[node.name] = field_array_elem
         llvm_fields = ", ".join(ty for _, ty in fields)
         self._struct_type_lines.append(f"%{node.name} = type {{ {llvm_fields} }}")
+
+    def _register_builtin_channel_structs(self) -> None:
+        """`FileIO` is a builtin struct implementing `IOChannel` (see the
+        design plan) with no real `N.StructDecl` in Nyet source, so it's
+        registered here directly rather than via `_register_struct`.
+        `write`/`read`/`close` are hand-rolled emitters (below) that
+        `_emit_call` dispatches to directly by name+receiver-type, ahead
+        of the generic `_method_impls` inherent-method-dispatch path —
+        registering them in `_method_impls` too keeps `(write &!f ...)`
+        callable through the ordinary generic path as well (used when
+        `f`'s static type can only be recovered that way, e.g. via
+        `_env_struct_name`), pointing at the same sentinel names
+        `_emit_call` special-cases; `_emit_user_call` is never actually
+        reached for them.
+
+        `StdIO` (the `out`/`in`/`err` builtin channel values) has no
+        registration here at all — per the design plan, those three are
+        resolved by static AST identity in `_emit_io`, never materialized
+        as a real runtime value, so no LLVM struct type is needed for
+        them in this pass.
+        """
+        self._structs["FileIO"] = [("handle", "ptr"), ("mode", "ptr"), ("closed", "i1")]
+        self._struct_string_fields["FileIO"] = set()
+        self._struct_field_nyet["FileIO"] = {"mode": "FileMode"}
+        self._struct_type_lines.append("%FileIO = type { ptr, ptr, i1 }")
+        self._method_impls[("FileIO", "write")] = "__builtin_fileio_write"
+        self._method_impls[("FileIO", "read")] = "__builtin_fileio_read"
+        self._method_impls[("FileIO", "close")] = "__builtin_fileio_close"
+
+        # `_infer_nyet_type_name`'s generic method-call case AND
+        # `_sum_name_of` (used by `match`/`?` to find a call's concrete
+        # sum type) both need the callee registered in
+        # `_fn_ret_nyet_names` — the former via the mangled sentinel
+        # name, the latter via the *bare* call name only (no
+        # receiver-type dispatch at all there), so both are registered.
+        # Same flat-single-slot caveat as typeck's `self.env`
+        # registration: a user channel whose own `read` returns a
+        # *different* result type would collide here (whichever
+        # registers last wins) — harmless in practice since every real
+        # IOChannel implementer shares the trait's exact signature shape.
+        for sentinel, bare, sum_name in (
+            ("__builtin_fileio_write", "write", "WriteResult"),
+            ("__builtin_fileio_read", "read", "ReadResult"),
+            ("__builtin_fileio_close", "close", "CloseResult"),
+        ):
+            self._fn_ret_nyet_names[sentinel] = sum_name
+            self._fn_ret_nyet_names[bare] = sum_name
 
     def _register_sum_type(self, node: N.TypeDecl) -> None:
         """Register a sum type.  LLVM layout: { i32 tag, payload... }.
@@ -1092,6 +1183,21 @@ class Emitter:
                 return self._llvm_type(tn.args[0])
         return None
 
+    def _array_of_array_elem_llvm_type(self, tn: N.TypeNode | None) -> str | None:
+        """If `tn` is `Array[Array[U]]` (or `&Array[Array[U]]`), return
+        U's LLVM element type -- i.e. one level deeper than
+        `_array_elem_llvm_type`. See `_env_array_elem_of_array`."""
+        if tn is None:
+            return None
+        if isinstance(tn, N.RefType):
+            return self._array_of_array_elem_llvm_type(tn.inner)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == "Array" and tn.args:
+                return self._array_elem_llvm_type(tn.args[0])
+        return None
+
     def _array_elem_nyet_name(self, tn: N.TypeNode | None) -> str | None:
         """Return the Nyet element type name if `tn` is `Array[T]` (or
         `&Array[T]`) and `T` is a named type (e.g. a struct/sum type).
@@ -1220,6 +1326,8 @@ class Emitter:
             "env_fn_sig": dict(self._env_fn_sig),
             "loop_stack": list(self._loop_stack),
             "str_lits": dict(self._str_lits),
+            "current_fn_array_ret_elem_ty": self._current_fn_array_ret_elem_ty,
+            "current_fn_return_type_node": self._current_fn_return_type_node,
         }
 
     def _restore_fn_state(self, saved: dict) -> None:
@@ -1240,6 +1348,8 @@ class Emitter:
         self._env_fn_sig = saved["env_fn_sig"]
         self._loop_stack = saved["loop_stack"]
         self._str_lits = saved["str_lits"]
+        self._current_fn_array_ret_elem_ty = saved["current_fn_array_ret_elem_ty"]
+        self._current_fn_return_type_node = saved["current_fn_return_type_node"]
 
     def _register_fn_sig(self, node: N.FnDecl) -> None:
         """Pre-populate `_fn_sigs` so call sites resolve regardless of
@@ -1261,6 +1371,33 @@ class Emitter:
         dyn_traits = [self._dyn_trait_name(p.type) for p in node.params]
         if any(t is not None for t in dyn_traits):
             self._fn_param_dyn_traits[node.name] = dyn_traits
+        array_elems = [self._array_elem_llvm_type(p.type) for p in node.params]
+        if any(t is not None for t in array_elems):
+            self._fn_param_array_elem[node.name] = array_elems
+
+    def _body_definitely_returns(self, node: N.Node | None) -> bool:
+        """True if executing `node` is guaranteed to already have emitted
+        its own `ret` terminator -- a bare `(return expr)` (or a `do`
+        block whose last statement is one) as a function's ENTIRE body
+        yields no SSA value back to `_emit_fn` (by design -- see the
+        `N.Return` case in `_emit_expr`), which `_emit_fn` used to treat
+        exactly like a fallthrough with no explicit return, appending a
+        second, invalid trailing `ret` right after the body's own one
+        (`ret ptr %t6` followed by `ret ptr 0` -- two terminators in the
+        same block with no label between them). This happened to still
+        parse for every INTEGER return type (`ret i32 0` is syntactically
+        valid on its own even as dead code LLVM's IR parser evidently
+        doesn't reject), silently leaving genuinely malformed IR behind,
+        but is a hard, unmissable clang build failure for any pointer
+        return type (`ret ptr 0` -- "integer constant must have integer
+        type") -- exactly the shape a `-> Array[T]`/struct/string-
+        returning function with a bare top-level `(return ...)` takes.
+        """
+        if isinstance(node, N.Return):
+            return True
+        if isinstance(node, N.Do) and node.exprs:
+            return self._body_definitely_returns(node.exprs[-1])
+        return False
 
     def _emit_drops(self) -> None:
         """Free this function's dropped struct locals (see _drop_names'
@@ -1282,6 +1419,8 @@ class Emitter:
         self._fn_lines = []
         self._fn_alloca_lines = []
         self._current_fn_name = node.name
+        self._current_fn_array_ret_elem_ty = None
+        self._current_fn_return_type_node = node.return_type if node.name != "main" else None
 
         # Emit into a local buffer, then flush to self._lines at end.
         body_lines: list[str] = []
@@ -1307,6 +1446,11 @@ class Emitter:
             ret_nyet = self._nyet_type_name(node.return_type) if node.return_type else None
             if ret_nyet:
                 self._fn_ret_nyet_names[node.name] = ret_nyet
+            # A declared `-> Array[T]` return type -- consulted below (and
+            # by the `N.Return` case in `_emit_expr`) so `(array_new n)`
+            # works as a function's tail-return value or an explicit
+            # `(return (array_new n))`, not just a `let`'s direct RHS.
+            self._current_fn_array_ret_elem_ty = self._array_elem_llvm_type(node.return_type)
             if isinstance(node.return_type, N.TupleType):
                 elem_tys = [self._llvm_type(et) for et in node.return_type.elements]
                 elem_nyet = [self._nyet_type_name(et) for et in node.return_type.elements]
@@ -1423,14 +1567,22 @@ class Emitter:
                     self._env_unsigned_names.add(n)
 
             if node.body is not None:
-                result = self._emit_expr(node.body)
-                self._emit_drops()
-                if ret_type == "void":
-                    self._emit_line("ret void")
-                elif result is not None:
-                    self._emit_line(f"ret {ret_type} {result}")
+                if self._current_fn_array_ret_elem_ty is not None:
+                    result = self._emit_expr_as_array(node.body, self._current_fn_array_ret_elem_ty)
                 else:
-                    self._emit_line(f"ret {ret_type} 0")
+                    result = self._emit_expr(node.body)
+                if self._body_definitely_returns(node.body):
+                    # The body's own `(return ...)` already emitted this
+                    # block's terminator -- see `_body_definitely_returns`.
+                    pass
+                else:
+                    self._emit_drops()
+                    if ret_type == "void":
+                        self._emit_line("ret void")
+                    elif result is not None:
+                        self._emit_line(f"ret {ret_type} {result}")
+                    else:
+                        self._emit_line(f"ret {ret_type} 0")
             else:
                 self._emit_drops()
                 self._emit_line("ret void" if ret_type == "void" else f"ret {ret_type} 0")
@@ -1624,8 +1776,16 @@ class Emitter:
             if op in ("file_open", "file_read_all"):
                 return "ptr"
             if op == "in":
-                if node.args and isinstance(node.args[0], N.Ident):
+                if (
+                    node.args
+                    and isinstance(node.args[0], N.Ident)
+                    and node.args[0].name in self._IN_TYPE_NAMES
+                ):
                     return self._llvm_type_from_name(node.args[0].name)
+                # `(in)` bare or `(in channel)` explicit-channel read —
+                # both yield a `string` (heap ptr), never a primitive.
+                return "ptr"
+            if op == "io" and len(node.args) == 1:
                 return "ptr"
             if op in self._structs or op in self._variant_ctors:
                 return "ptr"
@@ -1826,8 +1986,13 @@ class Emitter:
             # Both `(return)` and `(return ())` mean the same thing in a
             # `-> unit` function, so treat them the same.
             if node.value is not None and not isinstance(node.value, N.UnitLit):
-                val = self._emit_expr(node.value)
-                ty = self._infer_llvm_type(node.value)
+                if self._current_fn_array_ret_elem_ty is not None:
+                    # `(return (array_new n))` -- see `_emit_expr_as_array`.
+                    val = self._emit_expr_as_array(node.value, self._current_fn_array_ret_elem_ty)
+                    ty = "ptr"
+                else:
+                    val = self._emit_expr(node.value)
+                    ty = self._infer_llvm_type(node.value)
                 self._emit_line(f"ret {ty} {val}")
             else:
                 self._emit_line("ret void")
@@ -1898,8 +2063,11 @@ class Emitter:
             if name in self._env_map_val_ty and len(node.args) == 1:
                 return self._emit_map_get(name, node.args[0])
             # Builtins
-            if name == "out":
-                return self._emit_out(node.args)
+            # `out` is deliberately absent here: the `out!`/`err!` prelude
+            # macros expand to `(io out ...)`/`(io err ...)` before codegen
+            # ever runs, so bare `out` is never a call head at this point.
+            if name == "io":
+                return self._emit_io(node.args)
             if name == "in":
                 return self._emit_in(node.args)
             if name == "fmt":
@@ -1910,6 +2078,25 @@ class Emitter:
                 return self._emit_now()
             if name == "len" and len(node.args) == 1:
                 return self._emit_array_len(node.args[0])
+            if name == "FileIO":
+                return self._emit_fileio_open(node.args)
+            # write/read/close on a FileIO receiver are hand-rolled
+            # builtins (see `_register_builtin_channel_structs`), checked
+            # by receiver type ahead of the generic inherent-method-
+            # dispatch path below (which handles the same names for any
+            # user-defined IOChannel implementer via real `_method_impls`
+            # entries backed by an actual mangled function).
+            if name in ("write", "read", "close") and node.args:
+                probe = self._unwrap_borrow(node.args[0])
+                sn = self._infer_nyet_type_name(probe)
+                if sn is None and isinstance(probe, N.Ident):
+                    sn = self._env_struct_name.get(probe.name)
+                if sn == "FileIO":
+                    if name == "write":
+                        return self._emit_fileio_write(node.args)
+                    if name == "read":
+                        return self._emit_fileio_read(node.args)
+                    return self._emit_fileio_close(node.args)
             if name == "file_open":
                 return self._emit_file_open(node.args)
             if name == "file_read_all":
@@ -2047,6 +2234,15 @@ class Emitter:
             mangled = self._method_impls.get((target_name, method_name))
             if mangled is not None:
                 return self._emit_user_call(mangled, node.args)
+        if (
+            isinstance(node.head, (N.FieldAccess, N.Call))
+            and len(node.args) == 1
+            and self._array_elem_ty_of_expr(node.head) is not None
+        ):
+            # `((. v data) i)` or `((grid i) j)` -- indexing an
+            # `Array[T]` value produced by a further expression. See
+            # `_emit_array_index_nested`.
+            return self._emit_array_index_nested(node.head, node.args[0])
         return None
 
     # ------------------------------------------------------------------
@@ -2069,6 +2265,22 @@ class Emitter:
             return None
         return self._monomorphize_struct(name, type_args)
 
+    def _sum_type_args_from_type_node(
+        self, tn: N.TypeNode | None, sum_name: str
+    ) -> tuple[str, ...] | None:
+        """If `tn` is `sum_name[concrete_args...]` (or `&sum_name[...]`),
+        return the concrete Nyet type-arg names -- used as a fallback
+        source of generic type args a variant's own field types can't
+        fully determine (see `_resolve_generic_variant`)."""
+        if isinstance(tn, N.RefType):
+            return self._sum_type_args_from_type_node(tn.inner, sum_name)
+        if isinstance(tn, N.GenericType):
+            base = tn.base
+            base_name = base.name if isinstance(base, (N.NamedType, N.PrimType)) else None
+            if base_name == sum_name and tn.args:
+                return tuple(self._nyet_type_name_of_node(a) or "unk" for a in tn.args)
+        return None
+
     def _resolve_generic_variant(self, vname: str, args: list[N.Expr]) -> str | None:
         """Find the generic sum type this variant belongs to and monomorphize.
 
@@ -2090,7 +2302,26 @@ class Emitter:
                     break
             type_args = self._infer_type_args_for_variant(tmpl, variant_types, args)
             if type_args is None:
-                continue
+                # A variant that doesn't reference every one of the sum
+                # type's generic params in its own field types (e.g.
+                # `Err`'s payload type never appears in `Ok`'s fields)
+                # can't be fully resolved from the constructor call's
+                # own arguments alone -- fall back to the enclosing
+                # function's declared return type, when the variant
+                # construction is (as it almost always is) that
+                # function's return value. Without this, unresolved
+                # inference silently fell through to the bare-name
+                # `_variant_ctors[vname]` lookup below in `_emit_call`,
+                # which whichever sum type instantiation registered
+                # LAST for this variant name always won -- a silent
+                # wrong-type miscompile (or an outright ill-typed store)
+                # for every OTHER instantiation of the same generic sum
+                # type in the same program.
+                type_args = self._sum_type_args_from_type_node(
+                    self._current_fn_return_type_node, sum_name
+                )
+                if type_args is None or len(type_args) != len(tmpl.generics):
+                    continue
             mangled_sum = self._monomorphize_sum_type(sum_name, type_args)
             if mangled_sum is None:
                 continue
@@ -2283,46 +2514,77 @@ class Emitter:
             return
 
     # ------------------------------------------------------------------
-    # out
+    # out / err — the StdIO write path, shared by `io`'s stdout/stderr
+    # fast path (see `_emit_io`) and `_emit_panic`.
     # ------------------------------------------------------------------
 
-    def _emit_out(self, args: list[N.Expr]) -> str | None:
+    def _emit_printf_call(self, file_ptr: str | None, fmt: str, arg_ty: str, val: str) -> None:
+        """Emit one `printf`/`fprintf` call. `file_ptr` is None for stdout
+        (plain `printf`) or a `FILE*` value for `fprintf` (stderr)."""
+        tmp = self._fresh_tmp()
+        if file_ptr is None:
+            self._declare_printf()
+            self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, {arg_ty} {val})")
+        else:
+            self._declare_extern("declare i32 @fprintf(ptr, ptr, ...)")
+            self._emit_line(
+                f"{tmp} = call i32 (ptr, ptr, ...) @fprintf("
+                f"ptr {file_ptr}, ptr {fmt}, {arg_ty} {val})"
+            )
+
+    def _emit_stderr_handle(self) -> str:
+        """Cached `FILE*` for fd 2 (stderr), opened once via `fdopen` —
+        mirrors `_emit_in`'s cached stdin handle rather than referencing
+        the libc `stderr`/`__stderrp` global directly, whose exact symbol
+        differs across glibc and macOS libc."""
+        self._declare_extern("declare ptr @fdopen(i32, ptr)")
+        self._declare_extern("@__nyet_stderr = internal global ptr null")
+        cached = self._fresh_tmp()
+        self._emit_line(f"{cached} = load ptr, ptr @__nyet_stderr")
+        need_open = self._fresh_tmp()
+        self._emit_line(f"{need_open} = icmp eq ptr {cached}, null")
+        open_label = self._fresh_label("err_open")
+        have_label = self._fresh_label("err_have")
+        self._emit_line(f"br i1 {need_open}, label %{open_label}, label %{have_label}")
+
+        self._emit_label(open_label)
+        mode_name = self._get_format_string("w", "w_mode")
+        opened = self._fresh_tmp()
+        self._emit_line(f"{opened} = call ptr @fdopen(i32 2, ptr {mode_name})")
+        self._emit_line(f"store ptr {opened}, ptr @__nyet_stderr")
+        self._emit_line(f"br label %{have_label}")
+
+        self._emit_label(have_label)
+        handle = self._fresh_tmp()
+        self._emit_line(f"{handle} = load ptr, ptr @__nyet_stderr")
+        return handle
+
+    def _emit_out(self, args: list[N.Expr], file_ptr: str | None = None) -> str | None:
         for arg in args:
             sn = self._infer_nyet_type_name(self._unwrap_borrow(arg))
             if sn is not None and sn in self._structs and (sn, "display") in self._method_impls:
                 mangled = self._method_impls[(sn, "display")]
                 val = self._emit_user_call(mangled, [arg])
                 if val is not None:
-                    self._declare_printf()
-                    fmt = self._get_fmt_str()
-                    tmp = self._fresh_tmp()
-                    self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})")
+                    self._emit_printf_call(file_ptr, self._get_fmt_str(), "ptr", val)
                 continue
             val = self._emit_expr(arg)
             if val is None:
                 continue
             ty = self._infer_llvm_type(arg)
-            self._declare_printf()
             if ty == "ptr":
-                fmt = self._get_fmt_str()
-                tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, ptr {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_str(), "ptr", val)
             elif self._is_float(ty):
                 fmt = self._get_fmt_f64()
-                tmp = self._fresh_tmp()
                 if ty == "float":
                     ext = self._fresh_tmp()
                     self._emit_line(f"{ext} = fpext float {val} to double")
                     val = ext
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, double {val})")
+                self._emit_printf_call(file_ptr, fmt, "double", val)
             elif ty == "i64" and self._node_is_unsigned(arg):
-                fmt = self._get_fmt_u64()
-                tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_u64(), "i64", val)
             elif ty == "i64":
-                fmt = self._get_fmt_i64()
-                tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i64 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_i64(), "i64", val)
             elif self._node_is_char(arg):
                 # `char` is stored as `i32` (a Unicode scalar value --
                 # see CLAUDE.md), same LLVM shape as any other int, so
@@ -2332,19 +2594,13 @@ class Emitter:
                 # 65) (out! ch)` printed "65", not "A"). `%c` reads an
                 # `int` varargs slot and takes its low byte, matching
                 # `i32`'s width exactly -- no coercion needed.
-                fmt = self._get_fmt_char()
-                tmp = self._fresh_tmp()
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_char(), "i32", val)
             elif self._node_is_unsigned(arg):
-                fmt = self._get_fmt_u32()
-                tmp = self._fresh_tmp()
                 val = self._coerce_int_to(val, ty, "i32", unsigned=True)
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_u32(), "i32", val)
             else:
-                fmt = self._get_fmt_i32()
-                tmp = self._fresh_tmp()
                 val = self._coerce_int_to(val, ty, "i32")
-                self._emit_line(f"{tmp} = call i32 (ptr, ...) @printf(ptr {fmt}, i32 {val})")
+                self._emit_printf_call(file_ptr, self._get_fmt_i32(), "i32", val)
         return None
 
     # ------------------------------------------------------------------
@@ -2396,6 +2652,77 @@ class Emitter:
     # in
     # ------------------------------------------------------------------
 
+    # Recognized `(in TYPE)` primitive-type names — anything else in that
+    # argument position is an explicit channel (`(in myfile)`), not a
+    # parse-target type.
+    _IN_TYPE_NAMES = {"i32", "int", "i64", "f64", "f32", "bool", "string"}
+
+    def _channel_type_name(self, ch: N.Expr) -> str | None:
+        probe = self._unwrap_borrow(ch)
+        sn = self._infer_nyet_type_name(probe)
+        if sn is None and isinstance(probe, N.Ident):
+            sn = self._env_struct_name.get(probe.name)
+        return sn
+
+    def _emit_channel_write(self, ch: N.Expr, data: N.Expr) -> None:
+        """Dispatch `write` on `ch` (FileIO builtin or any user-defined
+        IOChannel implementer) and unwrap the Result, panicking on `Err`
+        — the shared tail end of `io`'s write form (`(io ch data)`)."""
+        sn = self._channel_type_name(ch)
+        if sn == "FileIO":
+            raw = self._emit_fileio_write([ch, data])
+        elif sn is not None and (sn, "write") in self._method_impls:
+            raw = self._emit_user_call(self._method_impls[(sn, "write")], [ch, data])
+        else:
+            raw = None
+        if raw is not None:
+            self._emit_io_unwrap_or_panic(raw, "write")
+
+    def _emit_channel_read(self, ch: N.Expr) -> str | None:
+        """Dispatch `read` on `ch` and unwrap the Result, panicking on
+        `Err` — shared by `io`'s read form (`(io ch)`) and `(in ch)`."""
+        sn = self._channel_type_name(ch)
+        if sn == "FileIO":
+            raw = self._emit_fileio_read([ch])
+        elif sn is not None and (sn, "read") in self._method_impls:
+            raw = self._emit_user_call(self._method_impls[(sn, "read")], [ch])
+        else:
+            return None
+        if raw is None:
+            return None
+        return self._emit_io_unwrap_or_panic(raw, "read")
+
+    def _emit_io(self, args: list[N.Expr]) -> str | None:
+        """`io` — the unified channel verb. `(io ch)` reads, `(io ch data)`
+        writes; arity distinguishes direction (the same asymmetry
+        `(in)`/`(out x)` already had, just one name). Bare `out`/`err`
+        are compile-time-recognized `StdIO` markers (see the design
+        plan's scope note — they're never materialized as a runtime
+        value in this pass), reusing the exact printf/fprintf logic the
+        old `out` builtin had; any other channel goes through the
+        generic write/read dispatch shared with `(in ch)` and direct
+        `write`/`read`/`close` calls.
+        """
+        if not args:
+            return None
+        channel = self._unwrap_borrow(args[0])
+        if isinstance(channel, N.Ident) and channel.name in ("out", "err", "in"):
+            if len(args) == 1:
+                if channel.name != "in":
+                    self._emit_line("; io: read from a write-only StdIO channel is a no-op")
+                    return self._get_string("")[0]
+                return self._emit_in([])
+            if channel.name == "in":
+                self._emit_line("; io: write to a read-only StdIO channel is a no-op")
+                return None
+            file_ptr = self._emit_stderr_handle() if channel.name == "err" else None
+            self._emit_out(args[1:], file_ptr)
+            return None
+        if len(args) == 1:
+            return self._emit_channel_read(channel)
+        self._emit_channel_write(channel, args[1])
+        return None
+
     def _emit_in(self, args: list[N.Expr]) -> str | None:
         """`(in)` -- read one line from stdin.
 
@@ -2427,6 +2754,12 @@ class Emitter:
         for prompting on a line of input, would silently read
         clobbered stack memory back out of it.
         """
+        if len(args) == 1 and not (
+            isinstance(args[0], N.Ident) and args[0].name in self._IN_TYPE_NAMES
+        ):
+            # Explicit-channel read: `(in myfile)`, distinct from
+            # `(in i32)` above (a primitive-type name).
+            return self._emit_channel_read(args[0])
         self._declare_extern("declare ptr @fgets(ptr, i32, ptr)")
         self._declare_extern("declare ptr @fdopen(i32, ptr)")
         self._declare_extern("declare ptr @malloc(i64)")
@@ -2775,6 +3108,297 @@ class Emitter:
         rc = self._fresh_tmp()
         self._emit_line(f"{rc} = call i32 @fclose(ptr {h})")
         return None
+
+    # ------------------------------------------------------------------
+    # IOChannel — WriteResult/ReadResult/CloseResult construction and
+    # unwrapping for builtin channel implementers (StdIO, FileIO). Each
+    # operation gets its own concrete (non-generic) result type — see
+    # the prelude source comment in expand.py for why this isn't one
+    # generic `Result[T E]` instantiated three ways. A user-defined
+    # channel's own `write`/`read`/`close` instead go through ordinary
+    # Nyet-source `(WriteOk ...)`/`(WriteErr ...)`-etc. call syntax in
+    # its `impl` body, so it never needs these helpers.
+    # ------------------------------------------------------------------
+
+    # op -> (result sum type, Ok variant name, Err variant name). Ok is
+    # always tag 0 / Err tag 1 by construction (declaration order in the
+    # prelude source), so these are read from `_sum_types` directly
+    # rather than round-tripped through `_variant_ctors`.
+    _IO_RESULT_TYPES = {
+        "write": ("WriteResult", "WriteOk", "WriteErr"),
+        "read": ("ReadResult", "ReadOk", "ReadErr"),
+        "close": ("CloseResult", "CloseOk", "CloseErr"),
+    }
+
+    def _emit_io_ok(self, op: str, val: str | None) -> str | None:
+        """Construct `<op>Ok(val)` (e.g. `WriteOk(val)`)."""
+        sum_name, _, _ = self._IO_RESULT_TYPES[op]
+        variants = self._sum_types.get(sum_name)
+        if variants is None:
+            return None
+        _, payload_types = variants[0]
+        values = [(payload_types[0], val)] if payload_types and val is not None else []
+        return self._emit_variant_construct_raw(sum_name, 0, payload_types, values)
+
+    def _emit_io_err(self, op: str, msg_ptr: str) -> str | None:
+        """Construct `<op>Err(Other(msg_ptr))` (e.g. `WriteErr(...)`)."""
+        sum_name, _, _ = self._IO_RESULT_TYPES[op]
+        variants = self._sum_types.get(sum_name)
+        if variants is None or "Other" not in self._variant_ctors:
+            return None
+        io_error_sum, other_tag = self._variant_ctors["Other"]
+        io_variants = self._sum_types[io_error_sum]
+        _, other_payload_types = io_variants[other_tag]
+        other_values = [(other_payload_types[0], msg_ptr)] if other_payload_types else []
+        err_val = self._emit_variant_construct_raw(
+            io_error_sum, other_tag, other_payload_types, other_values
+        )
+
+        _, err_payload_types = variants[1]
+        values = [(err_payload_types[0], err_val)] if err_payload_types else []
+        return self._emit_variant_construct_raw(sum_name, 1, err_payload_types, values)
+
+    def _emit_io_unwrap_or_panic(self, result_ptr: str, op: str) -> str | None:
+        """Given a `<op>Result` value, return its unwrapped Ok payload, or
+        panic. This is `io`'s sugar contract (see main.no's "IO Channels"
+        section and the IOChannel design plan) — a caller who wants the
+        actual `IOError` instead calls `write`/`read`/`close` directly
+        and `match`es the result themselves, so the panic message here
+        is intentionally generic rather than threading the real error
+        text through."""
+        sum_name, _, _ = self._IO_RESULT_TYPES[op]
+        variants = self._sum_types.get(sum_name)
+        if variants is None:
+            return result_ptr
+
+        tag_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{tag_ptr} = getelementptr inbounds %{sum_name}, ptr {result_ptr}, i32 0, i32 0"
+        )
+        tag = self._fresh_tmp()
+        self._emit_line(f"{tag} = load i32, ptr {tag_ptr}")
+        is_ok = self._fresh_tmp()
+        self._emit_line(f"{is_ok} = icmp eq i32 {tag}, 0")
+        ok_label = self._fresh_label("io_ok")
+        err_label = self._fresh_label("io_err")
+        self._emit_line(f"br i1 {is_ok}, label %{ok_label}, label %{err_label}")
+
+        self._emit_label(err_label)
+        self._declare_printf()
+        msg = self._get_format_string("io: operation failed\n", "io_panic_msg")
+        panic_tmp = self._fresh_tmp()
+        self._emit_line(f"{panic_tmp} = call i32 (ptr, ...) @printf(ptr {msg})")
+        self._declare_extern("declare void @exit(i32)")
+        self._emit_line("call void @exit(i32 1)")
+        self._emit_line("unreachable")
+
+        self._emit_label(ok_label)
+        _, ok_payload_types = variants[0]
+        if not ok_payload_types:
+            return None
+        payload_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {result_ptr}, i32 0, i32 1"
+        )
+        ok_val = self._fresh_tmp()
+        self._emit_line(f"{ok_val} = load {ok_payload_types[0]}, ptr {payload_ptr}")
+        return ok_val
+
+    # ------------------------------------------------------------------
+    # FileIO — a builtin struct implementing IOChannel (see design plan).
+    # Constructor + write/read/close are hand-rolled here (like
+    # file_open et al. above) rather than expressed as a real `impl` in
+    # Nyet source, since dispatch for them is intercepted by name+receiver
+    # type directly in `_emit_call` before the generic method-dispatch
+    # path ever runs (see `_emit_call`).
+    # ------------------------------------------------------------------
+
+    _FILE_MODE_TO_C = {
+        "Read": "r",
+        "Write": "w",
+        "Append": "a",
+        "ReadWrite": "r+",
+    }
+
+    def _emit_fileio_open(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 2:
+            return None
+        self._declare_extern("declare ptr @fopen(ptr, ptr)")
+        self._declare_extern("declare ptr @malloc(i64)")
+        path = self._emit_expr(args[0])
+        if path is None:
+            return None
+        mode_name = self._nullary_variant_name(args[1]) or "Read"
+        c_mode = self._get_string(self._FILE_MODE_TO_C.get(mode_name, "r"))[0]
+        handle = self._fresh_tmp()
+        self._emit_line(f"{handle} = call ptr @fopen(ptr {path}, ptr {c_mode})")
+        closed_flag = self._fresh_tmp()
+        self._emit_line(f"{closed_flag} = icmp eq ptr {handle}, null")
+
+        struct_name = "FileIO"
+        ptr = self._heap_alloc_struct(struct_name, self._struct_size_bytes(struct_name))
+        handle_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{handle_ptr} = getelementptr inbounds %{struct_name}, ptr {ptr}, i32 0, i32 0"
+        )
+        self._emit_line(f"store ptr {handle}, ptr {handle_ptr}")
+        mode_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{mode_ptr} = getelementptr inbounds %{struct_name}, ptr {ptr}, i32 0, i32 1"
+        )
+        mode_val = self._emit_construct_nullary_mode("FileMode", mode_name)
+        self._emit_line(f"store ptr {mode_val}, ptr {mode_ptr}")
+        closed_ptr = self._fresh_tmp()
+        self._emit_line(
+            f"{closed_ptr} = getelementptr inbounds %{struct_name}, ptr {ptr}, i32 0, i32 2"
+        )
+        self._emit_line(f"store i1 {closed_flag}, ptr {closed_ptr}")
+        return ptr
+
+    def _nullary_variant_name(self, node: N.Expr) -> str | None:
+        """`(Read)`/`(Write)`/etc. — a zero-arg sum-type variant call.
+        Returns the variant's bare name (`"Read"`), or None."""
+        if isinstance(node, N.Call) and isinstance(node.head, N.Ident):
+            return node.head.name
+        return None
+
+    def _emit_construct_nullary_mode(self, sum_type_hint: str, vname: str) -> str:
+        """Construct a zero-payload sum type variant value (e.g. `(Append)`
+        of `FileMode`) directly from its name, for builtins that receive
+        the variant name as a Python string rather than an AST call node."""
+        key = f"{sum_type_hint}::{vname}"
+        if key in self._variant_ctors:
+            sum_name, tag_idx = self._variant_ctors[key]
+        else:
+            sum_name, tag_idx = self._variant_ctors[vname]
+        return self._emit_variant_construct_raw(sum_name, tag_idx, (), [])
+
+    def _emit_fileio_field(self, ch: N.Expr, field_idx: int) -> str:
+        """GEP to a FileIO field (0=handle, 1=mode, 2=closed) without a load."""
+        base = self._emit_expr(ch)
+        fptr = self._fresh_tmp()
+        self._emit_line(
+            f"{fptr} = getelementptr inbounds %FileIO, ptr {base}, i32 0, i32 {field_idx}"
+        )
+        return fptr
+
+    def _emit_fileio_closed(self, ch: N.Expr) -> tuple[str, str]:
+        """Returns (is_closed_i1_value, handle_field_ptr) for a FileIO."""
+        handle_ptr = self._emit_fileio_field(ch, 0)
+        closed_ptr = self._emit_fileio_field(ch, 2)
+        closed = self._fresh_tmp()
+        self._emit_line(f"{closed} = load i1, ptr {closed_ptr}")
+        return closed, handle_ptr
+
+    def _emit_fileio_closed_guard(
+        self,
+        ch: N.Expr,
+        prefix: str,
+        op: str,
+        err_msg: str,
+        emit_ok: Callable[[str], str],
+    ) -> str:
+        """Shared shape for write/read/close: if the channel's `closed`
+        flag is set, return `Err`; otherwise run `emit_ok(handle_ptr)`
+        (the real libc operation, returning its own `Ok`/`Err` Result) and
+        merge the two paths with a `phi`. `emit_ok` is assumed to leave
+        control in the same block it started in (true for the simple
+        libc-call + `_emit_io_ok`/`_emit_io_err` bodies below) — the same
+        "no explicit current-block tracking" assumption the rest of this
+        emitter already relies on for straight-line expression codegen.
+        """
+        handle_ptr = self._emit_fileio_field(ch, 0)
+        closed_ptr = self._emit_fileio_field(ch, 2)
+        closed = self._fresh_tmp()
+        self._emit_line(f"{closed} = load i1, ptr {closed_ptr}")
+        closed_label = self._fresh_label(f"{prefix}_closed")
+        ok_label = self._fresh_label(f"{prefix}_ok")
+        done_label = self._fresh_label(f"{prefix}_done")
+        self._emit_line(f"br i1 {closed}, label %{closed_label}, label %{ok_label}")
+
+        self._emit_label(closed_label)
+        msg_ptr = self._get_string(err_msg)[0]
+        err_result = self._emit_io_err(op, msg_ptr)
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(ok_label)
+        ok_result = emit_ok(handle_ptr)
+        self._emit_line(f"br label %{done_label}")
+
+        self._emit_label(done_label)
+        merged = self._fresh_tmp()
+        self._emit_line(
+            f"{merged} = phi ptr [ {err_result}, %{closed_label} ], [ {ok_result}, %{ok_label} ]"
+        )
+        return merged
+
+    def _emit_fileio_write(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 2:
+            return None
+        ch, data = args
+
+        def emit_ok(handle_ptr: str) -> str:
+            self._declare_extern("declare i64 @strlen(ptr)")
+            self._declare_extern("declare i64 @fwrite(ptr, i64, i64, ptr)")
+            handle = self._fresh_tmp()
+            self._emit_line(f"{handle} = load ptr, ptr {handle_ptr}")
+            text = self._emit_expr(data)
+            n = self._fresh_tmp()
+            self._emit_line(f"{n} = call i64 @strlen(ptr {text})")
+            wrote = self._fresh_tmp()
+            self._emit_line(f"{wrote} = call i64 @fwrite(ptr {text}, i64 1, i64 {n}, ptr {handle})")
+            return self._emit_io_ok("write", wrote) or wrote
+
+        return self._emit_fileio_closed_guard(
+            ch, "fw", "write", "write: channel is closed", emit_ok
+        )
+
+    def _emit_fileio_read(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 1:
+            return None
+        (ch,) = args
+
+        def emit_ok(handle_ptr: str) -> str:
+            self._declare_extern("declare i32 @fseek(ptr, i64, i32)")
+            self._declare_extern("declare i64 @ftell(ptr)")
+            self._declare_extern("declare void @rewind(ptr)")
+            self._declare_extern("declare i64 @fread(ptr, i64, i64, ptr)")
+            self._declare_extern("declare ptr @malloc(i64)")
+            handle = self._fresh_tmp()
+            self._emit_line(f"{handle} = load ptr, ptr {handle_ptr}")
+            self._emit_line(f"call i32 @fseek(ptr {handle}, i64 0, i32 2)")
+            size = self._fresh_tmp()
+            self._emit_line(f"{size} = call i64 @ftell(ptr {handle})")
+            self._emit_line(f"call void @rewind(ptr {handle})")
+            size_p1 = self._fresh_tmp()
+            self._emit_line(f"{size_p1} = add i64 {size}, 1")
+            buf = self._fresh_tmp()
+            self._emit_line(f"{buf} = call ptr @malloc(i64 {size_p1})")
+            self._emit_line(f"call i64 @fread(ptr {buf}, i64 1, i64 {size}, ptr {handle})")
+            end = self._fresh_tmp()
+            self._emit_line(f"{end} = getelementptr i8, ptr {buf}, i64 {size}")
+            self._emit_line(f"store i8 0, ptr {end}")
+            return self._emit_io_ok("read", buf) or buf
+
+        return self._emit_fileio_closed_guard(ch, "fr", "read", "read: channel is closed", emit_ok)
+
+    def _emit_fileio_close(self, args: list[N.Expr]) -> str | None:
+        if len(args) != 1:
+            return None
+        (ch,) = args
+
+        def emit_ok(handle_ptr: str) -> str:
+            self._declare_extern("declare i32 @fclose(ptr)")
+            handle = self._fresh_tmp()
+            self._emit_line(f"{handle} = load ptr, ptr {handle_ptr}")
+            self._emit_line(f"call i32 @fclose(ptr {handle})")
+            closed_ptr = self._emit_fileio_field(ch, 2)
+            self._emit_line(f"store i1 1, ptr {closed_ptr}")
+            return self._emit_io_ok("close", None) or "null"
+
+        return self._emit_fileio_closed_guard(
+            ch, "fc", "close", "close: channel is already closed", emit_ok
+        )
 
     # ------------------------------------------------------------------
     # fmt
@@ -3457,17 +4081,27 @@ class Emitter:
         """
         fields = self._structs[name]
         ptr = self._heap_alloc_struct(name, self._struct_size_bytes(name))
+        field_array_elem = self._struct_field_array_elem.get(name, {})
 
         # Match args to fields — support both positional and keyword
         vals: dict[str, str] = {}
         positional = 0
         for arg in args:
             if isinstance(arg, N.KeywordArg) and arg.value is not None:
-                v = self._emit_expr(arg.value)
+                elem_ty = field_array_elem.get(arg.name)
+                if elem_ty is not None:
+                    v = self._emit_expr_as_array(arg.value, elem_ty)
+                else:
+                    v = self._emit_expr(arg.value)
                 if v is not None:
                     vals[arg.name] = v
             else:
-                v = self._emit_expr(arg)
+                fname = fields[positional][0] if positional < len(fields) else None
+                elem_ty = field_array_elem.get(fname) if fname is not None else None
+                if elem_ty is not None:
+                    v = self._emit_expr_as_array(arg, elem_ty)
+                else:
+                    v = self._emit_expr(arg)
                 if v is not None and positional < len(fields):
                     vals[fields[positional][0]] = v
                 positional += 1
@@ -3495,6 +4129,28 @@ class Emitter:
         variants = self._sum_types[sum_name]
         _, payload_types = variants[tag_idx]
 
+        values: list[tuple[str, str]] = []
+        for i, arg in enumerate(args):
+            if i >= len(payload_types):
+                break
+            val = self._emit_expr(arg)
+            if val is not None:
+                values.append((payload_types[i], val))
+
+        return self._emit_variant_construct_raw(sum_name, tag_idx, payload_types, values)
+
+    def _emit_variant_construct_raw(
+        self,
+        sum_name: str,
+        tag_idx: int,
+        payload_types: tuple[str, ...],
+        values: list[tuple[str, str]],
+    ) -> str:
+        """Core of `_emit_variant_construct`, taking already-computed
+        (llvm_type, value) pairs instead of AST argument nodes — used
+        directly by builtins (`FileIO`/`StdIO`'s `write`/`read`/`close`)
+        that construct `Ok`/`Err` values without going through ordinary
+        Nyet-source `(Ok ...)`/`(Err ...)` call syntax."""
         ptr = self._heap_alloc_struct(sum_name, self._sum_type_size_bytes(sum_name))
 
         # Store tag
@@ -3509,21 +4165,14 @@ class Emitter:
                 f"{payload_ptr} = getelementptr inbounds %{sum_name}, ptr {ptr}, i32 0, i32 1"
             )
             offsets = self._field_offsets(payload_types)
-            for i, arg in enumerate(args):
-                if i >= len(payload_types):
-                    break
-                val = self._emit_expr(arg)
-                if val is not None:
-                    ftype = payload_types[i]
-                    off = offsets[i]
-                    if off == 0:
-                        field_ptr = payload_ptr
-                    else:
-                        field_ptr = self._fresh_tmp()
-                        self._emit_line(
-                            f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}"
-                        )
-                    self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
+            for i, (ftype, val) in enumerate(values):
+                off = offsets[i]
+                if off == 0:
+                    field_ptr = payload_ptr
+                else:
+                    field_ptr = self._fresh_tmp()
+                    self._emit_line(f"{field_ptr} = getelementptr i8, ptr {payload_ptr}, i32 {off}")
+                self._emit_line(f"store {ftype} {val}, ptr {field_ptr}")
 
         return ptr
 
@@ -4184,6 +4833,20 @@ class Emitter:
             elem_ty = self._array_elem_llvm_type(node.type)
         if elem_ty is None and isinstance(node.value, N.ArrayLit) and node.value.elements:
             elem_ty = self._infer_llvm_type(node.value.elements[0])
+        # `(let row (grid i))`, no annotation -- `grid` is itself an
+        # Array[Array[U]] binding, so its element (an Array[U]) needs
+        # the same array-ness threaded onto `row`. See
+        # `_env_array_elem_of_array`.
+        elem_of_array_src: str | None = None
+        if (
+            elem_ty is None
+            and isinstance(node.value, N.Call)
+            and isinstance(node.value.head, N.Ident)
+            and node.value.head.name in self._env_array_elem_of_array
+            and len(node.value.args) == 1
+        ):
+            elem_of_array_src = node.value.head.name
+            elem_ty = self._env_array_elem_of_array[elem_of_array_src]
         if elem_ty is not None:
             elem_nyet: str | None = None
             if node.type is not None:
@@ -4193,21 +4856,17 @@ class Emitter:
             elem_fn_sig: tuple[list[str], str] | None = None
             if isinstance(node.value, N.ArrayLit) and node.value.elements:
                 elem_fn_sig = self._fn_sig_of_value(node.value.elements[0])
+            # `elem_of_array` is only set from an explicit nested
+            # `Array[Array[U]]` annotation -- NOT inherited from
+            # `elem_of_array_src` above, which would incorrectly mark a
+            # plain `Array[U]` binding (`row`, one level in) as itself
+            # holding arrays (U's own element type), corrupting any
+            # further indexing into `row`'s own results.
+            elem_of_array: str | None = None
+            if node.type is not None:
+                elem_of_array = self._array_of_array_elem_llvm_type(node.type)
             ptr = self._emit_alloca("ptr")
-            if (
-                isinstance(node.value, N.Call)
-                and isinstance(node.value.head, N.Ident)
-                and node.value.head.name == "array_new"
-                and len(node.value.args) == 1
-            ):
-                # `array_new` isn't dispatched through the general
-                # _emit_call builtin table like map/filter -- it needs
-                # the element type, and this is the one place that's
-                # already resolved from an explicit Array[T] annotation
-                # regardless of the RHS shape (see the comment above).
-                val = self._emit_array_new(node.value.args[0], elem_ty)
-            else:
-                val = self._emit_expr(node.value) if node.value is not None else None
+            val = self._emit_expr_as_array(node.value, elem_ty) if node.value is not None else None
             if val is not None:
                 self._emit_line(f"store ptr {val}, ptr {ptr}")
             else:
@@ -4218,6 +4877,8 @@ class Emitter:
                 self._env_array_elem_nyet[node.name] = elem_nyet
             if elem_fn_sig is not None:
                 self._env_array_elem_fn_sig[node.name] = elem_fn_sig
+            if elem_of_array is not None:
+                self._env_array_elem_of_array[node.name] = elem_of_array
             return None
 
         # Tuple bindings: store the heap pointer and remember the
@@ -4297,7 +4958,17 @@ class Emitter:
         if is_aggregate:
             # Value is a ptr to the struct — store the ptr itself
             if node.value is not None:
+                # Thread this `let`'s own annotation through as a
+                # fallback type-arg source for a generic sum-type
+                # variant constructor whose own field types can't fully
+                # resolve every generic param (e.g. `(let r:Result[i32
+                # string] (Ok v))`, where `Ok`'s field never mentions
+                # `string`) -- see `_resolve_generic_variant`.
+                saved_ret_type_node = self._current_fn_return_type_node
+                if node.type is not None:
+                    self._current_fn_return_type_node = node.type
                 val = self._emit_expr(node.value)
+                self._current_fn_return_type_node = saved_ret_type_node
                 if val is not None:
                     ptr = self._emit_alloca("ptr")
                     self._emit_line(f"store ptr {val}, ptr {ptr}")
@@ -4506,6 +5177,16 @@ class Emitter:
             and len(target.args) == 1
         ):
             return self._emit_array_assign(target.head.name, target.args[0], node.value)
+        # Indexed assignment into an `Array[T]` value produced by a
+        # further expression: `(= ((. v data) i) x)` or
+        # `(= ((grid i) j) x)`. See `_emit_array_assign_nested`.
+        if (
+            isinstance(target, N.Call)
+            and isinstance(target.head, (N.FieldAccess, N.Call))
+            and len(target.args) == 1
+            and self._array_elem_ty_of_expr(target.head) is not None
+        ):
+            return self._emit_array_assign_nested(target.head, target.args[0], node.value)
         # Map insert/update: `(= (m key) v)`.
         if (
             isinstance(target, N.Call)
@@ -4525,7 +5206,13 @@ class Emitter:
             return None
         if isinstance(target, N.Ident) and target.name in self._env:
             ptr, ty = self._env[target.name]
-            val = self._emit_expr(node.value)
+            if target.name in self._env_array_elem:
+                # `(= arr (array_new n))` -- reassigning a `var Array[T]`
+                # to a freshly-allocated array (e.g. a grow-by-reallocate
+                # pattern). See `_emit_expr_as_array`.
+                val = self._emit_expr_as_array(node.value, self._env_array_elem[target.name])
+            else:
+                val = self._emit_expr(node.value)
             if val is not None:
                 self._emit_line(f"store {ty} {val}, ptr {ptr}")
             return None
@@ -4686,9 +5373,13 @@ class Emitter:
         assignment before reading it back (exactly how
         `_emit_hof_map`/`_emit_hof_filter` already build their own
         result arrays internally -- this just exposes the same pattern
-        as a callable). Only reachable from `_emit_let`, which is the
-        one place `elem_ty` is already resolved from an explicit
-        `Array[T]` annotation regardless of the RHS shape.
+        as a callable). `array_new` isn't dispatched through the
+        general `_emit_call` builtin table like `map`/`filter` since,
+        unlike them, it needs an element type that isn't recoverable
+        from its own argument (a bare integer count) -- every caller
+        that already knows the expected `Array[T]` shape from context
+        should go through `_emit_expr_as_array` instead of calling this
+        directly.
         """
         n_val = self._emit_expr(n_arg)
         if n_val is None:
@@ -4706,12 +5397,46 @@ class Emitter:
         self._emit_line(f"store i64 {n64}, ptr {out}")
         return out
 
-    def _emit_array_index(self, name: str, idx_arg: N.Expr) -> str:
-        ptr_slot, _ = self._env[name]
-        elem_ty = self._env_array_elem[name]
-        arr = self._fresh_tmp()
-        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+    def _emit_expr_as_array(self, node: N.Node | None, elem_ty: str) -> str | None:
+        """Emit `node` knowing it's expected to produce an `Array[T]`
+        with LLVM element type `elem_ty`.
 
+        Before this, `(array_new n)` only ever worked as the literal,
+        direct RHS of a `let`/`var` with an explicit `Array[T]`
+        annotation (`_emit_let`'s own special case) -- anywhere else
+        `array_new` was written (a function's implicit tail-return
+        value, an explicit `(return (array_new n))`, a `do` block's
+        tail position, reassigning an existing array `var`), it fell
+        through the ordinary `_emit_call` dispatch to `_emit_user_call`,
+        which has no idea `array_new` means anything special and
+        compiled it as a call to an undefined external function
+        (`call i32 @array_new(...)`, the wrong return type entirely --
+        a hard clang build failure, not a silent miscompile). This is
+        the single choke point every one of those call sites now routes
+        through instead of a plain `_emit_expr`, recursing into a `do`
+        block's tail position (mirroring how `_infer_llvm_type` already
+        recurses into `do`/`if` tails for ordinary type inference) so
+        `(do ... (array_new n))` works the same as a bare `(array_new n)`.
+        """
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name == "array_new"
+            and len(node.args) == 1
+        ):
+            return self._emit_array_new(node.args[0], elem_ty)
+        if isinstance(node, N.Do) and node.exprs:
+            for stmt in node.exprs[:-1]:
+                self._emit_expr(stmt)
+            return self._emit_expr_as_array(node.exprs[-1], elem_ty)
+        return self._emit_expr(node)
+
+    def _emit_array_index_val(self, arr: str, elem_ty: str, idx_arg: N.Expr) -> str:
+        """Core `(arr i)` lowering given an already-computed array
+        pointer and element type -- shared by `_emit_array_index`
+        (named local binding) and `_emit_array_index_on_field`
+        (an `Array[T]`-typed struct field indexed directly, e.g.
+        `((. v data) i)`, with no intermediate local binding)."""
         idx_val = self._emit_expr(idx_arg)
         idx_ty = self._infer_llvm_type(idx_arg)
         idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
@@ -4723,6 +5448,61 @@ class Emitter:
         result = self._fresh_tmp()
         self._emit_line(f"{result} = load {elem_ty}, ptr {elem_ptr}")
         return result
+
+    def _emit_array_index(self, name: str, idx_arg: N.Expr) -> str:
+        ptr_slot, _ = self._env[name]
+        elem_ty = self._env_array_elem[name]
+        arr = self._fresh_tmp()
+        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+        return self._emit_array_index_val(arr, elem_ty, idx_arg)
+
+    def _array_elem_ty_of_expr(self, node: N.Node) -> str | None:
+        """Return the LLVM element type if evaluating `node` yields an
+        `Array[T]` pointer, for the two shapes not already covered by a
+        plain `Ident` bound in `_env_array_elem`:
+          - a `FieldAccess` into an `Array[T]`-typed struct field, e.g.
+            `(. v data)` -- see `_struct_field_array_elem`.
+          - a `Call` indexing an `Array[Array[U]]`-typed binding, e.g.
+            `(grid i)` -- see `_env_array_elem_of_array`.
+        Used by `_emit_call`/`_emit_assign` to dispatch a further level
+        of indexing directly (`((. v data) i)`, `((grid i) j)`) without
+        requiring an intermediate `let` binding for the inner array."""
+        if isinstance(node, N.FieldAccess):
+            struct_name = self._struct_name_of(node.target)
+            if struct_name is None:
+                return None
+            return self._struct_field_array_elem.get(struct_name, {}).get(node.field_name)
+        if (
+            isinstance(node, N.Call)
+            and isinstance(node.head, N.Ident)
+            and node.head.name in self._env_array_elem_of_array
+            and len(node.args) == 1
+        ):
+            return self._env_array_elem_of_array[node.head.name]
+        return None
+
+    def _emit_array_index_nested(self, head: N.Node, idx_arg: N.Expr) -> str | None:
+        """`((. v data) i)` or `((grid i) j)` -- indexing an `Array[T]`
+        value produced by a further expression (a struct field, or
+        another array-of-arrays index), without first binding it to a
+        local. Before this, `_emit_call` only ever recognized array
+        indexing when its head was a plain `Ident` bound in
+        `_env_array_elem`; any other head shape fell through every
+        dispatch case and silently evaluated to `None` -- dropped
+        output for a read, and (via `_emit_assign`'s matching gap) a
+        silently no-op'd write. The FieldAccess case is precisely the
+        shape a growable-Vector-style struct (`(struct Vector len:i32
+        cap:i32 data:Array[T])`) needs for its own methods to index
+        `data` directly; the nested-Call case is the natural way to
+        index a 2D `Array[Array[U]]` grid without an intermediate
+        `let`."""
+        elem_ty = self._array_elem_ty_of_expr(head)
+        if elem_ty is None:
+            return None
+        arr = self._emit_expr(head)
+        if arr is None:
+            return None
+        return self._emit_array_index_val(arr, elem_ty, idx_arg)
 
     def _emit_string_index(self, name: str, idx_arg: N.Expr) -> str:
         """Lower `(str i)` to a byte load: index into the null-terminated
@@ -4834,12 +5614,13 @@ class Emitter:
         self._emit_line(f"{result} = load {ftype}, ptr {fptr}")
         return result
 
-    def _emit_array_assign(self, name: str, idx_arg: N.Expr, value: N.Expr | None) -> str | None:
-        ptr_slot, _ = self._env[name]
-        elem_ty = self._env_array_elem[name]
-        arr = self._fresh_tmp()
-        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
-
+    def _emit_array_assign_val(
+        self, arr: str, elem_ty: str, idx_arg: N.Expr, value: N.Expr | None
+    ) -> str | None:
+        """Core `(= (arr i) v)` lowering given an already-computed array
+        pointer and element type -- shared by `_emit_array_assign`
+        (named local binding) and `_emit_array_assign_on_field` (an
+        `Array[T]`-typed struct field indexed directly)."""
         idx_val = self._emit_expr(idx_arg)
         idx_ty = self._infer_llvm_type(idx_arg)
         idx64 = self._idx_to_i64(idx_val or "0", idx_ty)
@@ -4864,6 +5645,27 @@ class Emitter:
         self._emit_line(f"{elem_ptr} = getelementptr {elem_ty}, ptr {base}, i64 {idx64}")
         self._emit_line(f"store {elem_ty} {val}, ptr {elem_ptr}")
         return None
+
+    def _emit_array_assign(self, name: str, idx_arg: N.Expr, value: N.Expr | None) -> str | None:
+        ptr_slot, _ = self._env[name]
+        elem_ty = self._env_array_elem[name]
+        arr = self._fresh_tmp()
+        self._emit_line(f"{arr} = load ptr, ptr {ptr_slot}")
+        return self._emit_array_assign_val(arr, elem_ty, idx_arg, value)
+
+    def _emit_array_assign_nested(
+        self, head: N.Node, idx_arg: N.Expr, value: N.Expr | None
+    ) -> str | None:
+        """`(= ((. v data) i) x)` or `(= ((grid i) j) x)` -- the
+        write-side counterpart to `_emit_array_index_nested`; see its
+        docstring."""
+        elem_ty = self._array_elem_ty_of_expr(head)
+        if elem_ty is None:
+            return None
+        arr = self._emit_expr(head)
+        if arr is None:
+            return None
+        return self._emit_array_assign_val(arr, elem_ty, idx_arg, value)
 
     # ------------------------------------------------------------------
     # Higher-order functions over Array[T]: map, filter, fold, any, all, zip
@@ -5411,6 +6213,7 @@ class Emitter:
 
     def _emit_user_call(self, name: str, args: list[N.Expr]) -> str | None:
         dyn_traits = self._fn_param_dyn_traits.get(name)
+        array_elems = self._fn_param_array_elem.get(name)
         arg_vals: list[tuple[str, str]] = []
         for i, arg in enumerate(args):
             trait_name = dyn_traits[i] if dyn_traits and i < len(dyn_traits) else None
@@ -5419,9 +6222,14 @@ class Emitter:
                 if v is not None:
                     arg_vals.append(("ptr", v))
                 continue
-            v = self._emit_expr(arg)
-            if v is not None:
+            elem_ty = array_elems[i] if array_elems and i < len(array_elems) else None
+            if elem_ty is not None:
+                v = self._emit_expr_as_array(arg, elem_ty)
+                ty = "ptr"
+            else:
+                v = self._emit_expr(arg)
                 ty = self._infer_llvm_type(arg)
+            if v is not None:
                 arg_vals.append((ty, v))
 
         # Use registered signature if available

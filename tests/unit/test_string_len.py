@@ -51,7 +51,7 @@ def test_len_of_plain_string_let_calls_strlen():
         (fn main () -> unit
           (do
             (let s:string "Alexandria")
-            (out (len s))))
+            (out! (len s))))
     """)
     body = _fn_body(ir, "main")
     assert "call i64 @strlen(" in body
@@ -65,7 +65,7 @@ def test_len_of_borrowed_string_param_calls_strlen():
         (fn main () -> unit
           (do
             (let s:string "hi")
-            (out (strlen_ref &s))))
+            (out! (strlen_ref &s))))
     """)
     body = _fn_body(ir, "strlen_ref")
     assert "call i64 @strlen(" in body
@@ -77,7 +77,7 @@ def test_len_of_array_still_reads_header_not_strlen():
         (fn main () -> unit
           (do
             (let arr:Array[i32] [1 2 3])
-            (out (len &arr))))
+            (out! (len &arr))))
     """)
     body = _fn_body(ir, "main")
     assert "load i64, ptr" in body

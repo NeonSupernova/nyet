@@ -18,7 +18,7 @@
 (fn main () -> unit
   (do
     (let p (make_pair 5 "hello"))
-    (out (. p first))
-    (out " ")
-    (out (. p second))
-    (out "\n")))
+    (out! (. p first))
+    (out! " ")
+    (out! (. p second))
+    (out! "\n")))

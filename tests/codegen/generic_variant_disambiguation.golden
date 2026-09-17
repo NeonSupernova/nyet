@@ -1,0 +1,7 @@
+=== stdout ===
+fn return position (i32 instantiation): 5
+fn return position (string instantiation): hi
+let annotation (i32 instantiation): 42
+both instantiations in one function: 1 two
+Err variant (i32 instantiation): bad
+Err variant (string instantiation): boom

@@ -6,7 +6,7 @@
 ;; bindings to fresh names (`tmp__hyg<n>`) so they cannot collide with
 ;; user names — including names supplied as macro arguments.
 
-(macro swap! (a b)
+(macro swap (a b)
   (do
     (var tmp a)
     (= a b)
@@ -18,5 +18,5 @@
   ;; The user's `tmp` here is the *value* being swapped — it must NOT
   ;; be captured by the macro's internal `tmp`.
   (swap! tmp other)
-  (out tmp)    (out "\n")    ; expects 2
-  (out other)  (out "\n"))   ; expects 1
+  (out! tmp)    (out! "\n")    ; expects 2
+  (out! other)  (out! "\n"))   ; expects 1

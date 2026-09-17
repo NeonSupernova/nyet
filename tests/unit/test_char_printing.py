@@ -1,14 +1,14 @@
 """Unit tests for char printing (Emitter._emit_out / _emit_fmt char cases).
 
 `char` is stored as `i32` (a Unicode scalar value -- see CLAUDE.md),
-the same LLVM shape as an ordinary int, so both `out` and `fmt`
+the same LLVM shape as an ordinary int, so both `out!` and `fmt`
 unconditionally fell through to their generic i32 `%d` handling and
 printed a char's numeric codepoint instead of the character itself.
-Confirmed: `(let ch:char 65) (out ch)` printed "65", not "A". Fixed
+Confirmed: `(let ch:char 65) (out! ch)` printed "65", not "A". Fixed
 by routing a char operand through `%c` instead, gated on the existing
 `_node_is_char` classifier (mirrors `_node_is_unsigned`).
 
-End-to-end coverage (out/fmt, a char literal-annotation and a char
+End-to-end coverage (out!/fmt, a char literal-annotation and a char
 from string indexing, plus a plain-i32 control): tests/codegen/char_printing.no.
 """
 
@@ -48,7 +48,7 @@ def test_out_of_char_uses_percent_c_not_percent_d():
         (fn main () -> unit
           (do
             (let ch:char 65)
-            (out ch)))
+            (out! ch)))
     """)
     assert "@.str" in ir
     body = _fn_body(ir, "main")
@@ -62,7 +62,7 @@ def test_fmt_of_char_uses_percent_c_spec():
         (fn main () -> unit
           (do
             (let ch:char 65)
-            (out (fmt "{}" ch))))
+            (out! (fmt "{}" ch))))
     """)
     assert '"%c\\00"' in ir
 
@@ -73,6 +73,6 @@ def test_out_of_plain_i32_still_uses_percent_d():
         (fn main () -> unit
           (do
             (let n:i32 65)
-            (out n)))
+            (out! n)))
     """)
     assert '"%d\\00"' in ir

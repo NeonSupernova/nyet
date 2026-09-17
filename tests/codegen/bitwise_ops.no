@@ -22,23 +22,23 @@
   (do
     (let a:i32 12)
     (let b:i32 10)
-    (out (fmt "12 & 10 = {}\n" (& a b)))
-    (out (fmt "12 | 10 = {}\n" (| a b)))
-    (out (fmt "12 ^ 10 = {}\n" (^ a b)))))
+    (out! (fmt "12 & 10 = {}\n" (& a b)))
+    (out! (fmt "12 | 10 = {}\n" (| a b)))
+    (out! (fmt "12 ^ 10 = {}\n" (^ a b)))))
 
 (fn test_not () -> unit
   (do
     (let a:i32 5)
-    (out (fmt "~5 = {}\n" (~ a)))))
+    (out! (fmt "~5 = {}\n" (~ a)))))
 
 (fn test_shifts () -> unit
   (do
     (let a:i32 1)
-    (out (fmt "1 << 4 = {}\n" (<< a 4)))
+    (out! (fmt "1 << 4 = {}\n" (<< a 4)))
     (let neg:i32 (- 0 8))
-    (out (fmt "-8 >> 1 (signed, arithmetic) = {}\n" (>> neg 1)))
+    (out! (fmt "-8 >> 1 (signed, arithmetic) = {}\n" (>> neg 1)))
     (let u:u32 4294967288)
-    (out (fmt "4294967288 >> 1 (u32, logical) = {}\n" (>> u 1)))))
+    (out! (fmt "4294967288 >> 1 (u32, logical) = {}\n" (>> u 1)))))
 
 (fn main () -> unit
   (do

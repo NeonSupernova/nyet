@@ -4,4 +4,4 @@
 
 (let x:i32 (in i32))
 
-(out x)
+(out! x)

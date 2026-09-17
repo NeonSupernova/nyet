@@ -92,10 +92,10 @@
 (fn resolve_direction (room:&Room d:&Direction has_key:bool) -> Option[Room]
   (let dest:Option[Room] (try_move room d))
   (match dest
-    ((None) (do (out "you can't go that way\n") (None)))
+    ((None) (do (out! "you can't go that way\n") (None)))
     ((Some next)
       (if (&& (is_vault &next) (! has_key))
-        (do (out "the vault door is locked -- you need a key\n") (None))
+        (do (out! "the vault door is locked -- you need a key\n") (None))
         (Some next)
       )
     )
@@ -111,7 +111,7 @@
     (other (None))))
 
 (fn adventure_print_help () -> unit
-  (out "commands: north/south/east/west (or n/s/e/w), look, take, inventory, help, quit\n"))
+  (out! "commands: north/south/east/west (or n/s/e/w), look, take, inventory, help, quit\n"))
 
 ;; A fresh full-screen view of the current room -- called on entry and
 ;; every successful move/`look`, so arriving somewhere new always
@@ -123,13 +123,13 @@
 ;; should get to actually read the answer, not have it cleared away
 ;; before the next redraw.
 (fn render_room (room:&Room has_key:bool) -> unit
-  (out CLEAR_SCREEN)
-  (out DIM) (out "-- a tiny adventure --") (out RESET)
-  (out "  (help, look, take, inventory, quit)\n\n")
-  (out (describe room))
-  (out "\n")
+  (out! CLEAR_SCREEN)
+  (out! DIM) (out! "-- a tiny adventure --") (out! RESET)
+  (out! "  (help, look, take, inventory, quit)\n\n")
+  (out! (describe room))
+  (out! "\n")
   (if has_key
-    (do (out DIM) (out "(carrying: a brass key)\n") (out RESET))
+    (do (out! DIM) (out! "(carrying: a brass key)\n") (out! RESET))
     pass))
 
 (pub fn run_adventure () -> unit
@@ -144,14 +144,14 @@
     (let cmd:string (prompt_line "> "))
 
     (if (|| (== cmd "") (|| (== cmd "quit") (== cmd "q")))
-      (do (out "bye\n") (break))
+      (do (out! "bye\n") (break))
       pass)
 
     ;; Every arm below ends in `pass`, even ones that "obviously" only
     ;; call `out!`/`adventure_print_help` -- this compiler doesn't
     ;; unify/coerce a `match` arm's inferred type against its siblings
     ;; (see minibase_core.no's own header comment for the same rule),
-    ;; so a mismatch between, say, a bare `(out ...)` arm and a nested
+    ;; so a mismatch between, say, a bare `(out! ...)` arm and a nested
     ;; `(match ...)` arm elsewhere silently produces an ill-typed LLVM
     ;; store that clang then rejects.
     (match cmd
@@ -161,17 +161,17 @@
       ("inventory"
         (do
           (if has_key
-            (out "you are carrying: a brass key\n")
-            (out "you aren't carrying anything\n"))
+            (out! "you are carrying: a brass key\n")
+            (out! "you aren't carrying anything\n"))
           pass))
 
       ("take"
         (do
           (if (is_library &room)
             (if has_key
-              (out "you already have the key\n")
-              (do (= has_key true) (out (fmt "{}you take the brass key{}\n" GREEN RESET))))
-            (out "there's nothing here to take\n"))
+              (out! "you already have the key\n")
+              (do (= has_key true) (out! (fmt "{}you take the brass key{}\n" GREEN RESET))))
+            (out! "there's nothing here to take\n"))
           pass))
 
       (other
@@ -179,7 +179,7 @@
           (let dir:Option[Direction] (parse_direction other))
           (match dir
             ((None)
-              (do (out (fmt "{}unknown command: '{}' -- try 'help'{}\n" DIM other RESET)) pass))
+              (do (out! (fmt "{}unknown command: '{}' -- try 'help'{}\n" DIM other RESET)) pass))
             ((Some d)
               (do
                 (let outcome:Option[Room] (resolve_direction &room &d has_key))
@@ -203,5 +203,5 @@
   )
 
   (if won
-    (do (out GREEN) (out "*** you win! ***\n") (out RESET))
+    (do (out! GREEN) (out! "*** you win! ***\n") (out! RESET))
     pass))

@@ -28,29 +28,29 @@
 (use std/ansi)
 
 (fn print_banner () -> unit
-  (out DIM)
-  (out "=======================================\n")
-  (out "            N Y E T   A R C A D E\n")
-  (out "=======================================\n")
-  (out RESET))
+  (out! DIM)
+  (out! "=======================================\n")
+  (out! "            N Y E T   A R C A D E\n")
+  (out! "=======================================\n")
+  (out! RESET))
 
 (fn print_arcade_menu () -> unit
-  (out "  1) minibase      -- a CRUD console database\n")
-  (out "  2) adventure     -- a tiny text adventure\n")
-  (out "  3) game of life  -- Conway's Game of Life (animated TUI)\n")
-  (out "  4) pipe dreams   -- a |> pipeline puzzle\n")
-  (out "  5) hangman       -- classic word-guessing\n")
-  (out "  q) quit the arcade\n"))
+  (out! "  1) minibase      -- a CRUD console database\n")
+  (out! "  2) adventure     -- a tiny text adventure\n")
+  (out! "  3) game of life  -- Conway's Game of Life (animated TUI)\n")
+  (out! "  4) pipe dreams   -- a |> pipeline puzzle\n")
+  (out! "  5) hangman       -- classic word-guessing\n")
+  (out! "  q) quit the arcade\n"))
 
 (fn main () -> unit
   (var running:bool true)
 
   (loop
     (if (! running) (break) pass)
-    (out CLEAR_SCREEN)
+    (out! CLEAR_SCREEN)
     (print_banner)
     (print_arcade_menu)
-    (out "> ")
+    (out! "> ")
     (let cmd:string (in))
 
     (match cmd
@@ -64,6 +64,6 @@
       ("quit" (do (= running false) pass))
 
       (other
-        (do (out (fmt "{}unknown option: '{}'{}\n" DIM other RESET)) pass))))
+        (do (out! (fmt "{}unknown option: '{}'{}\n" DIM other RESET)) pass))))
 
-  (out "thanks for visiting the arcade!\n"))
+  (out! "thanks for visiting the arcade!\n"))

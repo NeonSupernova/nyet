@@ -20,27 +20,27 @@
   (let h (file_open path "r"))
   (let lines:Array[string] (file_read_lines h))
   (file_close h)
-  (out "(") (out (len lines)) (out " lines): ")
+  (out! "(") (out! (len lines)) (out! " lines): ")
   (var i:i32 0)
   (loop
     (if (>= i (len lines)) (break) pass)
-    (if (> i 0) (out "|") pass)
-    (out (lines i))
+    (if (> i 0) (out! "|") pass)
+    (out! (lines i))
     (= i (+ i 1)))
-  (out "\n"))
+  (out! "\n"))
 
 (fn main () -> unit
   (write_file "nyet_file_read_lines_a.txt" "alpha\nbeta\ngamma\n")
-  (out "normal ") (dump "nyet_file_read_lines_a.txt")
+  (out! "normal ") (dump "nyet_file_read_lines_a.txt")
 
   (write_file "nyet_file_read_lines_b.txt" "solo")
-  (out "no trailing newline ") (dump "nyet_file_read_lines_b.txt")
+  (out! "no trailing newline ") (dump "nyet_file_read_lines_b.txt")
 
   (write_file "nyet_file_read_lines_c.txt" "")
-  (out "empty file ") (dump "nyet_file_read_lines_c.txt")
+  (out! "empty file ") (dump "nyet_file_read_lines_c.txt")
 
   (write_file "nyet_file_read_lines_d.txt" "one\n\nthree\n")
-  (out "embedded blank line ") (dump "nyet_file_read_lines_d.txt")
+  (out! "embedded blank line ") (dump "nyet_file_read_lines_d.txt")
 
   (write_file "nyet_file_read_lines_e.txt" "\n")
-  (out "file is just newline ") (dump "nyet_file_read_lines_e.txt"))
+  (out! "file is just newline ") (dump "nyet_file_read_lines_e.txt"))

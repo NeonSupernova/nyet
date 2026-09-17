@@ -14,23 +14,23 @@
     (let c:i32 (as b i32))
     (let d:f64 (as a f64))
     (let e:i32 (as d i32))
-    (out (fmt "i32->i64: {}\n" b))
-    (out (fmt "i64->i32: {}\n" c))
-    (out (fmt "i32->f64: {}\n" d))
-    (out (fmt "f64->i32: {}\n" e))))
+    (out! (fmt "i32->i64: {}\n" b))
+    (out! (fmt "i64->i32: {}\n" c))
+    (out! (fmt "i32->f64: {}\n" d))
+    (out! (fmt "f64->i32: {}\n" e))))
 
 (fn test_char () -> unit
   (do
     (let ch:char 65)
     (let n:i32 (as ch i32))
-    (out (fmt "char->i32: {}\n" n))))
+    (out! (fmt "char->i32: {}\n" n))))
 
 (fn test_int_to_char () -> unit
   (do
     (let code:i32 97)
     (let ch:char (as code char))
     (let back:i32 (as ch i32))
-    (out (fmt "int->char->int: {}\n" back))))
+    (out! (fmt "int->char->int: {}\n" back))))
 
 (fn main () -> unit
   (do

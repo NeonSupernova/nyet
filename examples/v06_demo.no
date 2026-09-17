@@ -17,9 +17,9 @@
   (let n:i32 (len arr))
   (loop
     (if (>= i n) (break) (pass))
-    (out (f (arr i))) (out " ")
+    (out! (f (arr i))) (out! " ")
     (= i (+ i 1)))
-  (out "\n"))
+  (out! "\n"))
 
 (fn fold (arr:&Array[i32] init:i32 f:(fn i32 i32 -> i32)) -> i32
   (var acc:i32 init)
@@ -37,11 +37,11 @@
 (fn main () -> unit
   (let nums:Array[i32] [1 2 3 4 5])
 
-  (out "doubled:\n")
+  (out! "doubled:\n")
   (apply_each &nums (fn (x:i32) -> i32 (* x 2)))
 
-  (out "plus_one:\n")
+  (out! "plus_one:\n")
   (apply_each &nums (fn (x:i32) -> i32 (+ x 1)))
 
-  (out "sum = ") (out (fold &nums 0 add)) (out "\n")
-  (out "product = ") (out (fold &nums 1 mul)) (out "\n"))
+  (out! "sum = ") (out! (fold &nums 0 add)) (out! "\n")
+  (out! "product = ") (out! (fold &nums 1 mul)) (out! "\n"))

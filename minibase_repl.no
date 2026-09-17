@@ -50,41 +50,41 @@
 ;; (unlike `guard`/`unless`, which each take exactly one fixed body).
 (macro atomic (label ops ...)
   (do
-    (out DIM) (out "[") (out label) (out "] start\n") (out RESET)
+    (out! DIM) (out! "[") (out! label) (out! "] start\n") (out! RESET)
     ops ...
-    (out DIM) (out "[") (out label) (out "] done\n") (out RESET)))
+    (out! DIM) (out! "[") (out! label) (out! "] done\n") (out! RESET)))
 
 (fn confirm (msg:string) -> bool
-  (out msg)
+  (out! msg)
   (let ans:string (in))
   (|| (== ans "y") (== ans "yes")))
 
 (pub fn minibase_print_help () -> unit
-  (out "commands:\n")
-  (out "  list      (ls)         show every row\n")
-  (out "  insert                 add a row (prompts for a name)\n")
-  (out "  rename                 rename a row (prompts for name, new name)\n")
-  (out "  delete    (rm)         delete a row (prompts for name, confirms)\n")
-  (out "  find                   look up a row by exact name\n")
-  (out "  search                 look up rows whose name contains text\n")
-  (out "  sorted                 sort rows by name, then list them\n")
-  (out "  seed                   insert a few demo rows\n")
-  (out "  stats                  show row count / capacity\n")
-  (out "  save                   write every row to 'minibase.db'\n")
-  (out "  load                   merge rows in from 'minibase.db'\n")
-  (out "  clear                  wipe every row (confirms)\n")
-  (out "  help                   show this message\n")
-  (out "  quit      (exit, q)    leave\n"))
+  (out! "commands:\n")
+  (out! "  list      (ls)         show every row\n")
+  (out! "  insert                 add a row (prompts for a name)\n")
+  (out! "  rename                 rename a row (prompts for name, new name)\n")
+  (out! "  delete    (rm)         delete a row (prompts for name, confirms)\n")
+  (out! "  find                   look up a row by exact name\n")
+  (out! "  search                 look up rows whose name contains text\n")
+  (out! "  sorted                 sort rows by name, then list them\n")
+  (out! "  seed                   insert a few demo rows\n")
+  (out! "  stats                  show row count / capacity\n")
+  (out! "  save                   write every row to 'minibase.db'\n")
+  (out! "  load                   merge rows in from 'minibase.db'\n")
+  (out! "  clear                  wipe every row (confirms)\n")
+  (out! "  help                   show this message\n")
+  (out! "  quit      (exit, q)    leave\n"))
 
 (fn minibase_seed_demo (db:&!Database) -> unit
-  (atomic "seed"
+  (atomic! "seed"
     (insert db "Alice")
     (insert db "Bob")
     (insert db "Carol")))
 
 (pub fn run_minibase () -> unit
   (var db:Database (Database/new))
-  (out DIM) (out "minibase — type 'help' for commands, 'quit' to leave\n") (out RESET)
+  (out! DIM) (out! "minibase — type 'help' for commands, 'quit' to leave\n") (out! RESET)
 
   (loop
     (let cmd:string (prompt_line "minibase> "))
@@ -93,7 +93,7 @@
     ;; header on why real EOF and a blank Enter are indistinguishable
     ;; here, and why this is the only place that matters.
     (if (|| (== cmd "") (|| (== cmd "quit") (|| (== cmd "exit") (== cmd "q"))))
-      (do (out "bye\n") (break))
+      (do (out! "bye\n") (break))
       pass)
 
     (match cmd
@@ -120,14 +120,14 @@
           (let name:string (prompt_line "  name: "))
           (if (confirm (fmt "  delete '{}'? (y/n) " name))
             (delete_by_name &!db name)
-            (do (out "cancelled\n") false))
+            (do (out! "cancelled\n") false))
           pass))
       ("rm"
         (do
           (let name:string (prompt_line "  name: "))
           (if (confirm (fmt "  delete '{}'? (y/n) " name))
             (delete_by_name &!db name)
-            (do (out "cancelled\n") false))
+            (do (out! "cancelled\n") false))
           pass))
 
       ("find"
@@ -135,10 +135,10 @@
           (let name:string (prompt_line "  name: "))
           (let idx:i32 (find_by_name &db &name))
           (if (== idx (- 0 1))
-            (out (fmt "{}not found{}\n" DIM RESET))
+            (out! (fmt "{}not found{}\n" DIM RESET))
             (do
               (let rows:&Array[Row] (. db rows))
-              (out "  ") (out (display (rows idx))) (out "\n")))
+              (out! "  ") (out! (display (rows idx))) (out! "\n")))
           pass))
 
       ("search"
@@ -157,8 +157,8 @@
         (do
           (if (confirm "  really wipe every row? (y/n) ")
             (clear &!db)
-            (out "cancelled\n"))
+            (out! "cancelled\n"))
           pass))
 
       (other
-        (do (out (fmt "{}unknown command: '{}' — try 'help'{}\n" DIM other RESET)) pass)))))
+        (do (out! (fmt "{}unknown command: '{}' — try 'help'{}\n" DIM other RESET)) pass)))))

@@ -3,7 +3,7 @@
 (struct Person name:string age:i32)
 
 (fn use_one (p:Person) -> unit
-  (out (. p name)))
+  (out! (. p name)))
 
 (fn main () -> unit
   (let p (Person name:"alice" age:30))

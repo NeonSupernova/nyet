@@ -23,10 +23,10 @@
     (do
       (let start (now))
       (let r (big_sum 20000000))
-      (out "in between\n")
+      (out! "in between\n")
       r))
   ;; `out` (unlike `fmt` before its own fix in this same session) always
   ;; got i64 right, so this isolates the do-tail-let inference bug
   ;; specifically rather than conflating it with the fmt one.
-  (out total)
-  (out "\n"))
+  (out! total)
+  (out! "\n"))

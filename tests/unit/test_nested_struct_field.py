@@ -68,7 +68,7 @@ def test_nested_struct_field_bound_without_annotation_gets_a_field_load():
           (do
             (let o (Outer inner:(Inner val:42)))
             (let i (. o inner))
-            (out (. i val))))
+            (out! (. i val))))
     """)
     assert ir.count("getelementptr inbounds %Inner") == 2
     assert "load i32, ptr" in ir
@@ -81,7 +81,7 @@ def test_nested_struct_field_chained_directly_gets_a_field_load():
         (fn main () -> unit
           (do
             (let o (Outer inner:(Inner val:42)))
-            (out (. (. o inner) val))))
+            (out! (. (. o inner) val))))
     """)
     assert ir.count("getelementptr inbounds %Inner") == 2
     assert "load i32, ptr" in ir

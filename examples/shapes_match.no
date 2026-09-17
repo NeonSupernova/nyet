@@ -17,13 +17,13 @@
 
 (fn main () -> unit
   (let c:Shape (Circle 5.0))
-  (out (area c))
-  (out "\n")
+  (out! (area c))
+  (out! "\n")
 
   (let r:Shape (Rect 4.0 6.0))
-  (out (area r))
-  (out "\n")
+  (out! (area r))
+  (out! "\n")
 
   (let t:Shape (Tri 4.0 3.0))
-  (out (area t))
-  (out "\n"))
+  (out! (area t))
+  (out! "\n"))

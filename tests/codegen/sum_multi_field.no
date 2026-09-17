@@ -9,8 +9,8 @@
 
 (fn describe (it:Item) -> unit
   (match it
-    ((Entry n s) (do (out n) (out ": ") (out s) (out "\n")))
-    ((Empty) (out "empty\n"))))
+    ((Entry n s) (do (out! n) (out! ": ") (out! s) (out! "\n")))
+    ((Empty) (out! "empty\n"))))
 
 (fn main () -> unit
   (do

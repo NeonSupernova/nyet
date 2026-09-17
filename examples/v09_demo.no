@@ -15,7 +15,7 @@
 (use v09_lib)
 
 (fn main () -> unit
-  (out "2 + 3 = ") (out (add 2 3)) (out "\n")
-  (out "sum_to(10) = ") (out (sum_to 10)) (out "\n")
+  (out! "2 + 3 = ") (out! (add 2 3)) (out! "\n")
+  (out! "sum_to(10) = ") (out! (sum_to 10)) (out! "\n")
   (let g:Greeter (make_greeter "hello" 3))
   (greet &g "world"))

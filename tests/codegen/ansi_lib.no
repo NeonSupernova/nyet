@@ -20,23 +20,23 @@
 (use std/ansi)
 
 (fn main () -> unit
-  (out "RED literal: ") (out RED) (out "\n")
-  (out "fg256(196): ") (out (fg256 196)) (out "\n")
-  (out "fg_rgb(255,136,0): ") (out (fg_rgb 255 136 0)) (out "\n")
+  (out! "RED literal: ") (out! RED) (out! "\n")
+  (out! "fg256(196): ") (out! (fg256 196)) (out! "\n")
+  (out! "fg_rgb(255,136,0): ") (out! (fg_rgb 255 136 0)) (out! "\n")
 
-  (out "hex_r/g/b(0xff8800): ")
-  (out (hex_r 0xff8800)) (out " ")
-  (out (hex_g 0xff8800)) (out " ")
-  (out (hex_b 0xff8800)) (out "\n")
+  (out! "hex_r/g/b(0xff8800): ")
+  (out! (hex_r 0xff8800)) (out! " ")
+  (out! (hex_g 0xff8800)) (out! " ")
+  (out! (hex_b 0xff8800)) (out! "\n")
 
   (let a:string (fg_hex 0xff8800))
   (let b:string (fg_rgb 255 136 0))
-  (out "fg_hex(0xff8800) == fg_rgb(255,136,0): ") (out (== a b)) (out "\n")
+  (out! "fg_hex(0xff8800) == fg_rgb(255,136,0): ") (out! (== a b)) (out! "\n")
 
-  (out "hex_to_256(0x000000) [cube origin]: ") (out (hex_to_256 0x000000)) (out "\n")
-  (out "hex_to_256(0xffffff) [cube far corner]: ") (out (hex_to_256 0xffffff)) (out "\n")
-  (out "hex_to_256(0xff8800) [known xterm orange]: ") (out (hex_to_256 0xff8800)) (out "\n")
+  (out! "hex_to_256(0x000000) [cube origin]: ") (out! (hex_to_256 0x000000)) (out! "\n")
+  (out! "hex_to_256(0xffffff) [cube far corner]: ") (out! (hex_to_256 0xffffff)) (out! "\n")
+  (out! "hex_to_256(0xff8800) [known xterm orange]: ") (out! (hex_to_256 0xff8800)) (out! "\n")
 
   (let clr:string CLEAR_SCREEN)
   (let starts_with_2j:bool (&& (== (clr 0) 27) (== (clr 1) 91)))
-  (out "CLEAR_SCREEN starts with ESC[2J: ") (out starts_with_2j) (out "\n"))
+  (out! "CLEAR_SCREEN starts with ESC[2J: ") (out! starts_with_2j) (out! "\n"))

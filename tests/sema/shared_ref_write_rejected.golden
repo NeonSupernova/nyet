@@ -1,0 +1,6 @@
+tests/sema/shared_ref_write_rejected.no:11:5: error: cannot assign through 'self': borrowed as `&`, not `&!` -- a shared reference does not allow mutation
+        (= (. self name) "hacked")))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/sema/shared_ref_write_rejected.no:17:3: error: cannot assign through 's': borrowed as `&`, not `&!` -- a shared reference does not allow mutation
+      (= (. s name) "also hacked")
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

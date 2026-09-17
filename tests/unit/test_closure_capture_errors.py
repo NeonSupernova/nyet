@@ -15,7 +15,7 @@ instead of the outer value.
 Concretely, before this fix:
     (var counter:i32 5)
     (let read_it (fn () -> i32 counter))
-    (out (read_it))
+    (out! (read_it))
 compiled and printed "0", not 5 (and not an error either).
 
 Fixed by making `_emit_ident` raise `NotImplementedError` instead of
@@ -57,7 +57,7 @@ def test_closure_reading_an_outer_variable_raises_instead_of_reading_garbage():
               (do
                 (var counter:i32 5)
                 (let read_it (fn () -> i32 counter))
-                (out (read_it))))
+                (out! (read_it))))
         """)
 
 
@@ -79,7 +79,7 @@ def test_non_capturing_closure_is_unaffected():
     ir = _emit("""
         (fn main () -> unit
           (let triple (fn (n:i32) -> i32 (* n 3)))
-          (out (triple 4)))
+          (out! (triple 4)))
     """)
     assert "define i32 @__closure_0(i32 %n)" in ir
     assert "mul i32 %t2, 3" in ir

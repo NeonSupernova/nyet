@@ -9,8 +9,8 @@
 
 (fn report (r:Result[i32 string]) -> unit
   (match r
-    ((Ok v) (do (out "ok: ") (out v) (out "\n")))
-    ((Err e) (do (out "err: ") (out e) (out "\n")))))
+    ((Ok v) (do (out! "ok: ") (out! v) (out! "\n")))
+    ((Err e) (do (out! "err: ") (out! e) (out! "\n")))))
 
 (fn main () -> unit
   (let a:Result[i32 string] (Ok 42))

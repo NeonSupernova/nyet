@@ -52,7 +52,7 @@ SRC = """
       (do
         (let h (file_open "/tmp/t.txt" "r"))
         (let lines:Array[string] (file_read_lines h))
-        (out (lines 0))))
+        (out! (lines 0))))
 """
 
 

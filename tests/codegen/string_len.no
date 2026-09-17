@@ -19,15 +19,15 @@
 (fn strlen_ref (s:&string) -> i32 (len s))
 
 (fn main () -> unit
-  (out "literal: ") (out (len "")) (out "\n")
+  (out! "literal: ") (out! (len "")) (out! "\n")
 
   (let s:string "Alexandria")
-  (out "plain let: ") (out (len s)) (out "\n")
+  (out! "plain let: ") (out! (len s)) (out! "\n")
 
-  (out "borrowed param: ") (out (strlen_ref &s)) (out "\n")
+  (out! "borrowed param: ") (out! (strlen_ref &s)) (out! "\n")
 
   (let w (Widget name:"Nyet!"))
-  (out "struct field: ") (out (len (. w name))) (out "\n")
+  (out! "struct field: ") (out! (len (. w name))) (out! "\n")
 
   (let arr:Array[i32] [1 2 3 4])
-  (out "array (control, unaffected): ") (out (len &arr)) (out "\n"))
+  (out! "array (control, unaffected): ") (out! (len &arr)) (out! "\n"))

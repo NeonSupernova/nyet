@@ -1,0 +1,30 @@
+;; Aliasing exclusivity: a value may be borrowed mutably by at most one
+;; live reference, and never both mutably and shared at once. Each
+;; scenario lives in its own `do` block so the errors below are
+;; independent, not compounded by earlier still-alive borrows.
+
+(struct Person name:string)
+(fn take_mut (p:&!Person) -> unit (= (. p name) "x"))
+(fn take_shared (p:&Person) -> string (. p name))
+(fn both (a:&!Person b:&Person) -> unit (= (. a name) (. b name)))
+
+(fn main () -> unit
+  (var p:Person (Person name:"Alice"))
+
+  ;; two simultaneous &!
+  (do
+    (let m1 (&!p))
+    (let m2 (&!p))
+    (take_mut m1)
+    (take_mut m2))
+
+  ;; &! and & simultaneously live
+  (do
+    (let m (&!p))
+    (let s (&p))
+    (take_mut m)
+    (out! (take_shared s)))
+
+  ;; both borrowed inline within one call
+  (do
+    (both &!p &p)))

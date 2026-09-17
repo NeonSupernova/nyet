@@ -41,13 +41,13 @@
   sum)
 
 (fn main () -> unit
-  (out "--- minibase CRUD, at its real fixed capacity (97 rows) ---\n")
+  (out! "--- minibase CRUD, at its real fixed capacity (97 rows) ---\n")
   (var db:Database (Database/new))
-  (time_it "insert 97 rows" (fill &!db 97))
-  (time_it "find 97 rows (linear scan each)" (find_all &db 97))
-  (time_it "sort 100 rows"  (sort_by_name &!db))
+  (time_it! "insert 97 rows" (fill &!db 97))
+  (time_it! "find 97 rows (linear scan each)" (find_all &db 97))
+  (time_it! "sort 100 rows"  (sort_by_name &!db))
   (stats &db)
 
-  (out "\n--- raw arithmetic loop, at a scale worth timing ---\n")
-  (let total:i64 (time_it "sum 0..20000000" (arithmetic_loop 20000000)))
-  (out (fmt "sum = {}\n" total)))
+  (out! "\n--- raw arithmetic loop, at a scale worth timing ---\n")
+  (let total:i64 (time_it! "sum 0..20000000" (arithmetic_loop 20000000)))
+  (out! (fmt "sum = {}\n" total)))

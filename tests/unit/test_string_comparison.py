@@ -63,7 +63,7 @@ def test_two_runtime_strings_compare_via_strcmp_not_pointer_identity():
         (fn main () -> unit
           (let a:string (fmt "{}" 1))
           (let b:string (fmt "{}" 1))
-          (out (== a b)))
+          (out! (== a b)))
     """)
     assert "call i32 @strcmp(" in ir
     # The old pointer-identity path used a bare `icmp eq ptr` between
@@ -84,7 +84,7 @@ def test_string_field_access_compares_via_strcmp():
         (struct Row name:string)
         (fn main () -> unit
           (let r:&Row (Row name:"Bob"))
-          (out (== (. r name) "Bob")))
+          (out! (== (. r name) "Bob")))
     """)
     assert "call i32 @strcmp(" in ir
 
@@ -98,7 +98,7 @@ def test_non_string_pointer_comparison_is_unaffected():
         (fn main () -> unit
           (let a:&Point (Point x:1))
           (let b:&Point (Point x:1))
-          (out (== a b)))
+          (out! (== a b)))
     """)
     assert "call i32 @strcmp(" not in ir
     assert "icmp eq ptr" in ir
@@ -110,7 +110,7 @@ def test_match_on_string_scrutinee_compares_via_strcmp_not_directly():
           (match s
             ("a" "first")
             (other other)))
-        (fn main () -> unit (out (classify "a")))
+        (fn main () -> unit (out! (classify "a")))
     """)
     assert "call i32 @strcmp(" in ir
     # The old bug compared the raw `ptr` scrutinee against the pattern's
@@ -130,6 +130,6 @@ def test_match_string_default_arm_binds_at_ptr_not_i32():
           (match s
             ("a" "first")
             (other other)))
-        (fn main () -> unit (out (classify "z")))
+        (fn main () -> unit (out! (classify "z")))
     """)
     assert "alloca ptr" in ir

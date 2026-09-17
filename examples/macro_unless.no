@@ -14,24 +14,24 @@
   (if (> n 0) body pass))
 
 (macro shout (msg)
-  (when_pos 1 (out msg)))
+  (when_pos! 1 (out! msg)))
 
 (macro require (cond)
-  (assert cond))
+  (assert! cond))
 
 (fn main () -> unit
   (let x:i32 5)
-  (unless (== x 0)
-    (out "x is nonzero\n"))
-  (shout "hello from a nested macro\n")
+  (unless! (== x 0)
+    (out! "x is nonzero\n"))
+  (shout! "hello from a nested macro\n")
 
   ;; Arrays: literals, indexing, indexed assignment.
   (var nums:Array[i32] [10 20 30])
   (= (nums 1) 99)
-  (assert (== (nums 0) 10))
-  (assert (== (nums 1) 99))
-  (assert (== (nums 2) 30))
+  (assert! (== (nums 0) 10))
+  (assert! (== (nums 1) 99))
+  (assert! (== (nums 2) 30))
 
   ;; require expands to assert, which expands to (if (! cond) (panic ...) pass).
-  (require (> x 0))
-  (out "all assertions passed\n"))
+  (require! (> x 0))
+  (out! "all assertions passed\n"))

@@ -11,7 +11,7 @@
 
 (fn describe (s:Sign) -> unit
   (match s
-    ((Pos n) (do (out "pos ") (out n) (out "\n")))))
+    ((Pos n) (do (out! "pos ") (out! n) (out! "\n")))))
 
 (fn main () -> unit
   (describe (Pos 5)))

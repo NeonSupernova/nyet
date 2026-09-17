@@ -7,7 +7,7 @@
 (fn pick_b[A B] (a:A b:B) -> B b)
 
 (fn main () -> unit
-  (out (pick_a 5 "hello"))
-  (out "\n")
-  (out (pick_b 5 "hello"))
-  (out "\n"))
+  (out! (pick_a 5 "hello"))
+  (out! "\n")
+  (out! (pick_b 5 "hello"))
+  (out! "\n"))

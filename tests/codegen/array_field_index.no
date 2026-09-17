@@ -1,0 +1,58 @@
+;; Indexing an `Array[T]`-typed struct field directly, without first
+;; binding it to a local (`((. v data) i)`, both to read and to write
+;; via `(= ((. v data) i) x)`), silently produced nothing at all --
+;; `_emit_call`/`_emit_assign`'s array-indexing dispatch only ever
+;; recognized a plain `Ident` head bound in `_env_array_elem`; a
+;; FieldAccess head fell through every case. This blocks the single
+;; most natural growable-Vector pattern: a struct wrapping a `data`
+;; array field, whose own methods need to index `data` directly.
+;; Expected:
+;;   direct field write+read: 42
+;;   full grow-and-push cycle: 10 20 30 40 (len=4 cap=4)
+
+(struct Box data:Array[i32])
+
+(fn main () -> unit
+  (do
+    (var b (Box data:(array_new 3)))
+    (= ((. b data) 0) 42)
+    (out! (fmt "direct field write+read: {}\n" ((. b data) 0)))
+    (grow_test)))
+
+(struct Vector len:i32 cap:i32 data:Array[i32])
+
+(fn vec_new (cap:i32) -> Vector
+  (Vector len:0 cap:cap data:(array_new cap)))
+
+(fn vec_push (v:&!Vector x:i32) -> unit
+  (do
+    (if (>= (. v len) (. v cap))
+      (do
+        (let new_cap:i32 (* (. v cap) 2))
+        (let new_data:Array[i32] (array_new new_cap))
+        (var i:i32 0)
+        (loop
+          (if (>= i (. v len)) (break pass) pass)
+          (= (new_data i) ((. v data) i))
+          (= i (+ i 1)))
+        (= (. v data) new_data)
+        (= (. v cap) new_cap))
+      pass)
+    (= ((. v data) (. v len)) x)
+    (= (. v len) (+ (. v len) 1))))
+
+(fn grow_test () -> unit
+  (do
+    (var v (vec_new 2))
+    (vec_push &!v 10)
+    (vec_push &!v 20)
+    (vec_push &!v 30)
+    (vec_push &!v 40)
+    (out! "full grow-and-push cycle: ")
+    (var i:i32 0)
+    (loop
+      (if (>= i (. v len)) (break pass) pass)
+      (out! ((. v data) i))
+      (out! " ")
+      (= i (+ i 1)))
+    (out! (fmt "(len={} cap={})\n" (. v len) (. v cap)))))

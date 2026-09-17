@@ -13,6 +13,6 @@
   (do
     (let t #((Point x:1 y:2) (Point x:3 y:4)))
     (let p (t 0))
-    (out (. p x)) (out "\n")
+    (out! (. p x)) (out! "\n")
     (let q (t 1))
-    (out (. q x)) (out "\n")))
+    (out! (. q x)) (out! "\n")))

@@ -34,16 +34,16 @@
 (fn main () -> unit
   ;; Using struct-based functions
   (let c:Circle (Circle 5.0))
-  (out "circle area: ")
-  (out (circle_area c))
-  (out "\n")
+  (out! "circle area: ")
+  (out! (circle_area c))
+  (out! "\n")
 
   (let r:Rect (Rect 4.0 6.0))
-  (out "rect area: ")
-  (out (rect_area r))
-  (out "\n")
+  (out! "rect area: ")
+  (out! (rect_area r))
+  (out! "\n")
 
   (let t:Triangle (Triangle 4.0 3.0))
-  (out "triangle area: ")
-  (out (tri_area t))
-  (out "\n"))
+  (out! "triangle area: ")
+  (out! (tri_area t))
+  (out! "\n"))

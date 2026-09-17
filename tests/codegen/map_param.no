@@ -16,6 +16,6 @@
 (fn main () -> unit
   (do
     (var m:Map[string i32] {"a" 9})
-    (out (lookup &m "a")) (out "\n")
+    (out! (lookup &m "a")) (out! "\n")
     (insert &!m "b" 42)
-    (out (lookup &m "b")) (out "\n")))
+    (out! (lookup &m "b")) (out! "\n")))

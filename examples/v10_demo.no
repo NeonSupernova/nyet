@@ -31,17 +31,17 @@
   (let h_r (file_open in_path "r"))
   (let body (file_read_all h_r))
   (file_close h_r)
-  (out "read: ") (out body) (out "\n")
+  (out! "read: ") (out! body) (out! "\n")
 
   ;; 3. Write a derived line.
   (let h_o (file_open out_path "w"))
   (file_write h_o "nyet wrote: ")
   (file_write h_o body)
   (file_close h_o)
-  (out "wrote: nyet wrote: ") (out body) (out "\n")
+  (out! "wrote: nyet wrote: ") (out! body) (out! "\n")
 
   ;; 4. Read the output back to confirm the round-trip.
   (let h_v (file_open out_path "r"))
   (let final (file_read_all h_v))
   (file_close h_v)
-  (out "final: ") (out final) (out "\n"))
+  (out! "final: ") (out! final) (out! "\n"))

@@ -21,9 +21,9 @@
   (loop (if (>= i 500000) (break) pass) (= i (+ i 1)))
   (let ms:f64 (elapsed_ms t0))
 
-  (if (>= ms 0.0) (out "not_backwards\n") (out "WENT BACKWARDS\n"))
+  (if (>= ms 0.0) (out! "not_backwards\n") (out! "WENT BACKWARDS\n"))
   ;; Generous upper bound (5s) so this can never flake on a slow CI
   ;; box, while still catching a genuinely broken (e.g. un-scaled)
   ;; `elapsed_ms`.
-  (if (< ms 5000.0) (out "bucketed\n") (out "TOO LARGE\n"))
-  (out "ok\n"))
+  (if (< ms 5000.0) (out! "bucketed\n") (out! "TOO LARGE\n"))
+  (out! "ok\n"))

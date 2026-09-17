@@ -1,0 +1,32 @@
+;; Regression test for the IOChannel feature: a user-defined struct can
+;; implement IOChannel (write/read, here) via an ordinary `impl` block
+;; and immediately becomes usable through the unified `io` verb, exactly
+;; like the builtin FileIO/StdIO channels -- no compiler-side special
+;; casing needed, since dispatch is by receiver type through the same
+;; generic method-lookup mechanism traits/inherent methods already use.
+;;
+;; Expected:
+;;   hello world
+;;   direct write ok
+
+(struct MemBuf log:string)
+
+(impl IOChannel MemBuf
+  (fn write (self:&!MemBuf data:string) -> WriteResult
+    (= (. self log) (+ (. self log) data))
+    (let n:usize (as (len data) usize))
+    (WriteOk n))
+
+  (fn read (self:&!MemBuf) -> ReadResult
+    (let s:string (. self log))
+    (ReadOk s)))
+
+(fn main () -> unit
+  (var buf:MemBuf (MemBuf log:""))
+  (io &!buf "hello ")
+  (io &!buf "world\n")
+  (let contents:string (io &!buf))
+  (out! contents)
+  (match (write &!buf "extra")
+    ((WriteOk _) (out! "direct write ok\n"))
+    ((WriteErr _) (out! "direct write failed\n"))))

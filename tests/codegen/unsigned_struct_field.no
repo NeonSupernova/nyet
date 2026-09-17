@@ -15,6 +15,6 @@
   (do
     (let a (Counter val:4000000000))
     (let b (Counter val:3000000000))
-    (out (fmt "field printed directly: {}\n" (. a val)))
-    (out (fmt "field > field: {}\n" (> (. a val) (. b val))))
-    (out (fmt "field / 3: {}\n" (/ (. a val) 3)))))
+    (out! (fmt "field printed directly: {}\n" (. a val)))
+    (out! (fmt "field > field: {}\n" (> (. a val) (. b val))))
+    (out! (fmt "field / 3: {}\n" (/ (. a val) 3)))))

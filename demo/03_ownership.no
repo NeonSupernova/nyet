@@ -16,7 +16,7 @@
 (struct Person name:string age:i32)
 
 (fn show (p:&Person) -> unit
-  (out (. p name)) (out " is ") (out (. p age)) (out "\n"))
+  (out! (. p name)) (out! " is ") (out! (. p age)) (out! "\n"))
 
 (fn age_of (p:&Person) -> i32
   (. p age))
@@ -30,4 +30,4 @@
   (show &alice)  ;; borrowing again is fine -- nothing was moved
 
   (let total (+ (age_of &alice) (age_of &bob)))
-  (out "total ages = ") (out total) (out "\n"))
+  (out! "total ages = ") (out! total) (out! "\n"))

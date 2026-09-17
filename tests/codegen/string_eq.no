@@ -17,17 +17,17 @@
 (fn show_cmp (arr:&Array[Row]) -> unit
   (let r0:&Row (arr 0))
   (let r1:&Row (arr 1))
-  (out (> (. r0 name) (. r1 name))) (out "\n")  ; "Bob" > "Alice"
-  (out (== (. r0 name) "Bob")) (out "\n"))       ; struct field vs literal
+  (out! (> (. r0 name) (. r1 name))) (out! "\n")  ; "Bob" > "Alice"
+  (out! (== (. r0 name) "Bob")) (out! "\n"))       ; struct field vs literal
 
 (fn main () -> unit
   (let a:string (fmt "{}-{}" "id" 1))
   (let b:string (fmt "{}-{}" "id" 1))
-  (out (== a b)) (out "\n")       ; two separately-built, equal strings
-  (out (== a "id-1")) (out "\n")  ; runtime string vs equal literal
-  (out (!= a "id-2")) (out "\n")  ; runtime string vs unequal literal
+  (out! (== a b)) (out! "\n")       ; two separately-built, equal strings
+  (out! (== a "id-1")) (out! "\n")  ; runtime string vs equal literal
+  (out! (!= a "id-2")) (out! "\n")  ; runtime string vs unequal literal
   (let c:string "quit")
-  (out (== c "quit")) (out "\n")  ; string-typed var vs literal
+  (out! (== c "quit")) (out! "\n")  ; string-typed var vs literal
 
   (let arr:Array[Row] [(Row name:"Bob") (Row name:"Alice")])
   (show_cmp &arr))

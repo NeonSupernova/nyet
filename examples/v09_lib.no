@@ -17,7 +17,7 @@
   (var i:i32 0)
   (loop
     (if (>= i (. g count)) (break) (pass))
-    (out (. g greeting)) (out ", ") (out who) (out "!\n")
+    (out! (. g greeting)) (out! ", ") (out! who) (out! "!\n")
     (= i (+ i 1))))
 
 (pub fn add (a:i32 b:i32) -> i32 (+ a b))

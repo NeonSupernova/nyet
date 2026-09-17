@@ -14,5 +14,5 @@
   (do
     (let o (Outer inner:(Inner val:42)))
     (let i (. o inner))
-    (out (. i val)) (out "\n")
-    (out (. (. o inner) val)) (out "\n")))
+    (out! (. i val)) (out! "\n")
+    (out! (. (. o inner) val)) (out! "\n")))
