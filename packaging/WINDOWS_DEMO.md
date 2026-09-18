@@ -83,7 +83,11 @@ Each of these also runs completely on its own, same code either way:
 **Curious how any of it is actually written?** The real source code
 for each game lives in the `lib\` folder -- structs, pattern matching,
 the borrow checker catching mistakes, `|>` pipelines, all of it, in
-plain readable Nyet. Open any of these in a text editor:
+plain readable Nyet. (Each game's `main.no` imports these as
+`(use demos/lib/...)`, the path they have in the Nyet source repo;
+`nyet.exe` carries its own copy, so the imports resolve wherever you
+put the folder. The copies here are for reading.) Open any of these in
+a text editor:
 
 | File | The game it belongs to |
 |---|---|

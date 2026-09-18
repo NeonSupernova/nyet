@@ -13,7 +13,7 @@
 ;;;; "arithmetic loop" section at the bottom is the one that actually
 ;;;; stresses the compiled code at a scale worth timing.
 
-(use minibase_core)
+(use demos/lib/minibase_core)
 (use std/bench)
 
 (fn fill (db:&!Database count:i32) -> unit

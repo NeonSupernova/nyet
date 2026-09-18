@@ -20,11 +20,11 @@
 ;;;; minibase_repl.no / adventure_lib.no / game_of_life_lib.no /
 ;;;; pipe_dreams_lib.no / hangman_lib.no for the individual games.
 
-(use minibase_repl)
-(use adventure_lib)
-(use game_of_life_lib)
-(use pipe_dreams_lib)
-(use hangman_lib)
+(use demos/lib/minibase_repl)
+(use demos/lib/adventure_lib)
+(use demos/lib/game_of_life_lib)
+(use demos/lib/pipe_dreams_lib)
+(use demos/lib/hangman_lib)
 (use std/ansi)
 (use std/io)
 

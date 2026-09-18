@@ -6,12 +6,21 @@ of them with:
 ```bash
 python3 -m pynyet.driver run examples/<name>.no
 # or
-make run FILE=examples/<name>.no
+just run examples/<name>.no
 ```
 
-`v10_demo.no` writes/reads a file as part of its demo; the rest are
-self-contained (no stdin needed — for stdin-driven programs see
-`scripts/`).
+Everything directly in `examples/` is self-contained and needs no
+stdin (`v10_demo.no` writes and reads a file of its own). Two
+subdirectories hold the rest:
+
+- **`tour/`** — the guided five-program tour, in reading order, that
+  ships as the `demo\` folder of the Windows bundle.
+- **`interactive/`** — programs that read stdin, so they are run by
+  hand rather than in any harness.
+
+Complete programs rather than single-feature examples — the arcade
+suite — live in `demos/`, and the language reference is `main.no` at
+the repo root.
 
 ## v0.1 — primitives, let/if/do/fn, arithmetic
 
@@ -73,6 +82,25 @@ self-contained (no stdin needed — for stdin-driven programs see
 - `v10_demo.no` — reads a text file, transforms its contents, writes it
   back out.
 
+## tour/ — the guided set shipped on Windows
+
+- `01_hello.no`, `02_structs_and_match.no`, `03_ownership.no`,
+  `03_ownership_bad.no` (rejected on purpose),
+  `04_generics_and_option.no`, `05_closures.no`.
+
+## interactive/ — reads stdin, run by hand
+
+- `inp.no` — reads an integer and reports whether it is even.
+- `isbn.no` — validates an ISBN typed at the prompt.
+- `funky_numbers.no` — a small number-classification prompt.
+
+## Other self-contained examples
+
+- `cast.no` — `(as expr type)` casts and `char`/int conversions.
+- `dropwhile.no` — `drop_while` over an array.
+- `gen.no` — Euler's pentagonal recurrence with an `Array[i32]` memo.
+- `seq.no` — sequence functions.
+- `x.no` — a minimal `if` expression.
+
 See `tests/{lexer,parser,sema,codegen}/` for the golden-file regression
-suite (a subset of these behaviors, wired into `make test-all`) and
-`scripts/` for stdin-driven programs run manually.
+suite (a subset of these behaviors, wired into `just test-all`).
