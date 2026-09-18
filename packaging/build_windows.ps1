@@ -37,22 +37,23 @@ python -m PyInstaller packaging\nyet.spec --distpath "$OutDir\pyi" --workpath "$
 
 Write-Host "== 4/4: assembling bundle =="
 Copy-Item "$OutDir\pyi\nyet\*" $bundle -Recurse -Force
-Copy-Item "$RepoRoot\demo" "$bundle\demo" -Recurse -Force
+Copy-Item "$RepoRoot\examples\tour" "$bundle\demo" -Recurse -Force
 Copy-Item "$PSScriptRoot\windows\add-to-path.ps1" "$bundle\add-to-path.ps1" -Force
 Copy-Item "$PSScriptRoot\windows\add-to-path.bat" "$bundle\add-to-path.bat" -Force
 Copy-Item "$PSScriptRoot\WINDOWS_DEMO.md" "$bundle\README.md" -Force
 
 # The arcade demo suite -- each game's own directory (a two-line
-# `main.no` wrapper around its repo-root `_lib`/`_repl` module, which
+# `main.no` wrapper around a module in the repo's demos/lib/, which
 # nyet.spec already bundled as data so `(use ...)` resolves standalone)
-# plus the combined launcher.
+# plus the combined launcher. The bundle keeps these at its top level:
+# `nyet run arcade\main.no` is what the README tells people to type.
 foreach ($dir in @("minibase", "adventure", "game_of_life", "pipe_dreams", "hangman", "arcade")) {
-    Copy-Item "$RepoRoot\$dir" "$bundle\$dir" -Recurse -Force
+    Copy-Item "$RepoRoot\demos\$dir" "$bundle\$dir" -Recurse -Force
 }
 
 # The arcade suite's actual logic: each game's `main.no` wrapper is
 # just two lines, so the interesting, language-feature-showing code
-# lives in these repo-root `_lib`/`_repl`/prelude modules instead.
+# lives in these demos/lib/ modules instead.
 # nyet.spec bundles them too (ARCADE_LIB_MODULES, kept in sync with
 # this list) so `(use ...)` resolves at runtime from the frozen exe --
 # but that copy lands wherever PyInstaller's internals put it, not
@@ -61,7 +62,7 @@ foreach ($dir in @("minibase", "adventure", "game_of_life", "pipe_dreams", "hang
 # second, plainly-visible copy here.
 New-Item -ItemType Directory -Path "$bundle\lib" -Force | Out-Null
 foreach ($name in @("minibase_core", "minibase_repl", "adventure_lib", "game_of_life_lib", "pipe_dreams_lib", "hangman_lib", "prelude_option", "prelude_rng")) {
-    Copy-Item "$RepoRoot\$name.no" "$bundle\lib\$name.no" -Force
+    Copy-Item "$RepoRoot\demos\lib\$name.no" "$bundle\lib\$name.no" -Force
 }
 
 # A handful of feature-focused programs (also this repo's own

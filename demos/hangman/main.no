@@ -1,11 +1,11 @@
 ;;;; Hangman, written in Nyet.
 ;;;;
 ;;;; The game logic lives in `hangman_lib.no` (repo root) as
-;;;; `run_hangman`, so the arcade launcher can `(use hangman_lib)` and
+;;;; `run_hangman`, so the arcade launcher can `(use demos/lib/hangman_lib)` and
 ;;;; call into it directly alongside the other games. This file is
 ;;;; just the standalone entry point.
 
-(use hangman_lib)
+(use demos/lib/hangman_lib)
 
 (fn main () -> unit
   (run_hangman))

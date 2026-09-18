@@ -14,5 +14,5 @@
 (fn main () -> unit
   (do_all!
     (show! 42)
-    (show! (+ 1 2))
+    (show! (+ 42 2))
     (out! "all done\n")))

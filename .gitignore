@@ -1,32 +1,26 @@
 *.no
 
-!/main.no
-!/tests/**/*.no
-!examples/*.no
-!scripts/*.no
-!std/**/*.no
-!demo/*.no
+# `.no` is ignored by default so scratch programs in the working tree
+# don't get committed by accident; everything the repo actually keeps is
+# listed back in here.
 
-# The arcade demo suite: five small games plus a launcher that links
-# all five into one binary via (use ...) -- each game's own directory
-# is a two-line main.no wrapper around a repo-root `_lib`/`_repl`
-# module (also carved out below), which is what actually needs
-# `(use ...)`-ing from elsewhere (like the launcher, or a packaged
-# Windows bundle) to resolve.
-!arcade/*.no
-!minibase/*.no
-!adventure/*.no
-!game_of_life/*.no
-!pipe_dreams/*.no
-!hangman/*.no
-!/minibase_core.no
-!/minibase_repl.no
-!/adventure_lib.no
-!/game_of_life_lib.no
-!/pipe_dreams_lib.no
-!/hangman_lib.no
-!/prelude_option.no
-!/prelude_rng.no
+# The language reference and the standard library -- the `.no` source
+# that ships with the compiler.
+!/main.no
+!std/**/*.no
+
+# Test fixtures.
+!/tests/**/*.no
+
+# Examples: short self-contained programs (one feature each), the
+# guided tour/ set that goes into the Windows bundle's demo\ folder,
+# and interactive/ for the ones that read stdin.
+!examples/**/*.no
+
+# The arcade demo suite: five games plus a launcher that links all five
+# into one binary via `(use ...)`. Each game directory holds a two-line
+# main.no wrapper around a shared module in demos/lib/.
+!demos/**/*.no
 
 *.pyc
 __pycache__

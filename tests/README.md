@@ -29,13 +29,8 @@ representation for each fixture and diffs it against the stored golden.
   as an exit code in the diff.
 
 All four harnesses have real fixtures and pass. Codegen fixtures should
-not require stdin — programs that read `(in ...)` belong in `examples/`
-or `scripts/` instead, run manually.
-
-`tests/func.no` and `tests/if.no` at the top of `tests/` are legacy
-loose fixtures left over from the earlier prototype (`func.no` uses
-pre-v0.1 syntax and no longer parses). They are not part of any current
-harness and can be ignored.
+not require stdin — programs that read `(in ...)` belong in
+`examples/interactive/` instead, run manually.
 
 ## Updating goldens after an intentional change
 

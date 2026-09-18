@@ -1,11 +1,11 @@
 ;;;; minibase — an interactive console database, written in Nyet.
 ;;;;
 ;;;; The actual REPL lives in `minibase_repl.no` (repo root) as
-;;;; `run_minibase`, so the arcade launcher can `(use minibase_repl)`
+;;;; `run_minibase`, so the arcade launcher can `(use demos/lib/minibase_repl)`
 ;;;; and call into it directly alongside the other games. This file is
 ;;;; just the standalone entry point.
 
-(use minibase_repl)
+(use demos/lib/minibase_repl)
 
 (fn main () -> unit
   (run_minibase))

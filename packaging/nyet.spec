@@ -11,14 +11,16 @@
 # `(use std/...)` and the C runtime link step work standalone, without
 # the source checkout being present on the target machine.
 #
-# Also bundles every repo-root `_lib`/`_repl`/`prelude_*` module the
+# Also bundles every demos/lib/ module the
 # arcade demo suite (minibase/adventure/game_of_life/pipe_dreams/
 # hangman + the arcade launcher) needs via `(use ...)` -- same
 # mechanism as std/, since pynyet/driver.py's `_repo_root()` resolves
-# to this same bundled data directory when frozen. Without these, a
-# frozen nyet.exe can still run/build any single-file script, but
-# `(use adventure_lib)` etc. would fail to resolve once the source
-# checkout isn't there to fall back to.
+# to this same bundled data directory when frozen. They keep their
+# demos/lib/ prefix here because that is exactly what the programs
+# import -- `(use demos/lib/adventure_lib)` -- so the layout inside the
+# bundle has to match the repo's. Without these, a frozen nyet.exe can
+# still run/build any single-file script, but those imports would fail
+# to resolve once the source checkout isn't there to fall back to.
 #
 # Paths below are built from SPECPATH (this file's own directory,
 # injected by PyInstaller) rather than left relative, since PyInstaller
@@ -47,7 +49,10 @@ a = Analysis(
         (os.path.join(repo_root, "std"), "std"),
         (os.path.join(repo_root, "runtime"), "runtime"),
     ]
-    + [(os.path.join(repo_root, name), ".") for name in ARCADE_LIB_MODULES],
+    + [
+        (os.path.join(repo_root, "demos", "lib", name), "demos/lib")
+        for name in ARCADE_LIB_MODULES
+    ],
     hiddenimports=[],
     noarchive=False,
 )

@@ -129,6 +129,34 @@ breaks — update it (`python3 tests/codegen/run.py --update main`) when
 the language changes. Designs that aren't implemented yet sit in the
 "Planned" block comment at its end, the only part that isn't compiled.
 
+## Where the `.no` files live
+
+`.no` is gitignored by default; `.gitignore` lists back exactly what
+the repo keeps, grouped the same way as below.
+
+| Path | What it is |
+| --- | --- |
+| `main.no` | The language reference. Source of truth, compiled and asserted by the codegen harness. |
+| `std/` | The standard library — `ansi`, `bench`, `collections`, `io`, `math`. Written in Nyet, ships with the compiler. |
+| `demos/` | Complete programs: the arcade suite. One directory per game, each a two-line `main.no` wrapper, plus `demos/lib/` for the shared modules they import. |
+| `examples/` | Short programs, one feature each. `examples/tour/` is the guided set that becomes the Windows bundle's `demo\` folder; `examples/interactive/` reads stdin and is run by hand. |
+| `tests/{lexer,parser,sema,codegen}/` | Golden-file fixtures. Nothing here may read stdin. |
+
+Two rules worth knowing before moving any of these:
+
+- A program imports a shared module by its repo-relative path
+  (`(use demos/lib/hangman_lib)`, `(use std/ansi)`). `(use ...)` resolves
+  against the importing file's own directory first, then the repo root —
+  so modules that sit next to each other (everything in `demos/lib/`)
+  import each other by bare name.
+- `packaging/nyet.spec` bundles `std/` and `demos/lib/` into the frozen
+  `nyet.exe` under those same names, because that is what the shipped
+  programs import. `packaging/build_windows.ps1` and
+  `packaging/stage_public_examples.py` map these paths onto the bundle's
+  and the public mirror's own layouts, which are deliberately flatter and
+  are what the public README documents. Changing a path here means
+  changing all three.
+
 ## Distribution
 
 This repo is private and stays private. Public downloads come from a

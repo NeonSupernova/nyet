@@ -56,7 +56,7 @@ jobs:
 
           Write-Host "--- run demo/01_hello.no ---"
           try {
-              $out = & $exe run demo\01_hello.no 2>&1 | Out-String
+              $out = & $exe run examples\tour\01_hello.no 2>&1 | Out-String
               Write-Host $out
               if ($LASTEXITCODE -ne 0) { throw "failed to build/run" }
               if ($out -notmatch "hello from Nyet!") { throw "unexpected output" }
@@ -64,19 +64,19 @@ jobs:
 
           Write-Host "--- check demo/03_ownership.no (should pass) ---"
           try {
-              & $exe check demo\03_ownership.no
+              & $exe check examples\tour\03_ownership.no
               if ($LASTEXITCODE -ne 0) { throw "should have passed check" }
           } catch { Write-Host "[FAIL] $_"; $failures.Add("03_ownership.no") }
 
           Write-Host "--- check demo/03_ownership_bad.no (should fail) ---"
           try {
-              & $exe check demo\03_ownership_bad.no
+              & $exe check examples\tour\03_ownership_bad.no
               if ($LASTEXITCODE -eq 0) { throw "should have failed check" }
           } catch { Write-Host "[FAIL] $_"; $failures.Add("03_ownership_bad.no") }
 
           Write-Host "--- bare shorthand: nyet -o smoketest.exe demo/05_closures.no ---"
           try {
-              & $exe -o smoketest.exe demo\05_closures.no
+              & $exe -o smoketest.exe examples\tour\05_closures.no
               if ($LASTEXITCODE -ne 0) { throw "bare -o shorthand build failed" }
               if (-not (Test-Path smoketest.exe)) { throw "smoketest.exe wasn't produced" }
               $out2 = & .\smoketest.exe 2>&1 | Out-String
@@ -87,7 +87,7 @@ jobs:
 
           # Explicit, distinct -o per file: `run` defaults to a bare
           # "output"/"output.exe" with no -o given, and the very first
-          # step above (`run demo\01_hello.no`) already produced one of
+          # step above (`run examples\tour\01_hello.no`) already produced one of
           # those in this same working directory. Written out longhand
           # (not a foreach over a name list) for the same reason as the
           # note above -- keep every invocation as plain, direct,
@@ -146,7 +146,7 @@ jobs:
 
           Write-Host "--- minibase, standalone (exercises (use minibase_repl) -> (use minibase_core)) ---"
           try {
-              & $exe -o minibase.exe minibase\main.no
+              & $exe -o minibase.exe demos\minibase\main.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               $mbOut = "seed`nlist`nsearch`nal`nquit`n" | & .\minibase.exe 2>&1 | Out-String
               Write-Host $mbOut
@@ -156,7 +156,7 @@ jobs:
 
           Write-Host "--- the arcade launcher (use)s all five games into one binary ---"
           try {
-              & $exe -o arcade.exe arcade\main.no
+              & $exe -o arcade.exe demos\arcade\main.no
               if ($LASTEXITCODE -ne 0) { throw "failed to build" }
               # Drive it through minibase, game of life (reseed), pipe
               # dreams (a move), and hangman (a repeated guess), then

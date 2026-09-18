@@ -3,10 +3,10 @@
 ;;;;
 ;;;; The game logic lives in `pipe_dreams_lib.no` (repo root) as
 ;;;; `run_pipe_dreams`, so the arcade launcher can
-;;;; `(use pipe_dreams_lib)` and call into it directly alongside the
+;;;; `(use demos/lib/pipe_dreams_lib)` and call into it directly alongside the
 ;;;; other games. This file is just the standalone entry point.
 
-(use pipe_dreams_lib)
+(use demos/lib/pipe_dreams_lib)
 
 (fn main () -> unit
   (run_pipe_dreams))

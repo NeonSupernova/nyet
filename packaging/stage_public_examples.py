@@ -24,7 +24,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # The curated tour, in reading order. Mirrors bundle demo\.
-DEMO_PROGRAMS = sorted(p.name for p in (REPO_ROOT / "demo").glob("*.no"))
+DEMO_PROGRAMS = sorted(p.name for p in (REPO_ROOT / "examples" / "tour").glob("*.no"))
 
 # Regression tests that double as single-feature demos. build_windows.ps1
 # copies these same four into the bundle's demo\features\ -- keep the
@@ -32,8 +32,8 @@ DEMO_PROGRAMS = sorted(p.name for p in (REPO_ROOT / "demo").glob("*.no"))
 FEATURE_DEMOS = ("ansi_lib", "char_printing", "file_read_lines", "string_len")
 
 # Where the arcade suite's real logic lives: each game's main.no is a
-# two-line wrapper around one of these. Same list as build_windows.ps1's
-# bundle lib\ copy.
+# two-line wrapper around one of these (repo demos/lib/). Same list as
+# build_windows.ps1's bundle lib\ copy.
 LIB_MODULES = (
     "minibase_core",
     "minibase_repl",
@@ -64,7 +64,7 @@ def stage(out: Path) -> int:
 
     count = 0
     for name in DEMO_PROGRAMS:
-        _copy(REPO_ROOT / "demo" / name, out / "demo" / name)
+        _copy(REPO_ROOT / "examples" / "tour" / name, out / "demo" / name)
         count += 1
     for name in FEATURE_DEMOS:
         _copy(
@@ -72,10 +72,10 @@ def stage(out: Path) -> int:
         )
         count += 1
     for name in LIB_MODULES:
-        _copy(REPO_ROOT / f"{name}.no", out / "lib" / f"{name}.no")
+        _copy(REPO_ROOT / "demos" / "lib" / f"{name}.no", out / "lib" / f"{name}.no")
         count += 1
     for name in PROGRAM_DIRS:
-        _copy(REPO_ROOT / name / "main.no", out / "programs" / name / "main.no")
+        _copy(REPO_ROOT / "demos" / name / "main.no", out / "programs" / name / "main.no")
         count += 1
 
     # main.no is the language specification. Renamed on the way out
