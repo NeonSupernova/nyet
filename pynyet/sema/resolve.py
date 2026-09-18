@@ -200,12 +200,28 @@ class NameResolver:
                 node.resolved_def_id = found_sym.def_id
             elif name not in BUILTINS and name not in PRIM_TYPE_NAMES and not name[0:1].isupper():
                 # Upper-case names might be type constructors (Ok, Some, etc.)
-                # Operators (+, -, etc.) are also fine
-                if name.isidentifier() and name not in {"self", "Self", "_"}:
+                # Operators (+, -, etc.) are also fine.
+                #
+                # `!` and `?` are valid Nyet identifier suffixes but not
+                # Python ones, so strip them before asking `isidentifier()`.
+                # Without that, an unexpanded macro call slipped past every
+                # check in the compiler and reached codegen, which emitted
+                # `call i32 @out!(...)` -- not a legal LLVM identifier -- and
+                # left clang to report `expected '(' in call` against
+                # generated IR the user never wrote.
+                bare = name.rstrip("!?")
+                if bare.isidentifier() and name not in {"self", "Self", "_"}:
+                    if name.endswith("!"):
+                        message = (
+                            f"unknown macro '{name}': no macro named '{bare}' is in scope "
+                            "-- is it defined, and is the module defining it `use`d here?"
+                        )
+                    else:
+                        message = f"undefined name '{name}'"
                     self.errors.append(
                         Diagnostic(
                             Severity.ERROR,
-                            f"undefined name '{name}'",
+                            message,
                             node.span,
                         )
                     )

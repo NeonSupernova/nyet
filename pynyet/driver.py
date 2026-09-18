@@ -132,12 +132,29 @@ def _load_program_with_deps(entry_path: str) -> list[N.Node]:
         loaded[path] = program
         for n in program:
             if isinstance(n, N.UseDecl):
-                rel = "/".join(n.path) + ".no"
-                target = path.parent / rel
+                # A use path names either a module (`std/math`) or one item
+                # inside it (`(pub use std/math/hypot)` re-exports `hypot`),
+                # so the module file is the whole path or the path minus its
+                # last segment. Each is looked for next to the importing file
+                # first, then at the repo root.
+                rels = ["/".join(n.path) + ".no"]
+                if len(n.path) > 1:
+                    rels.append("/".join(n.path[:-1]) + ".no")
+                candidates = [base / rel for rel in rels for base in (path.parent, repo_root)]
+                target = next((c for c in candidates if c.is_file()), candidates[0])
                 if not target.is_file():
-                    root_target = repo_root / rel
-                    if root_target.is_file():
-                        target = root_target
+                    # `load()` below no-ops on a missing path, which used to
+                    # make an unresolved `(use ...)` silently compile a
+                    # program without the module: its macros never got
+                    # registered, so calls to them reached codegen verbatim
+                    # and clang rejected the generated IR. Say which module
+                    # is missing and where it was looked for instead.
+                    searched = " or ".join(str(c) for c in dict.fromkeys(candidates))
+                    print(
+                        f"error: module '{'/'.join(n.path)}' not found (looked for {searched})",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
                 load(target)
         order.append(path)
 

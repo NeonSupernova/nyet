@@ -1,0 +1,9 @@
+;; Should be rejected: `greet!` is a macro call, but no macro named
+;; `greet` is in scope. `!` is a valid Nyet identifier suffix but not a
+;; Python one, so this used to slip past resolve's undefined-name check
+;; (which asked str.isidentifier()) and reach codegen, which emitted
+;; `call i32 @greet!(...)` -- not a legal LLVM identifier -- leaving
+;; clang to report "expected '(' in call" against generated IR.
+
+(fn main () -> unit
+  (greet! "world"))

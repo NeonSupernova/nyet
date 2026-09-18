@@ -1,0 +1,3 @@
+tests/sema/unknown_macro_call.no:9:4: error: unknown macro 'greet!': no macro named 'greet' is in scope -- is it defined, and is the module defining it `use`d here?
+      (greet! "world"))
+       ^^^^^^
